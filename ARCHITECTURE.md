@@ -2,7 +2,7 @@
 
 ## Purpose and scope
 
-Fieldcraft is a browser-based, system-agnostic 2D tabletop for precise competitive wargaming practice. It initially provides manual geometry, positioning, measurement, and spatial analysis rather than a rules-heavy videogame. The current prototype supports one 60 × 44 inch battlefield, circular models, normalized units, allowance-limited movement sessions, selection, measurement, range/exclusion overlays, and data-driven coherency evaluation.
+Fieldcraft is a browser-based, system-agnostic 2D tabletop for precise competitive wargaming practice. It initially provides manual geometry, positioning, measurement, and spatial analysis rather than a rules-heavy videogame. The current prototype supports one 60 × 44 inch battlefield, circular models, normalized players and units, configurable turns, confirmed movement actions, allowance-limited movement sessions, selection, measurement, range/exclusion overlays, and data-driven coherency evaluation.
 
 React owns the application chrome and ordinary UI. PixiJS owns the high-frequency tabletop rendering and pointer surface. Pure TypeScript owns authoritative state transitions and geometry. This split keeps core behavior usable in tests and, later, on a multiplayer server or replay worker.
 
@@ -19,7 +19,7 @@ React owns the application chrome and ordinary UI. PixiJS owns the high-frequenc
 
 ## Domain and state ownership
 
-Authoritative `GameState` is a plain, JSON-serializable object containing the schema version, battlefield, models, units, unit definitions, and optional active movement session. A model has stable IDs for itself, its unit, and owner; position; rotation; base geometry; and an optional label. Base geometry is a discriminated object (`shape: "circle"`) so additional shapes can be added without changing the model concept.
+Authoritative `GameState` is a plain, JSON-serializable object containing the schema version, battlefield, players, models, units, unit definitions, current game context, turn configuration, confirmed action history, deterministic next action sequence, and optional active movement session. A model has stable IDs for itself, its unit, and owner; position; rotation; base geometry; and an optional label. Base geometry is a discriminated object (`shape: "circle"`) so additional shapes can be added without changing the model concept.
 
 Units reference canonical models by stable `modelIds`; they never duplicate model objects. A `UnitDefinition` describes what a unit type is and supplies prototype game data such as movement allowance. A `Unit` is one match instance with owner, definition reference, and model membership. This makes future coherency a Unit→Models query and keeps mutable match state separate from reusable game data.
 
@@ -29,13 +29,25 @@ Transient references to derived views follow the same rule: the measurement tool
 
 Spatial-tool mode, requested range, target-base size, and the prototype coherency policy are also transient analysis settings. Distances, in-range membership, closest unit pairs, coherency neighbors, connectedness, and warnings are derived from current authoritative model positions. None are copied into `GameState` or represented by authoritative Pixi objects.
 
-State changes use explicit actions and a pure reducer. Movement-session start, request, confirm, and cancel are deterministic state transitions. This lightweight approach leaves room for action IDs, actors, validation, history, and server transport without introducing event sourcing now.
+State changes use explicit reducer commands and a pure reducer. These commands are distinct from confirmed domain `GameAction` records: pointer-frequency movement requests are transient inputs, while a successful confirmation appends exactly one immutable `MOVE` record. This lightweight history is not event sourcing and is not itself a game-system policy layer.
 
 ## Movement sessions and policy
 
 A movement session captures participating model IDs, starting positions, per-model movement used, compact accepted paths, and a stable reference point. The reference is the geometric centroid of participant centers at session start; its accepted path is translated by the same offsets as the rigid formation and is never recomputed from changing positions. Only accepted tabletop segments add distance; rejected cursor travel does not. Straight collinear path points are merged without changing travelled distance. Confirm retains positions and clears the session; Cancel restores captured starting positions and clears temporary movement state.
 
-Movement session lifecycle deliberately separates three operations: Confirm commits the active session, Cancel discards only the active session and restores its captured start, and Undo Last Confirmed Movement restores the immediately preceding pre-confirm authoritative model snapshot. The current undo slot is one-level, serializable movement state in `GameState`; a real confirmed change replaces it, a cancelled or no-op session does not, and consuming it clears the slot without creating redo behavior. This temporary slot is an extensible boundary for a future general reversible action history, not that history itself.
+Movement session lifecycle deliberately separates three operations: Confirm commits the active session and records one `MOVE` action, Cancel discards only the active session and restores its captured start without recording an action, and Undo Last Confirmed Movement restores the immediately preceding pre-confirm authoritative model snapshot while removing its corresponding history record. The current undo slot remains one-level and serializable; a real confirmed change replaces it, a cancelled or no-op session does not, and consuming it clears the slot without creating redo behavior. Undo is available only while its action belongs to the current turn context, so the movement shortcut never rewinds a completed turn.
+
+During an individual-model session, a genuine click on another model in the same unit dispatches that same Confirm command and then hands selection to the clicked model. The existing click-versus-drag threshold prevents pointer-down or drag intent from confirming. A no-op confirmation clears the session without creating history; different-unit clicks and every multi-model session remain blocked until explicitly confirmed or cancelled. Selection handoff never starts movement or a path for the new model.
+
+## Game structure and confirmed actions
+
+`Player` is a lightweight match entity with a stable ID and display name. Unit and model ownership continues to use stable owner IDs, which resolve to these players. Accounts, authentication, and permissions remain outside the domain.
+
+`GameContext` separates player-facing and internal turn concepts. `round` and `turn` form the human-readable context, with `turn` derived from the active player's index in the configured order and resetting each round. `turnSequence` is monotonic across rounds, while `turnId` provides stable identity from that sequence. `TurnConfiguration` supplies the prototype player order and may later supply a phase list. The current two-player Player 1 → Player 2 → next-round cycle is data in the initial configuration, not a rule embedded in movement or geometry. Ending a turn is rejected while movement is active; otherwise it advances through that configuration. The prototype has no enabled phases.
+
+Confirmed `GameAction` records use a deterministic sequence and action ID and snapshot their round, display turn, internal turn sequence, stable turn ID, actor, optional phase, and action-specific payload. Action sequence numbers are monotonic and are never reused after Undo. The first action type, `MOVE`, stores affected model, unit, and owner IDs together with copied starting/final positions and per-model movement used. Historical payloads therefore cannot be mutated by later tabletop movement. Query helpers derive current-turn movement status and filter history by player, unit, round, turn, type, or recency without React or PixiJS dependencies.
+
+Movement status is informational. The generic engine deliberately allows another move after a unit is marked Moved; a future game-system policy may ask the action queries whether a move is allowed, but Milestone 4 supplies no such restriction. Turn changes alter the query context without deleting history. The one-level movement undo removes its matching `MOVE` action only within the same live turn; arbitrary history editing, redo, and replay remain future systems.
 
 Movement allowance is resolved from Model→Unit→UnitDefinition. The generic engine consumes the resulting inch value without interpreting why it applies. Every participating model tracks usage independently, even when models belong to the same unit.
 

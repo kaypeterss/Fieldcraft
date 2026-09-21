@@ -19,11 +19,13 @@ export interface RequestMovementAction {
 export interface ConfirmMovementAction { type: 'movement/confirmed' }
 export interface CancelMovementAction { type: 'movement/cancelled' }
 export interface UndoConfirmedMovementAction { type: 'movement/undoLastConfirmed' }
+export interface EndTurnAction { type: 'game/turnEnded' }
 
-export type GameAction =
+export type GameStateAction =
   | MoveModelsAction
   | StartMovementSessionAction
   | RequestMovementAction
   | ConfirmMovementAction
   | CancelMovementAction
   | UndoConfirmedMovementAction
+  | EndTurnAction

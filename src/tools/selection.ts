@@ -1,9 +1,21 @@
 import type { Point } from '../engine/geometry/point'
+import type { MovementSession, TabletopModel } from '../domain/types'
 
 export const DRAG_THRESHOLD_PIXELS = 4
 
 export function hasDragIntent(start: Point, current: Point): boolean {
   return Math.hypot(current.x - start.x, current.y - start.y) >= DRAG_THRESHOLD_PIXELS
+}
+
+export function individualSameUnitHandoffTarget(
+  session: MovementSession | null,
+  models: readonly TabletopModel[],
+  targetModelId: string,
+): string | null {
+  if (!session || session.modelIds.length !== 1 || session.modelIds[0] === targetModelId) return null
+  const source = models.find((model) => model.id === session.modelIds[0])
+  const target = models.find((model) => model.id === targetModelId)
+  return source && target && source.unitId === target.unitId ? target.id : null
 }
 
 export function selectionForModelPointerDown(

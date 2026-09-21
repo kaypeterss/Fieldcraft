@@ -43,6 +43,29 @@ button { font: inherit; }
 }
 
 .brand-subtitle { margin-top: 5px; color: #6f8078; font-size: 8px; font-weight: 700; letter-spacing: 0.27em; }
+.game-status { position: relative; display: flex; align-items: center; gap: 8px; margin-left: 32px; }
+.turn-summary { display: grid; min-width: 102px; }
+.turn-summary span { color: #718079; font-size: 8px; font-weight: 700; letter-spacing: .14em; }
+.turn-summary strong { margin-top: 3px; color: #dce5e1; font: 600 14px/1 'Barlow Condensed', sans-serif; letter-spacing: .05em; }
+.turn-summary small { margin-top: 2px; color: #819089; font-size: 8px; }
+.end-turn, .game-status summary { border: 1px solid var(--line); border-radius: 4px; color: #9facA5; background: rgba(255,255,255,.025); cursor: pointer; font-size: 8px; font-weight: 700; letter-spacing: .06em; }
+.end-turn { padding: 8px 10px; }
+.end-turn:hover, .game-status summary:hover { color: #f1c969; border-color: rgba(241,201,105,.28); }
+.game-status details { position: relative; }
+.game-status summary { padding: 8px 9px; list-style: none; white-space: nowrap; }
+.game-status summary::-webkit-details-marker { display: none; }
+.status-popover { position: absolute; z-index: 8; top: calc(100% + 12px); left: 0; width: 230px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: rgba(13,19,17,.98); box-shadow: 0 14px 38px rgba(0,0,0,.4); }
+.action-history-menu .status-popover { width: 300px; }
+.popover-title { display: block; padding-bottom: 9px; border-bottom: 1px solid var(--line); color: #66756e; font-size: 8px; font-weight: 700; letter-spacing: .14em; }
+.unit-status-row { display: flex; justify-content: space-between; gap: 12px; padding-top: 8px; color: #aab6b0; font-size: 9px; }
+.unit-status-row strong { color: #66756e; }
+.unit-status-row strong.moved { color: #8fe0b4; }
+.action-history-list { max-height: 300px; overflow: auto; }
+.action-history-list p { margin: 10px 0 0; color: #65736d; font-size: 9px; }
+.history-row { display: grid; gap: 3px; padding: 9px 0; border-bottom: 1px solid rgba(204,222,212,.07); }
+.history-row strong { color: #cbd6d1; font: 600 11px 'Barlow Condensed', sans-serif; }
+.history-row span { color: #708078; font-size: 8px; line-height: 1.35; }
+.turn-blocked { position: absolute; top: calc(100% + 10px); left: 0; width: 250px; padding: 8px 10px; border: 1px solid rgba(255,126,105,.28); border-radius: 4px; color: #ffad9e; background: rgba(42,18,15,.96); font-size: 9px; }
 .session-info { margin-left: auto; display: flex; align-items: center; gap: 10px; color: #75857d; font-size: 10px; font-weight: 600; letter-spacing: 0.13em; }
 .session-info strong { color: #c7d1cc; font-family: 'Barlow Condensed', sans-serif; font-size: 14px; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #6fc79b; box-shadow: 0 0 9px #6fc79b; }
@@ -184,6 +207,7 @@ button { font: inherit; }
 .movement-panel dl div { display: flex; justify-content: space-between; margin: 7px 0; font-size: 9px; }
 .movement-panel dt { color: #718079; }
 .movement-panel dd { margin: 0; color: #cbd8d2; font: 600 12px 'Barlow Condensed', sans-serif; }
+.movement-handoff-hint { margin: -2px 0 11px; color: #708078; font-size: 8px; line-height: 1.45; }
 .movement-actions { display: grid; grid-template-columns: .8fr 1.2fr; gap: 7px; }
 .movement-actions button { padding: 8px; border-radius: 4px; cursor: pointer; font-size: 9px; font-weight: 700; }
 .cancel-move { border: 1px solid var(--line); color: #8c9a93; background: transparent; }
@@ -193,12 +217,15 @@ button { font: inherit; }
 .statusbar span { display: flex; align-items: center; gap: 7px; }
 .statusbar-spacer { flex: 1; }
 .legend-swatch { width: 7px; height: 7px; border-radius: 50%; }
-.legend-swatch.player-a { background: #d96c4d; }
-.legend-swatch.player-b { background: #4c8ca8; }
+.legend-swatch.player-1 { background: #d96c4d; }
+.legend-swatch.player-2 { background: #4c8ca8; }
 
 @media (max-width: 760px) {
   .debug-panel { width: 215px; }
   .spatial-panel { right: 15px; top: auto; bottom: 15px; width: 244px; }
   .session-info .divider, .session-info strong { display: none; }
+  .game-status { margin-left: 14px; }
+  .game-status details { display: none; }
+  .turn-summary { min-width: 90px; }
   .statusbar span:nth-last-child(-n+2) { display: none; }
 }

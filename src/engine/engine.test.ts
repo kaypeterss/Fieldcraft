@@ -199,7 +199,8 @@ describe('pointer intent and selection', () => {
 
 describe('authoritative state', () => {
   const state: GameState = {
-    schemaVersion: 2,
+    ...initialGameState,
+    schemaVersion: 3,
     battlefield,
     models: [model],
     units: [{ id: 'unit-1', ownerId: 'player-a', definitionId: 'definition-1', modelIds: ['model-1'] }],
@@ -277,7 +278,8 @@ describe('authoritative state', () => {
 
 describe('units and movement sessions', () => {
   const sessionState: GameState = {
-    schemaVersion: 2,
+    ...initialGameState,
+    schemaVersion: 3,
     battlefield,
     models: [
       model,
@@ -298,7 +300,7 @@ describe('units and movement sessions', () => {
     expect(initialGameState.units).toHaveLength(3)
     expect(initialGameState.units[0].modelIds).toHaveLength(10)
     expect(initialGameState.units[1].modelIds).toHaveLength(5)
-    expect(initialGameState.units[0].ownerId).toBe('player-a')
+    expect(initialGameState.units[0].ownerId).toBe('player-1')
     expect(initialGameState.unitDefinitions.find((definition) => definition.id === initialGameState.units[0].definitionId)?.movementAllowance).toBe(6)
   })
 

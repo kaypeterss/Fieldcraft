@@ -5,9 +5,10 @@ interface DebugPanelProps {
   model?: TabletopModel
   selectedCount: number
   wholeUnitName?: string
+  ownerDisplayName?: string
 }
 
-export function DebugPanel({ model, selectedCount, wholeUnitName }: DebugPanelProps) {
+export function DebugPanel({ model, selectedCount, wholeUnitName, ownerDisplayName }: DebugPanelProps) {
   return (
     <aside className={model ? 'debug-panel visible' : 'debug-panel'} aria-live="polite">
       {model ? (
@@ -23,7 +24,7 @@ export function DebugPanel({ model, selectedCount, wholeUnitName }: DebugPanelPr
           <dl>
             <div><dt>Model ID</dt><dd>{model.id}</dd></div>
             <div><dt>Unit ID</dt><dd>{model.unitId}</dd></div>
-            <div><dt>Owner</dt><dd>{model.ownerId}</dd></div>
+            <div><dt>Owner</dt><dd>{ownerDisplayName ?? model.ownerId}</dd></div>
           </dl>
           <div className="panel-section-label">POSITION</div>
           <div className="coordinate-grid">

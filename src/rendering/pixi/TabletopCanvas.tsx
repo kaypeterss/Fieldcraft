@@ -13,9 +13,9 @@ import { circleIntersectsRectangle } from '../../engine/geometry/battlefield'
 import type { Point } from '../../engine/geometry/point'
 import { millimetersToInches } from '../../engine/units'
 import { baseRadiusInches, exclusionRadiusForTargetBase, rangeRadiusForBase } from '../../engine/spatial'
-import type { GameAction } from '../../state/actions'
+import type { GameStateAction } from '../../state/actions'
 import type { ModelMeasurement } from '../../tools/measurement'
-import { hasDragIntent, selectionForModelPointerDown } from '../../tools/selection'
+import { hasDragIntent, individualSameUnitHandoffTarget, selectionForModelPointerDown } from '../../tools/selection'
 import type { SpatialOverlayConfig } from '../../tools/spatialOverlay'
 import type { ActiveTool } from '../../ui/Toolbar'
 
@@ -29,7 +29,7 @@ interface TabletopCanvasProps {
   resetCameraSignal: number
   onSelectionChange: (ids: Set<string>) => void
   onMeasureModel: (id: string) => void
-  dispatch: (action: GameAction) => void
+  dispatch: (action: GameStateAction) => void
 }
 
 interface CameraState { x: number; y: number; zoom: number }
@@ -41,12 +41,13 @@ interface DragState {
   dragStarted: boolean
   clickedModelId: string
   collapseSelectionOnClick: boolean
+  handoffTargetId?: string
 }
 interface SelectionBoxState { start: Point; current: Point; additive: boolean; active: boolean }
 
 const OWNER_COLORS: Record<string, { fill: number; rim: number }> = {
-  'player-a': { fill: 0xd96c4d, rim: 0xffa37f },
-  'player-b': { fill: 0x4c8ca8, rim: 0x8bd4ee },
+  'player-1': { fill: 0xd96c4d, rim: 0xffa37f },
+  'player-2': { fill: 0x4c8ca8, rim: 0x8bd4ee },
 }
 
 export function TabletopCanvas(props: TabletopCanvasProps) {
@@ -135,6 +136,9 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
 
         const drag = dragRef.current
         if (drag) {
+          if (drag.handoffTargetId) {
+            drag.dragStarted = drag.dragStarted || hasDragIntent(drag.startScreen, event.global)
+          } else {
           const current = screenToWorld(event.global, cameraRef.current)
           const requested = { x: current.x - drag.startWorld.x, y: current.y - drag.startWorld.y }
           if (!drag.dragStarted && hasDragIntent(drag.startScreen, event.global)) {
@@ -156,6 +160,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
               { x: model.position.x + requested.x, y: model.position.y + requested.y },
             ])),
           })
+          }
         }
 
         const selectionBox = selectionBoxRef.current
@@ -169,7 +174,10 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
 
       const endPointerGesture = () => {
         const drag = dragRef.current
-        if (drag && !drag.dragStarted && drag.collapseSelectionOnClick) {
+        if (drag?.handoffTargetId && !drag.dragStarted) {
+          propsRef.current.dispatch({ type: 'movement/confirmed' })
+          propsRef.current.onSelectionChange(new Set([drag.handoffTargetId]))
+        } else if (drag && !drag.dragStarted && drag.collapseSelectionOnClick) {
           propsRef.current.onSelectionChange(new Set([drag.clickedModelId]))
         }
         const selectionBox = selectionBoxRef.current
@@ -337,8 +345,32 @@ function drawScene(
         return
       }
       const activeSessionIds = currentProps.gameState.movementSession?.modelIds
-      if (activeSessionIds && !activeSessionIds.includes(model.id)) return
       const unitKey = event.ctrlKey || event.metaKey
+      if (activeSessionIds && !activeSessionIds.includes(model.id)) {
+        const handoffTarget = individualSameUnitHandoffTarget(
+          currentProps.gameState.movementSession,
+          currentProps.gameState.models,
+          model.id,
+        )
+        if (
+          event.button === 0
+          && !event.shiftKey
+          && !unitKey
+          && handoffTarget
+        ) {
+          dragRef.current = {
+            startWorld: screenToWorld(event.global, cameraRef.current),
+            startScreen: { x: event.global.x, y: event.global.y },
+            models: [],
+            sessionStarted: true,
+            dragStarted: false,
+            clickedModelId: model.id,
+            collapseSelectionOnClick: false,
+            handoffTargetId: handoffTarget,
+          }
+        }
+        return
+      }
       const unit = currentProps.gameState.units.find((candidate) => candidate.id === model.unitId)
       if (unitKey && !activeSessionIds) {
         currentProps.onSelectionChange(selectionForModelPointerDown(

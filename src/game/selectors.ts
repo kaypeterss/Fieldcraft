@@ -1,4 +1,4 @@
-import type { GameState, TabletopModel, Unit, UnitDefinition } from '../domain/types'
+import type { GameState, Player, TabletopModel, Unit, UnitDefinition } from '../domain/types'
 
 export function getUnitForModel(state: GameState, modelId: string): Unit | undefined {
   const model = state.models.find((candidate) => candidate.id === modelId)
@@ -15,6 +15,15 @@ export function getMovementAllowance(state: GameState, model: TabletopModel): nu
   return definition?.movementAllowance ?? 0
 }
 
+export function getPlayerForUnit(state: GameState, unit: Unit): Player | undefined {
+  return state.players.find((player) => player.id === unit.ownerId)
+}
+
+export function getPlayerForModel(state: GameState, model: TabletopModel): Player | undefined {
+  return state.players.find((player) => player.id === model.ownerId)
+}
+
 export function canUndoLastMovement(state: GameState): boolean {
-  return !state.movementSession && Boolean(state.lastConfirmedMovementUndo)
+  return !state.movementSession
+    && state.lastConfirmedMovementUndo?.turnId === state.gameContext.turnId
 }

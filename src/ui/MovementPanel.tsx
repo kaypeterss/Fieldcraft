@@ -25,6 +25,9 @@ export function MovementPanel({ summary, onConfirm, onCancel }: MovementPanelPro
         <div><dt>Maximum used</dt><dd>{formatInches(summary.maximumUsed)}</dd></div>
         <div><dt>Minimum remaining</dt><dd>{formatInches(summary.minimumRemaining)}</dd></div>
       </dl>
+      {summary.participantCount === 1 && (
+        <p className="movement-handoff-hint">Click another model in this unit to confirm and continue.</p>
+      )}
       <div className="movement-actions">
         <button className="cancel-move" onClick={onCancel}>Cancel <kbd>Esc</kbd></button>
         <button className="confirm-move" onClick={onConfirm}>Confirm move <kbd>Enter</kbd></button>

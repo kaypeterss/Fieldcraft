@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
 import { initialGameState } from './game/initialState'
-import { canUndoLastMovement, getMovementAllowance, getUnitDefinition, getUnitForModel } from './game/selectors'
+import { canUndoLastMovement, getMovementAllowance, getPlayerForModel, getUnitDefinition, getUnitForModel } from './game/selectors'
 import { TabletopCanvas } from './rendering/pixi/TabletopCanvas'
 import { gameReducer } from './state/reducer'
 import { measureBetweenCircularModels, type MeasurementPair } from './tools/measurement'
@@ -11,6 +11,7 @@ import { isEditableKeyboardTarget, isUndoMovementShortcut } from './tools/keyboa
 import { evaluateUnitCoherency, type CoherencyPolicy } from './engine/coherency'
 import type { SpatialMode, SpatialOverlayConfig } from './tools/spatialOverlay'
 import { SpatialPanel } from './ui/SpatialPanel'
+import { GameStatusPanel } from './ui/GameStatusPanel'
 import './styles.css'
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
   const [requiredSeparation, setRequiredSeparation] = useState(3)
   const [targetBaseDiameterMm, setTargetBaseDiameterMm] = useState(32)
   const [coherencyPolicy, setCoherencyPolicy] = useState<CoherencyPolicy>({ distance: 1, requiredNeighbors: 1 })
+  const [blockedMovementSessionId, setBlockedMovementSessionId] = useState<string | null>(null)
 
   const selectedModel = useMemo(
     () => gameState.models.find((model) => selectedIds.has(model.id)),
@@ -139,6 +141,15 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [changeTool, gameState])
 
+  const handleEndTurn = useCallback(() => {
+    if (gameState.movementSession) {
+      setBlockedMovementSessionId(gameState.movementSession.id)
+      return
+    }
+    setBlockedMovementSessionId(null)
+    dispatch({ type: 'game/turnEnded' })
+  }, [gameState.movementSession])
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -146,6 +157,13 @@ export default function App() {
           <div className="brand-title">FIELDCRAFT</div>
           <div className="brand-subtitle">COMPETITIVE TABLETOP LAB</div>
         </div>
+        <GameStatusPanel
+          gameState={gameState}
+          blockedMessage={gameState.movementSession?.id === blockedMovementSessionId
+            ? 'Finish or cancel the current movement first.'
+            : null}
+          onEndTurn={handleEndTurn}
+        />
         <div className="session-info">
           <span className="status-dot" /> LOCAL SANDBOX
           <span className="divider" />
@@ -170,7 +188,12 @@ export default function App() {
           onMeasureModel={handleMeasureModel}
           dispatch={dispatch}
         />
-        <DebugPanel model={selectedModel} selectedCount={selectedIds.size} wholeUnitName={selectedWholeUnitName} />
+        <DebugPanel
+          model={selectedModel}
+          selectedCount={selectedIds.size}
+          wholeUnitName={selectedWholeUnitName}
+          ownerDisplayName={selectedModel ? getPlayerForModel(gameState, selectedModel)?.displayName : undefined}
+        />
         {activeTool === 'spatial' && (
           <SpatialPanel
             mode={spatialMode}
@@ -197,8 +220,8 @@ export default function App() {
         )}
       </section>
       <footer className="statusbar">
-        <span><i className="legend-swatch player-a" /> PLAYER A</span>
-        <span><i className="legend-swatch player-b" /> PLAYER B</span>
+        <span><i className="legend-swatch player-1" /> PLAYER 1</span>
+        <span><i className="legend-swatch player-2" /> PLAYER 2</span>
         <span className="statusbar-spacer" />
         <span>COORDINATES: INCHES</span>
         <span>ORIGIN: TOP LEFT</span>

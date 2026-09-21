@@ -1,9 +1,10 @@
-import type { GameState, MovementSession } from '../domain/types'
+import type { GameState, MoveAction, MovementSession } from '../domain/types'
 import { appendAcceptedPathPoint, resolveMovement } from '../engine/movement'
 import { getMovementAllowance } from '../game/selectors'
-import type { GameAction } from './actions'
+import { advanceTurn } from '../game/turns'
+import type { GameStateAction } from './actions'
 
-export function gameReducer(state: GameState, action: GameAction): GameState {
+export function gameReducer(state: GameState, action: GameStateAction): GameState {
   switch (action.type) {
     case 'movement/sessionStarted': {
       if (state.movementSession) return state
@@ -92,21 +93,61 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         const startPosition = session.models[model.id]?.startPosition
         return startPosition ? { ...model, position: { ...startPosition } } : { ...model }
       })
+      const sequence = state.nextActionSequence
+      const participatingModels = session.modelIds
+        .map((modelId) => state.models.find((model) => model.id === modelId))
+        .filter((model): model is GameState['models'][number] => Boolean(model))
+      const moveAction: MoveAction = {
+        id: `action-${sequence}`,
+        sequence,
+        type: 'MOVE',
+        playerId: state.gameContext.activePlayerId,
+        round: state.gameContext.round,
+        turn: state.gameContext.turn,
+        turnSequence: state.gameContext.turnSequence,
+        turnId: state.gameContext.turnId,
+        ...(state.gameContext.phase ? { phase: state.gameContext.phase } : {}),
+        payload: {
+          modelIds: participatingModels.map((model) => model.id),
+          unitIds: [...new Set(participatingModels.map((model) => model.unitId))],
+          ownerIds: [...new Set(participatingModels.map((model) => model.ownerId))],
+          startingPositions: Object.fromEntries(participatingModels.map((model) => [
+            model.id,
+            { ...session.models[model.id].startPosition },
+          ])),
+          finalPositions: Object.fromEntries(participatingModels.map((model) => [
+            model.id,
+            { ...model.position },
+          ])),
+          movementUsed: Object.fromEntries(participatingModels.map((model) => [
+            model.id,
+            session.models[model.id].movementUsed,
+          ])),
+        },
+      }
       return {
         ...state,
         movementSession: null,
-        lastConfirmedMovementUndo: { models: beforeModels },
+        actionHistory: [...state.actionHistory, moveAction],
+        nextActionSequence: sequence + 1,
+        lastConfirmedMovementUndo: {
+          models: beforeModels,
+          actionId: moveAction.id,
+          turnId: moveAction.turnId,
+        },
       }
     }
 
     case 'movement/undoLastConfirmed': {
-      if (state.movementSession || !state.lastConfirmedMovementUndo) return state
+      const undo = state.lastConfirmedMovementUndo
+      if (state.movementSession || !undo || undo.turnId !== state.gameContext.turnId) return state
       return {
         ...state,
-        models: state.lastConfirmedMovementUndo.models.map((model) => ({
+        models: undo.models.map((model) => ({
           ...model,
           position: { ...model.position },
         })),
+        actionHistory: state.actionHistory.filter((confirmedAction) => confirmedAction.id !== undo.actionId),
         movementSession: null,
         lastConfirmedMovementUndo: null,
       }
@@ -138,6 +179,14 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
           const position = resolution.positions.get(model.id)
           return position ? { ...model, position } : model
         }),
+      }
+    }
+
+    case 'game/turnEnded': {
+      if (state.movementSession) return state
+      return {
+        ...state,
+        gameContext: advanceTurn(state.gameContext, state.turnConfiguration),
       }
     }
   }
