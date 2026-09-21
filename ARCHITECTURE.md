@@ -2,7 +2,7 @@
 
 ## Purpose and scope
 
-Fieldcraft is a browser-based, system-agnostic 2D tabletop for precise competitive wargaming practice. It initially provides manual geometry, positioning, and measurement rather than a rules-heavy videogame. The current prototype supports one 60 × 44 inch battlefield, circular models, normalized units, allowance-limited movement sessions, selection, and measurement.
+Fieldcraft is a browser-based, system-agnostic 2D tabletop for precise competitive wargaming practice. It initially provides manual geometry, positioning, measurement, and spatial analysis rather than a rules-heavy videogame. The current prototype supports one 60 × 44 inch battlefield, circular models, normalized units, allowance-limited movement sessions, selection, measurement, range/exclusion overlays, and data-driven coherency evaluation.
 
 React owns the application chrome and ordinary UI. PixiJS owns the high-frequency tabletop rendering and pointer surface. Pure TypeScript owns authoritative state transitions and geometry. This split keeps core behavior usable in tests and, later, on a multiplayer server or replay worker.
 
@@ -26,6 +26,8 @@ Units reference canonical models by stable `modelIds`; they never duplicate mode
 Selection, active tool, camera, drag gesture, and measurement workflow are transient UI state. They are deliberately excluded from `GameState`. Pixi display objects, React components, DOM nodes, and callbacks never enter authoritative state.
 
 Transient references to derived views follow the same rule: the measurement tool stores only the two measured model IDs. Its current distance is recomputed from authoritative positions and base geometry, so moving either model cannot leave a stale numeric result in UI state.
+
+Spatial-tool mode, requested range, target-base size, and the prototype coherency policy are also transient analysis settings. Distances, in-range membership, closest unit pairs, coherency neighbors, connectedness, and warnings are derived from current authoritative model positions. None are copied into `GameState` or represented by authoritative Pixi objects.
 
 State changes use explicit actions and a pure reducer. Movement-session start, request, confirm, and cancel are deterministic state transitions. This lightweight approach leaves room for action IDs, actors, validation, history, and server transport without introducing event sourcing now.
 
@@ -63,9 +65,19 @@ The Pixi adapter reads domain state, projects inches through the camera, draws m
 
 Enter dispatches the same confirm action as the existing button, while Escape dispatches the same cancel action. Ctrl/Cmd+Z dispatches the movement undo action only outside editable controls; text inputs, textareas, selects, and contenteditable surfaces retain normal browser editing behavior. Keyboard repeat is safe because the reducer requires an active session for confirmation and consumes the one-level undo slot exactly once.
 
+## Spatial queries and coherency
+
+`src/engine/spatial.ts` is the game-agnostic spatial-query boundary. It operates only in tabletop inches on domain models and points, and delegates circular base-edge calculations to the existing geometry primitive. The measurement tool uses this same high-level distance function, preventing divergent definitions. Current queries cover model-to-model and model-to-point distance, model/unit range membership, unit-to-unit minimum distance with the responsible model pair, and target-center exclusion radii.
+
+Range comparisons include the centralized geometry epsilon, so an exact boundary counts while meaningfully outside geometry does not. Model-range queries exclude their source by default and make inclusion explicit. Unit range is evaluated as an `any` query across source models; minimum unit distance is a straightforward pairwise minimum. These APIs describe spatial facts only and assign no shooting, engagement, deployment, or other game meaning.
+
+`src/engine/coherency.ts` applies a small data-driven `{ distance, requiredNeighbors }` policy to a unit. It builds an adjacency representation from base-edge distances and returns per-model neighbor IDs/counts and validity, links, overall local-policy validity, and connectedness. Local neighbor validity and graph connectedness remain separate outputs; the generic evaluator does not declare either universally required. The prototype UI supplies the sample policy directly, leaving a future GameSystem→rules/configuration→policy adapter as the intended source.
+
+The Spatial tool is a transient analysis mode. Range areas use `baseRadius + requestedRange`; exclusion areas use `sourceRadius + requiredSeparation + targetRadius`. Unit overlays render overlapping filled circles as the visual union without generating polygon unions. Coherency links, valid rings, and explicit warning markers are derived and redrawn from current positions, including during movement, cancellation, confirmation, and undo. All overlay graphics have pointer interaction disabled and never affect collision or movement legality. A single selected model may identify its containing unit for coherency analysis, allowing one member to move while the whole unit's derived result remains visible.
+
 ## Extension boundaries
 
-- **Game systems:** Generic state must not hardcode Age of Sigmar terms or statistics. A later game-system module can supply definitions, terminology, data version, and optional rule validators.
+- **Game systems:** Generic state must not hardcode Age of Sigmar terms or statistics. A later game-system module can supply definitions, terminology, data version, coherency policies, and optional rule validators.
 - **Army import:** External formats belong in adapters that produce a normalized internal army list. List composition, game-data definitions, and the resolved playable army remain separate concepts.
 - **Game-data versions:** Saved games and replays must retain a version reference or immutable snapshot so later balance changes cannot rewrite history.
 - **Multiplayer:** The eventual server is authoritative. Clients submit actions; the server validates pure state transitions and broadcasts resulting state. Stable IDs and JSON-safe state are prerequisites already enforced here.
@@ -78,4 +90,4 @@ PixiJS handles pointer-frequency visual work and large tabletop scenes; React is
 
 ## Deliberate omissions
 
-No Army, GameSystem, importer, terrain, coherency, networking, replay, rotation, or pathfinding implementation is included. Their boundaries are recorded above, while creating unused abstractions now would obscure the working core. Circular bases are the only implemented shape.
+No Army, GameSystem, importer, terrain, objectives, deployment, engagement enforcement, networking, replay, rotation, pathfinding, automatic formation solving, or coherency enforcement is included. Their boundaries are recorded above, while creating unused abstractions now would obscure the working core. Circular bases are the only implemented shape.

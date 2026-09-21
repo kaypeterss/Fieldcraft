@@ -12,9 +12,11 @@ import type { GameState } from '../../domain/types'
 import { circleIntersectsRectangle } from '../../engine/geometry/battlefield'
 import type { Point } from '../../engine/geometry/point'
 import { millimetersToInches } from '../../engine/units'
+import { baseRadiusInches, exclusionRadiusForTargetBase, rangeRadiusForBase } from '../../engine/spatial'
 import type { GameAction } from '../../state/actions'
 import type { ModelMeasurement } from '../../tools/measurement'
 import { hasDragIntent, selectionForModelPointerDown } from '../../tools/selection'
+import type { SpatialOverlayConfig } from '../../tools/spatialOverlay'
 import type { ActiveTool } from '../../ui/Toolbar'
 
 interface TabletopCanvasProps {
@@ -23,6 +25,7 @@ interface TabletopCanvasProps {
   selectedIds: ReadonlySet<string>
   measurement: ModelMeasurement | null
   measurementStartId: string | null
+  spatialOverlay: SpatialOverlayConfig | null
   resetCameraSignal: number
   onSelectionChange: (ids: Set<string>) => void
   onMeasureModel: (id: string) => void
@@ -108,7 +111,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
 
       app.stage.on('pointerdown', (event: FederatedPointerEvent) => {
         if (event.target !== app.stage) return
-        if (propsRef.current.activeTool === 'select') {
+        if (propsRef.current.activeTool !== 'measure') {
           if (event.button === 0 && !propsRef.current.gameState.movementSession) {
             const start = screenToWorld(event.global, cameraRef.current)
             selectionBoxRef.current = { start, current: start, additive: event.shiftKey, active: false }
@@ -227,7 +230,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
   useEffect(() => {
     const world = worldRef.current
     if (world) drawScene(world, propsRef, dragRef, cameraRef, selectionBoxRef)
-  }, [props.gameState, props.selectedIds, props.activeTool, props.measurement, props.measurementStartId])
+  }, [props.gameState, props.selectedIds, props.activeTool, props.measurement, props.measurementStartId, props.spatialOverlay])
 
   useEffect(() => {
     if (props.resetCameraSignal > 0) fitCamera()
@@ -239,6 +242,8 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
       <div className="interaction-hint">
         {props.activeTool === 'measure'
           ? props.measurementStartId ? 'Choose a second model' : 'Choose a starting model'
+          : props.activeTool === 'spatial'
+            ? 'Select a model or Ctrl/Cmd-click a whole unit · overlays do not restrict movement'
           : 'Click model · Shift multi-select · Ctrl/Cmd unit · Drag empty space to box select · Ctrl/Cmd+Z undo'}
       </div>
     </div>
@@ -277,6 +282,24 @@ function drawScene(
   grid.stroke({ color: 0xb1c5b8, alpha: 0.09, width: 0.045 })
   grid.eventMode = 'none'
   world.addChild(grid)
+
+  const spatialSources = props.spatialOverlay
+    ? models.filter((model) => props.spatialOverlay?.sourceModelIds.includes(model.id))
+    : []
+  if (props.spatialOverlay?.mode === 'range' && spatialSources.length > 0) {
+    drawRangeArea(world, spatialSources, props.spatialOverlay.range)
+  }
+  if (props.spatialOverlay?.mode === 'exclusion' && spatialSources.length > 0) {
+    drawExclusionArea(
+      world,
+      spatialSources,
+      props.spatialOverlay.requiredSeparation,
+      props.spatialOverlay.targetBaseDiameterMm,
+    )
+  }
+  if (props.spatialOverlay?.mode === 'coherency' && props.spatialOverlay.coherency) {
+    drawCoherencyLinks(world, models, props.spatialOverlay.coherency.links)
+  }
 
   for (const model of models) {
     const radius = millimetersToInches(model.base.diameterMm) / 2
@@ -359,6 +382,10 @@ function drawScene(
     world.addChild(token)
   }
 
+  if (props.spatialOverlay?.mode === 'coherency' && props.spatialOverlay.coherency) {
+    drawCoherencyStatus(world, models, props.spatialOverlay.coherency.models)
+  }
+
   const session = props.gameState.movementSession
   if (session?.referencePath && session.referencePath.length > 1) drawMovementPath(world, session.referencePath)
 
@@ -372,6 +399,88 @@ function drawScene(
 
   const selectionBox = selectionBoxRef.current
   if (selectionBox?.active) drawSelectionBox(world, selectionBox.start, selectionBox.current)
+}
+
+function drawRangeArea(world: Container, models: GameState['models'], range: number) {
+  const area = new Graphics()
+  for (const model of models) {
+    area.circle(model.position.x, model.position.y, rangeRadiusForBase(model.base, range))
+  }
+  area.fill({ color: 0x78b9d1, alpha: 0.13 })
+  area.eventMode = 'none'
+  world.addChild(area)
+}
+
+function drawExclusionArea(
+  world: Container,
+  models: GameState['models'],
+  requiredSeparation: number,
+  targetBaseDiameterMm: number,
+) {
+  const area = new Graphics()
+  for (const model of models) {
+    const radius = exclusionRadiusForTargetBase(
+      model,
+      { shape: 'circle', diameterMm: targetBaseDiameterMm },
+      requiredSeparation,
+    )
+    area.circle(model.position.x, model.position.y, radius)
+  }
+  area.fill({ color: 0xd96c4d, alpha: 0.14 })
+  area.eventMode = 'none'
+  world.addChild(area)
+}
+
+function drawCoherencyLinks(
+  world: Container,
+  models: GameState['models'],
+  links: NonNullable<SpatialOverlayConfig['coherency']>['links'],
+) {
+  const byId = new Map(models.map((model) => [model.id, model]))
+  const graphic = new Graphics()
+  for (const link of links) {
+    const source = byId.get(link.sourceModelId)
+    const target = byId.get(link.targetModelId)
+    if (source && target) graphic.moveTo(source.position.x, source.position.y).lineTo(target.position.x, target.position.y)
+  }
+  graphic.stroke({ color: 0x72d6a1, width: 0.08, alpha: 0.45 })
+  graphic.eventMode = 'none'
+  world.addChild(graphic)
+}
+
+function drawCoherencyStatus(
+  world: Container,
+  models: GameState['models'],
+  results: NonNullable<SpatialOverlayConfig['coherency']>['models'],
+) {
+  const byId = new Map(models.map((model) => [model.id, model]))
+  for (const result of results) {
+    const model = byId.get(result.modelId)
+    if (!model) continue
+    const radius = baseRadiusInches(model.base)
+    const ring = new Graphics()
+      .circle(model.position.x, model.position.y, radius + 0.28)
+      .stroke({ color: result.valid ? 0x72d6a1 : 0xff5d5d, width: result.valid ? 0.11 : 0.18, alpha: 0.98 })
+    ring.eventMode = 'none'
+    world.addChild(ring)
+    if (!result.valid) {
+      const marker = new Graphics()
+        .circle(model.position.x + radius * 0.78, model.position.y - radius * 0.78, 0.24)
+        .fill({ color: 0x321010, alpha: 0.98 })
+        .stroke({ color: 0xff8b7d, width: 0.07 })
+      marker.eventMode = 'none'
+      const warning = new Text({
+        text: '!',
+        style: new TextStyle({ fontFamily: 'Arial', fontSize: 16, fontWeight: '700', fill: 0xffffff }),
+        resolution: 4,
+      })
+      warning.anchor.set(0.5)
+      warning.scale.set(0.31 / 16)
+      warning.position.set(model.position.x + radius * 0.78, model.position.y - radius * 0.78 - 0.01)
+      warning.eventMode = 'none'
+      world.addChild(marker, warning)
+    }
+  }
 }
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {

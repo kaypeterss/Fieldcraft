@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
 import { initialGameState } from './game/initialState'
-import { canUndoLastMovement, getMovementAllowance, getUnitDefinition } from './game/selectors'
+import { canUndoLastMovement, getMovementAllowance, getUnitDefinition, getUnitForModel } from './game/selectors'
 import { TabletopCanvas } from './rendering/pixi/TabletopCanvas'
 import { gameReducer } from './state/reducer'
 import { measureBetweenCircularModels, type MeasurementPair } from './tools/measurement'
@@ -8,6 +8,9 @@ import { DebugPanel } from './ui/DebugPanel'
 import { Toolbar, type ActiveTool } from './ui/Toolbar'
 import { MovementPanel, type MovementSummary } from './ui/MovementPanel'
 import { isEditableKeyboardTarget, isUndoMovementShortcut } from './tools/keyboard'
+import { evaluateUnitCoherency, type CoherencyPolicy } from './engine/coherency'
+import type { SpatialMode, SpatialOverlayConfig } from './tools/spatialOverlay'
+import { SpatialPanel } from './ui/SpatialPanel'
 import './styles.css'
 
 export default function App() {
@@ -17,6 +20,11 @@ export default function App() {
   const [measurementStartId, setMeasurementStartId] = useState<string | null>(null)
   const [measurementPair, setMeasurementPair] = useState<MeasurementPair | null>(null)
   const [resetCameraSignal, setResetCameraSignal] = useState(0)
+  const [spatialMode, setSpatialMode] = useState<SpatialMode>('range')
+  const [rangeInches, setRangeInches] = useState(3)
+  const [requiredSeparation, setRequiredSeparation] = useState(3)
+  const [targetBaseDiameterMm, setTargetBaseDiameterMm] = useState(32)
+  const [coherencyPolicy, setCoherencyPolicy] = useState<CoherencyPolicy>({ distance: 1, requiredNeighbors: 1 })
 
   const selectedModel = useMemo(
     () => gameState.models.find((model) => selectedIds.has(model.id)),
@@ -28,6 +36,35 @@ export default function App() {
   const selectedWholeUnitName = selectedWholeUnit
     ? getUnitDefinition(gameState, selectedWholeUnit)?.name
     : undefined
+
+  const spatialSourceIds = useMemo(() => {
+    if (selectedWholeUnit) return selectedWholeUnit.modelIds
+    return selectedModel ? [selectedModel.id] : []
+  }, [selectedModel, selectedWholeUnit])
+
+  const coherencyUnit = useMemo(
+    () => selectedWholeUnit ?? (selectedIds.size === 1 && selectedModel
+      ? getUnitForModel(gameState, selectedModel.id)
+      : undefined),
+    [gameState, selectedIds.size, selectedModel, selectedWholeUnit],
+  )
+
+  const coherency = useMemo(
+    () => coherencyUnit
+      ? evaluateUnitCoherency(coherencyUnit, gameState.models, coherencyPolicy)
+      : null,
+    [coherencyPolicy, coherencyUnit, gameState.models],
+  )
+
+  const spatialOverlay = useMemo<SpatialOverlayConfig | null>(() => activeTool === 'spatial' ? {
+    mode: spatialMode,
+    sourceModelIds: spatialMode === 'coherency' ? coherencyUnit?.modelIds ?? [] : spatialSourceIds,
+    range: rangeInches,
+    requiredSeparation,
+    targetBaseDiameterMm,
+    coherencyPolicy,
+    coherency,
+  } : null, [activeTool, coherency, coherencyPolicy, coherencyUnit, rangeInches, requiredSeparation, spatialMode, spatialSourceIds, targetBaseDiameterMm])
 
   const movementSummary = useMemo<MovementSummary | null>(() => {
     const session = gameState.movementSession
@@ -86,6 +123,7 @@ export default function App() {
       }
       if (event.key.toLowerCase() === 'v') changeTool('select')
       if (event.key.toLowerCase() === 'm') changeTool('measure')
+      if (event.key.toLowerCase() === 's') changeTool('spatial')
       if (event.key.toLowerCase() === 'f') setResetCameraSignal((value) => value + 1)
       if (event.key === 'Escape') {
         if (gameState.movementSession) {
@@ -126,12 +164,30 @@ export default function App() {
           selectedIds={selectedIds}
           measurement={measurement}
           measurementStartId={measurementStartId}
+          spatialOverlay={spatialOverlay}
           resetCameraSignal={resetCameraSignal}
           onSelectionChange={setSelectedIds}
           onMeasureModel={handleMeasureModel}
           dispatch={dispatch}
         />
         <DebugPanel model={selectedModel} selectedCount={selectedIds.size} wholeUnitName={selectedWholeUnitName} />
+        {activeTool === 'spatial' && (
+          <SpatialPanel
+            mode={spatialMode}
+            range={rangeInches}
+            requiredSeparation={requiredSeparation}
+            targetBaseDiameterMm={targetBaseDiameterMm}
+            coherencyPolicy={coherencyPolicy}
+            coherency={coherency}
+            sourceCount={spatialMode === 'coherency' ? coherencyUnit?.modelIds.length ?? 0 : spatialSourceIds.length}
+            coherencyUnitAvailable={Boolean(coherencyUnit)}
+            onModeChange={setSpatialMode}
+            onRangeChange={setRangeInches}
+            onRequiredSeparationChange={setRequiredSeparation}
+            onTargetBaseDiameterChange={setTargetBaseDiameterMm}
+            onCoherencyPolicyChange={setCoherencyPolicy}
+          />
+        )}
         {movementSummary && (
           <MovementPanel
             summary={movementSummary}

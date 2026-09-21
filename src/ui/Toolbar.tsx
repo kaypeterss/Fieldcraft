@@ -1,4 +1,4 @@
-export type ActiveTool = 'select' | 'measure'
+export type ActiveTool = 'select' | 'measure' | 'spatial'
 
 interface ToolbarProps {
   activeTool: ActiveTool
@@ -32,6 +32,15 @@ function ResetIcon() {
   )
 }
 
+function SpatialIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <circle cx="12" cy="12" r="8" strokeDasharray="2.2 2.2" />
+    </svg>
+  )
+}
+
 export function Toolbar({ activeTool, onToolChange, onResetCamera }: ToolbarProps) {
   return (
     <nav className="toolbar" aria-label="Tabletop tools">
@@ -50,6 +59,13 @@ export function Toolbar({ activeTool, onToolChange, onResetCamera }: ToolbarProp
           aria-pressed={activeTool === 'measure'}
         >
           <MeasureIcon /><span>Measure</span><kbd>M</kbd>
+        </button>
+        <button
+          className={activeTool === 'spatial' ? 'tool-button active' : 'tool-button'}
+          onClick={() => onToolChange('spatial')}
+          aria-pressed={activeTool === 'spatial'}
+        >
+          <SpatialIcon /><span>Spatial</span><kbd>S</kbd>
         </button>
       </div>
       <div className="toolbar-spacer" />

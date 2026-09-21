@@ -1,6 +1,5 @@
 import type { TabletopModel } from '../domain/types'
-import { circularEdgeDistance } from '../engine/geometry/circles'
-import { millimetersToInches } from '../engine/units'
+import { distanceBetweenBases } from '../engine/spatial'
 
 export interface MeasurementPair {
   fromModelId: string
@@ -18,11 +17,6 @@ export function measureBetweenCircularModels(
   return {
     fromModelId: from.id,
     toModelId: to.id,
-    distanceInches: circularEdgeDistance(
-      from.position,
-      millimetersToInches(from.base.diameterMm) / 2,
-      to.position,
-      millimetersToInches(to.base.diameterMm) / 2,
-    ),
+    distanceInches: distanceBetweenBases(from, to),
   }
 }
