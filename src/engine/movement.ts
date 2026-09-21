@@ -10,12 +10,13 @@ export interface MovementResolution {
   paths: Map<string, Point[]>
   /** Shared offsets from the start of this request, beginning at {0, 0}. */
   translationPath: Point[]
-  acceptedFraction: number
 }
 
-export interface MovementRequest {
+export interface RigidTranslationRequest {
   allModels: ReadonlyArray<TabletopModel>
-  requestedPositions: ReadonlyMap<string, Point>
+  modelIds: ReadonlyArray<string>
+  /** Shared translation requested from every participating model's current position. */
+  translation: Point
   battlefield: Battlefield
   remainingMovement?: ReadonlyMap<string, number>
 }
@@ -34,8 +35,8 @@ interface BoundaryContact {
 
 const MAX_SLIDE_ITERATIONS = 8
 
-export function resolveMovement(request: MovementRequest): MovementResolution {
-  const movingIds = new Set(request.requestedPositions.keys())
+export function resolveRigidTranslation(request: RigidTranslationRequest): MovementResolution {
+  const movingIds = new Set(request.modelIds)
   const movingModels = request.allModels.filter((model) => movingIds.has(model.id))
   if (movingModels.length === 0) {
     return {
@@ -43,23 +44,18 @@ export function resolveMovement(request: MovementRequest): MovementResolution {
       distances: new Map(),
       paths: new Map(),
       translationPath: [{ x: 0, y: 0 }],
-      acceptedFraction: 1,
     }
   }
-
-  const referenceModel = movingModels[0]
-  const requestedEnd = request.requestedPositions.get(referenceModel.id) ?? referenceModel.position
-  const requestedTranslation = subtract(requestedEnd, referenceModel.position)
-  return resolveRigidTranslation(request, movingModels, movingIds, requestedTranslation)
+  return resolveRigidTranslationForModels(request, movingModels, movingIds)
 }
 
-function resolveRigidTranslation(
-  request: MovementRequest,
+function resolveRigidTranslationForModels(
+  request: RigidTranslationRequest,
   movingModels: ReadonlyArray<TabletopModel>,
   movingIds: ReadonlySet<string>,
-  requestedTranslation: Point,
 ): MovementResolution {
   const { allModels, battlefield, remainingMovement } = request
+  const requestedTranslation = request.translation
   const maximumDistance = Math.min(...movingModels.map((model) =>
     Math.max(0, remainingMovement?.get(model.id) ?? Number.POSITIVE_INFINITY)))
   const translationPath: Point[] = [{ x: 0, y: 0 }]
@@ -127,12 +123,7 @@ function resolveRigidTranslation(
     translationPath.map((offset) => add(model.position, offset)),
   ]))
   const distances = new Map(movingModels.map((model) => [model.id, distanceUsed]))
-  const requestedDistance = vectorLength(requestedTranslation)
-  const acceptedFraction = requestedDistance <= GEOMETRY_EPSILON
-    ? 1
-    : Math.min(1, vectorLength(currentOffset) / requestedDistance)
-
-  return { positions, distances, paths, translationPath, acceptedFraction }
+  return { positions, distances, paths, translationPath }
 }
 
 function obstacleContactCandidates(
@@ -229,14 +220,6 @@ function fractionTolerance(translation: Point): number {
 
 function radiusInches(model: TabletopModel): number {
   return millimetersToInches(model.base.diameterMm) / 2
-}
-
-export function resolveGroupMovement(
-  allModels: ReadonlyArray<TabletopModel>,
-  requestedPositions: ReadonlyMap<string, Point>,
-  battlefield: Battlefield,
-): Map<string, Point> {
-  return resolveMovement({ allModels, requestedPositions, battlefield }).positions
 }
 
 export function appendAcceptedPathPoint(path: ReadonlyArray<Point>, point: Point): Point[] {

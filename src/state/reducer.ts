@@ -1,5 +1,7 @@
-import type { GameState, MoveAction, MovementSession } from '../domain/types'
-import { appendAcceptedPathPoint, resolveMovement } from '../engine/movement'
+import type { GameState, MovementSession } from '../domain/types'
+import { appendAcceptedPathPoint, resolveRigidTranslation } from '../engine/movement'
+import { GEOMETRY_EPSILON } from '../engine/geometry/tolerance'
+import { createMoveAction } from '../game/moveActions'
 import { getMovementAllowance } from '../game/selectors'
 import { advanceTurn } from '../game/turns'
 import type { GameStateAction } from './actions'
@@ -32,32 +34,40 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
     case 'movement/requested': {
       const session = state.movementSession
       if (!session) return state
-      const requested = new Map(
-        Object.entries(action.positions).filter(([modelId]) => session.modelIds.includes(modelId)),
-      )
-      if (requested.size === 0) return state
+      const requestedIds = Object.keys(action.positions)
+      if (!sameIdSet(requestedIds, session.modelIds)) return state
+      const translations = session.modelIds.map((modelId) => {
+        const model = state.models.find((candidate) => candidate.id === modelId)
+        const requested = action.positions[modelId]
+        return model && requested
+          ? { x: requested.x - model.position.x, y: requested.y - model.position.y }
+          : null
+      })
+      const translation = translations[0]
+      if (!translation || translations.some((candidate) => !candidate
+        || Math.abs(candidate.x - translation.x) > GEOMETRY_EPSILON
+        || Math.abs(candidate.y - translation.y) > GEOMETRY_EPSILON)) return state
       const remainingMovement = new Map(session.modelIds.map((modelId) => {
         const model = state.models.find((candidate) => candidate.id === modelId)
         const used = session.models[modelId]?.movementUsed ?? 0
         return [modelId, model ? Math.max(0, getMovementAllowance(state, model) - used) : 0]
       }))
-      const resolution = resolveMovement({
+      const resolution = resolveRigidTranslation({
         allModels: state.models,
-        requestedPositions: requested,
+        modelIds: session.modelIds,
+        translation,
         battlefield: state.battlefield,
         remainingMovement,
       })
       const nextSession: MovementSession = {
         ...session,
-        referencePath: requested.size === session.modelIds.length
-          ? resolution.translationPath.slice(1).reduce(
-            (path, offset) => appendAcceptedPathPoint(path, {
-              x: session.referencePath[session.referencePath.length - 1].x + offset.x,
-              y: session.referencePath[session.referencePath.length - 1].y + offset.y,
-            }),
-            session.referencePath,
-          )
-          : session.referencePath,
+        referencePath: resolution.translationPath.slice(1).reduce(
+          (path, offset) => appendAcceptedPathPoint(path, {
+            x: session.referencePath[session.referencePath.length - 1].x + offset.x,
+            y: session.referencePath[session.referencePath.length - 1].y + offset.y,
+          }),
+          session.referencePath,
+        ),
         models: Object.fromEntries(Object.entries(session.models).map(([modelId, movement]) => {
           const acceptedPosition = resolution.positions.get(modelId)
           const acceptedDistance = resolution.distances.get(modelId) ?? 0
@@ -97,34 +107,21 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       const participatingModels = session.modelIds
         .map((modelId) => state.models.find((model) => model.id === modelId))
         .filter((model): model is GameState['models'][number] => Boolean(model))
-      const moveAction: MoveAction = {
-        id: `action-${sequence}`,
+      const moveAction = createMoveAction({
         sequence,
-        type: 'MOVE',
-        playerId: state.gameContext.activePlayerId,
-        round: state.gameContext.round,
-        turn: state.gameContext.turn,
-        turnSequence: state.gameContext.turnSequence,
-        turnId: state.gameContext.turnId,
-        ...(state.gameContext.phase ? { phase: state.gameContext.phase } : {}),
-        payload: {
-          modelIds: participatingModels.map((model) => model.id),
-          unitIds: [...new Set(participatingModels.map((model) => model.unitId))],
-          ownerIds: [...new Set(participatingModels.map((model) => model.ownerId))],
-          startingPositions: Object.fromEntries(participatingModels.map((model) => [
-            model.id,
-            { ...session.models[model.id].startPosition },
-          ])),
-          finalPositions: Object.fromEntries(participatingModels.map((model) => [
-            model.id,
-            { ...model.position },
-          ])),
-          movementUsed: Object.fromEntries(participatingModels.map((model) => [
-            model.id,
-            session.models[model.id].movementUsed,
-          ])),
-        },
-      }
+        actorPlayerId: state.gameContext.activePlayerId,
+        gameContext: state.gameContext,
+        affectedModels: participatingModels,
+        startingPositions: Object.fromEntries(participatingModels.map((model) => [
+          model.id,
+          session.models[model.id].startPosition,
+        ])),
+        finalPositions: Object.fromEntries(participatingModels.map((model) => [model.id, model.position])),
+        movementUsed: Object.fromEntries(participatingModels.map((model) => [
+          model.id,
+          session.models[model.id].movementUsed,
+        ])),
+      })
       return {
         ...state,
         movementSession: null,
@@ -166,22 +163,6 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       }
     }
 
-    // Retained for deterministic Milestone 1 actions and older serialized tests.
-    case 'models/moved': {
-      const resolution = resolveMovement({
-        allModels: state.models,
-        requestedPositions: new Map(Object.entries(action.positions)),
-        battlefield: state.battlefield,
-      })
-      return {
-        ...state,
-        models: state.models.map((model) => {
-          const position = resolution.positions.get(model.id)
-          return position ? { ...model, position } : model
-        }),
-      }
-    }
-
     case 'game/turnEnded': {
       if (state.movementSession) return state
       return {
@@ -190,4 +171,10 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       }
     }
   }
+}
+
+function sameIdSet(left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean {
+  if (left.length !== right.length) return false
+  const leftIds = new Set(left)
+  return leftIds.size === right.length && right.every((id) => leftIds.has(id))
 }

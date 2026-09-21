@@ -1,18 +1,14 @@
 import type { Point } from '../engine/geometry/point'
 
-export interface MoveModelsAction {
-  type: 'models/moved'
-  positions: Record<string, Point>
-}
-
 export interface StartMovementSessionAction {
   type: 'movement/sessionStarted'
   sessionId: string
   modelIds: string[]
 }
 
-export interface RequestMovementAction {
+export interface RequestRigidMovementAction {
   type: 'movement/requested'
+  /** Complete session participant endpoints representing one shared translation. */
   positions: Record<string, Point>
 }
 
@@ -22,9 +18,8 @@ export interface UndoConfirmedMovementAction { type: 'movement/undoLastConfirmed
 export interface EndTurnAction { type: 'game/turnEnded' }
 
 export type GameStateAction =
-  | MoveModelsAction
   | StartMovementSessionAction
-  | RequestMovementAction
+  | RequestRigidMovementAction
   | ConfirmMovementAction
   | CancelMovementAction
   | UndoConfirmedMovementAction

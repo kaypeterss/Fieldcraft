@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import type { GameState, TabletopModel } from '../domain/types'
+import type { Battlefield, GameState, TabletopModel } from '../domain/types'
 import { circleIntersectsRectangle, clampGroupDelta, clampModelPosition, isPointInsideBattlefield } from './geometry/battlefield'
 import { circularEdgeDistance, circlesOverlap, isGroupPlacementValid } from './geometry/circles'
 import { firstCirclePathCollisionT } from './geometry/circles'
-import { distanceBetween } from './geometry/point'
+import { distanceBetween, type Point } from './geometry/point'
 import { inchesToMillimeters, millimetersToInches } from './units'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
 import { gameReducer } from '../state/reducer'
 import { measureBetweenCircularModels } from '../tools/measurement'
 import { DRAG_THRESHOLD_PIXELS, hasDragIntent, selectionForModelPointerDown } from '../tools/selection'
 import { isEditableKeyboardTarget, isUndoMovementShortcut } from '../tools/keyboard'
-import { appendAcceptedPathPoint, resolveGroupMovement, resolveMovement } from './movement'
+import { appendAcceptedPathPoint, resolveRigidTranslation } from './movement'
 import { initialGameState } from '../game/initialState'
 
 const battlefield = { width: 60, height: 44 }
@@ -27,6 +27,36 @@ function circularModel(id: string, x: number, y: number, diameterMm = 25.4): Tab
 
 function relativeOffset(a: TabletopModel, b: TabletopModel) {
   return { x: b.position.x - a.position.x, y: b.position.y - a.position.y }
+}
+
+// Existing endpoint-oriented cases are adapted here to exercise the explicit
+// production rigid-translation API without preserving a production wrapper.
+function resolveMovement(request: {
+  allModels: ReadonlyArray<TabletopModel>
+  requestedPositions: ReadonlyMap<string, Point>
+  battlefield: Battlefield
+  remainingMovement?: ReadonlyMap<string, number>
+}) {
+  const modelIds = [...request.requestedPositions.keys()]
+  const anchor = request.allModels.find((candidate) => candidate.id === modelIds[0])
+  const destination = anchor ? request.requestedPositions.get(anchor.id) : undefined
+  return resolveRigidTranslation({
+    allModels: request.allModels,
+    modelIds,
+    translation: anchor && destination
+      ? { x: destination.x - anchor.position.x, y: destination.y - anchor.position.y }
+      : { x: 0, y: 0 },
+    battlefield: request.battlefield,
+    remainingMovement: request.remainingMovement,
+  })
+}
+
+function resolveGroupMovement(
+  allModels: ReadonlyArray<TabletopModel>,
+  requestedPositions: ReadonlyMap<string, Point>,
+  targetBattlefield: Battlefield,
+) {
+  return resolveMovement({ allModels, requestedPositions, battlefield: targetBattlefield }).positions
 }
 
 describe('unit conversion', () => {
@@ -209,9 +239,10 @@ describe('authoritative state', () => {
   }
 
   it('applies a deterministic move without mutating the previous state', () => {
-    const action = { type: 'models/moved' as const, positions: { 'model-1': { x: 12.25, y: 13.75 } } }
-    const first = gameReducer(state, action)
-    const second = gameReducer(state, action)
+    const started = gameReducer(state, { type: 'movement/sessionStarted', sessionId: 'deterministic', modelIds: ['model-1'] })
+    const action = { type: 'movement/requested' as const, positions: { 'model-1': { x: 12.25, y: 13.75 } } }
+    const first = gameReducer(started, action)
+    const second = gameReducer(started, action)
     expect(first).toEqual(second)
     expect(first.models[0].position).toEqual({ x: 12.25, y: 13.75 })
     expect(state.models[0].position).toEqual({ x: 10, y: 10 })
@@ -224,7 +255,8 @@ describe('authoritative state', () => {
   it('rejects moving a model into another model', () => {
     const other = { ...model, id: 'model-2', position: { x: 15, y: 10 }, base: { shape: 'circle' as const, diameterMm: 50.8 } }
     const crowdedState = { ...state, models: [model, other] }
-    const next = gameReducer(crowdedState, { type: 'models/moved', positions: { 'model-1': { x: 14.5, y: 10 } } })
+    const started = gameReducer(crowdedState, { type: 'movement/sessionStarted', sessionId: 'crowded', modelIds: ['model-1'] })
+    const next = gameReducer(started, { type: 'movement/requested', positions: { 'model-1': { x: 14.5, y: 10 } } })
     expect(next.models[0].position.x).toBeCloseTo(13.5)
   })
 
@@ -331,16 +363,19 @@ describe('units and movement sessions', () => {
     expect(current.models[0].position.x).toBe(16)
   })
 
-  it('tracks different movement usage for models in the same session', () => {
+  it('charges every participant for the same accepted rigid translation', () => {
     const sameUnitState: GameState = {
       ...sessionState,
       models: sessionState.models.map((candidate) => ({ ...candidate, unitId: 'unit-1' })),
       units: [{ id: 'unit-1', ownerId: 'player-a', definitionId: 'definition-1', modelIds: ['model-1', 'model-2'] }],
     }
     let current = gameReducer(sameUnitState, { type: 'movement/sessionStarted', sessionId: 'move-split', modelIds: ['model-1', 'model-2'] })
-    current = gameReducer(current, { type: 'movement/requested', positions: { 'model-1': { x: 12.25, y: 10 } } })
+    current = gameReducer(current, { type: 'movement/requested', positions: {
+      'model-1': { x: 12.25, y: 10 },
+      'model-2': { x: 12.25, y: 20 },
+    } })
     expect(current.movementSession?.models['model-1'].movementUsed).toBe(2.25)
-    expect(current.movementSession?.models['model-2'].movementUsed).toBe(0)
+    expect(current.movementSession?.models['model-2'].movementUsed).toBe(2.25)
   })
 
   it('stops a translated group at the earliest allowance while preserving formation', () => {

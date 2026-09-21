@@ -10,6 +10,7 @@ import {
 } from '../game/actionQueries'
 import { initialGameState } from '../game/initialState'
 import { getPlayerForModel, getPlayerForUnit } from '../game/selectors'
+import { createMoveAction } from '../game/moveActions'
 import { advanceTurn } from '../game/turns'
 import { gameReducer } from '../state/reducer'
 import { individualSameUnitHandoffTarget } from '../tools/selection'
@@ -47,6 +48,11 @@ describe('players and game context', () => {
     expect(getPlayerForModel(renamed, renamed.models[0])?.displayName).toBe('Kay')
     expect(renamed.units[0].ownerId).toBe('player-1')
     expect(renamed.models[0].ownerId).toBe('player-1')
+    for (const unit of state.units) {
+      for (const modelId of unit.modelIds) {
+        expect(state.models.find((model) => model.id === modelId)?.ownerId).toBe(unit.ownerId)
+      }
+    }
   })
 
   it('starts in round one with Player 1 and optional phases disabled', () => {
@@ -104,6 +110,40 @@ describe('players and game context', () => {
     })
     expect(gameReducer(state, { type: 'game/turnEnded' })).toBe(state)
   })
+
+  it('keeps ownership separate from movement permission', () => {
+    const state = freshState()
+    const moved = confirmTranslation(state, ['mdl-b-001'], -0.5, 0)
+    expect(moved.models.find((model) => model.id === 'mdl-b-001')?.position.x).toBe(40.5)
+    expect(moved.actionHistory[0].playerId).toBe('player-1')
+    expect(moved.actionHistory[0].payload.ownerIds).toEqual(['player-2'])
+  })
+
+  it('rejects partial or non-rigid requests and accepts reordered complete participants', () => {
+    const started = gameReducer(freshState(), {
+      type: 'movement/sessionStarted',
+      sessionId: 'rigid-participants',
+      modelIds: ['mdl-a-001', 'mdl-a-002'],
+    })
+    expect(gameReducer(started, {
+      type: 'movement/requested',
+      positions: { 'mdl-a-001': { x: 8.5, y: 9 } },
+    })).toBe(started)
+    expect(gameReducer(started, {
+      type: 'movement/requested',
+      positions: {
+        'mdl-a-002': { x: 10.5, y: 9 },
+        'mdl-a-001': { x: 8.5, y: 9 },
+      },
+    }).models.filter((model) => ['mdl-a-001', 'mdl-a-002'].includes(model.id)).map((model) => model.position.x)).toEqual([8.5, 10.5])
+    expect(gameReducer(started, {
+      type: 'movement/requested',
+      positions: {
+        'mdl-a-001': { x: 8.5, y: 9 },
+        'mdl-a-002': { x: 10.25, y: 9 },
+      },
+    })).toBe(started)
+  })
 })
 
 describe('confirmed move actions', () => {
@@ -132,6 +172,17 @@ describe('confirmed move actions', () => {
       },
     })
     expect(confirmed.actionHistory[0].payload.movementUsed['mdl-a-001']).toBeCloseTo(0.5)
+
+    const finalModel = confirmed.models.find((model) => model.id === 'mdl-a-001')!
+    expect(confirmed.actionHistory[0]).toEqual(createMoveAction({
+      sequence: 1,
+      actorPlayerId: state.gameContext.activePlayerId,
+      gameContext: state.gameContext,
+      affectedModels: [finalModel],
+      startingPositions: { 'mdl-a-001': { x: 9, y: 9 } },
+      finalPositions: { 'mdl-a-001': { x: 8.5, y: 9 } },
+      movementUsed: { 'mdl-a-001': 0.5 },
+    }))
   })
 
   it('captures an optional phase when the current configuration supplies one', () => {

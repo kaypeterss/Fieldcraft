@@ -1,5 +1,6 @@
 import type { Battlefield, TabletopModel } from '../../domain/types'
 import type { Point } from './point'
+import { GEOMETRY_EPSILON } from './tolerance'
 import { millimetersToInches } from '../units'
 
 export function isPointInsideBattlefield(point: Point, battlefield: Battlefield): boolean {
@@ -26,6 +27,18 @@ export function clampModelPosition(
     x: Math.min(battlefield.width - radius, Math.max(radius, position.x)),
     y: Math.min(battlefield.height - radius, Math.max(radius, position.y)),
   }
+}
+
+export function isModelPositionInsideBattlefield(
+  position: Point,
+  model: Pick<TabletopModel, 'base'>,
+  battlefield: Battlefield,
+): boolean {
+  const radius = millimetersToInches(model.base.diameterMm) / 2
+  return position.x >= radius - GEOMETRY_EPSILON
+    && position.x <= battlefield.width - radius + GEOMETRY_EPSILON
+    && position.y >= radius - GEOMETRY_EPSILON
+    && position.y <= battlefield.height - radius + GEOMETRY_EPSILON
 }
 
 export function clampGroupDelta(
