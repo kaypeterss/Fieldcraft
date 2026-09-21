@@ -11,7 +11,7 @@ import {
   modelsWithinRangeOfUnit,
   rangeRadiusForBase,
 } from './spatial'
-import { measureBetweenCircularModels } from '../tools/measurement'
+import { measureBetweenTargets } from '../tools/measurement'
 
 function model(id: string, x: number, y: number, diameterMm = 25.4, unitId = 'unit-a'): TabletopModel {
   return {
@@ -46,7 +46,12 @@ describe('spatial base distances', () => {
   it('agrees with measurement-tool geometry', () => {
     const a = model('a', 2, 3, 32)
     const b = model('b', 8, 7, 50)
-    expect(measureBetweenCircularModels(a, b).distanceInches).toBe(distanceBetweenBases(a, b))
+    const measurement = measureBetweenTargets(
+      { models: [a, b], units: [] },
+      { type: 'model', modelId: a.id },
+      { type: 'model', modelId: b.id },
+    )
+    expect(measurement?.distanceInches).toBe(distanceBetweenBases(a, b))
   })
 
   it('measures from the base edge to outside, edge, and interior points', () => {
@@ -109,7 +114,9 @@ describe('unit distances', () => {
       [model('a1', 0, 0), model('a2', 10, 0)],
       [model('b1', 20, 0), model('b2', 12, 0)],
     )
-    expect(result).toEqual({ distance: 1, sourceModelId: 'a2', targetModelId: 'b2' })
+    expect(result).toMatchObject({ distance: 1, sourceModelId: 'a2', targetModelId: 'b2' })
+    expect(result?.startAnchor).toEqual({ x: 10.5, y: 0 })
+    expect(result?.endAnchor).toEqual({ x: 11.5, y: 0 })
   })
 
   it('handles unequal unit sizes and empty units', () => {

@@ -1,5 +1,10 @@
 import type { CircularBase, TabletopModel } from '../domain/types'
-import { circularEdgeDistance } from './geometry/circles'
+import {
+  circularEdgeDistance,
+  closestPointsBetweenCircleAndPoint,
+  closestPointsBetweenCircles,
+  type ClosestPointsResult,
+} from './geometry/circles'
 import { distanceBetween } from './geometry/point'
 import type { Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
@@ -13,6 +18,15 @@ export interface UnitDistanceResult {
   distance: number
   sourceModelId: string
   targetModelId: string
+  startAnchor: Point
+  endAnchor: Point
+}
+
+export interface UnitPointDistanceResult {
+  distance: number
+  modelId: string
+  modelAnchor: Point
+  pointAnchor: Point
 }
 
 export function baseRadiusInches(base: CircularBase): number {
@@ -29,9 +43,22 @@ export function distanceBetweenBases(a: TabletopModel, b: TabletopModel): number
   )
 }
 
+export function closestPointsBetweenBases(a: TabletopModel, b: TabletopModel): ClosestPointsResult {
+  return closestPointsBetweenCircles(
+    a.position,
+    baseRadiusInches(a.base),
+    b.position,
+    baseRadiusInches(b.base),
+  )
+}
+
 /** Shortest distance from a model base to a tabletop point. */
 export function distanceFromBaseToPoint(model: TabletopModel, point: Point): number {
   return Math.max(0, distanceBetween(model.position, point) - baseRadiusInches(model.base))
+}
+
+export function closestPointsFromBaseToPoint(model: TabletopModel, point: Point): ClosestPointsResult {
+  return closestPointsBetweenCircleAndPoint(model.position, baseRadiusInches(model.base), point)
 }
 
 export function rangeRadiusForBase(base: CircularBase, range: number): number {
@@ -76,9 +103,36 @@ export function minimumDistanceBetweenUnits(
   let closest: UnitDistanceResult | null = null
   for (const source of sourceModels) {
     for (const target of targetModels) {
-      const distance = distanceBetweenBases(source, target)
+      const closestPoints = closestPointsBetweenBases(source, target)
+      const distance = closestPoints.distance
       if (!closest || distance < closest.distance) {
-        closest = { distance, sourceModelId: source.id, targetModelId: target.id }
+        closest = {
+          distance,
+          sourceModelId: source.id,
+          targetModelId: target.id,
+          startAnchor: closestPoints.startAnchor,
+          endAnchor: closestPoints.endAnchor,
+        }
+      }
+    }
+  }
+  return closest
+}
+
+/** Returns null when the unit has no models. */
+export function minimumDistanceFromUnitToPoint(
+  models: ReadonlyArray<TabletopModel>,
+  point: Point,
+): UnitPointDistanceResult | null {
+  let closest: UnitPointDistanceResult | null = null
+  for (const model of models) {
+    const closestPoints = closestPointsFromBaseToPoint(model, point)
+    if (!closest || closestPoints.distance < closest.distance) {
+      closest = {
+        distance: closestPoints.distance,
+        modelId: model.id,
+        modelAnchor: closestPoints.startAnchor,
+        pointAnchor: closestPoints.endAnchor,
       }
     }
   }

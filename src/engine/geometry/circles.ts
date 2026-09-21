@@ -13,6 +13,72 @@ export function circularEdgeDistance(
   return Math.max(0, distanceBetween(centerA, centerB) - radiusA - radiusB)
 }
 
+export interface ClosestPointsResult {
+  distance: number
+  startAnchor: Point
+  endAnchor: Point
+}
+
+export function closestPointsBetweenCircles(
+  centerA: Point,
+  radiusA: number,
+  centerB: Point,
+  radiusB: number,
+): ClosestPointsResult {
+  const dx = centerB.x - centerA.x
+  const dy = centerB.y - centerA.y
+  const centerDistance = Math.hypot(dx, dy)
+  const direction = centerDistance <= GEOMETRY_EPSILON
+    ? { x: 1, y: 0 }
+    : { x: dx / centerDistance, y: dy / centerDistance }
+  const distance = Math.max(0, centerDistance - radiusA - radiusB)
+
+  if (distance > 0 || centerDistance >= radiusA + radiusB) {
+    return {
+      distance,
+      startAnchor: {
+        x: centerA.x + direction.x * radiusA,
+        y: centerA.y + direction.y * radiusA,
+      },
+      endAnchor: {
+        x: centerB.x - direction.x * radiusB,
+        y: centerB.y - direction.y * radiusB,
+      },
+    }
+  }
+
+  const sharedStart = Math.max(-radiusA, centerDistance - radiusB)
+  const sharedEnd = Math.min(radiusA, centerDistance + radiusB)
+  const sharedOffset = (sharedStart + sharedEnd) / 2
+  const shared = {
+    x: centerA.x + direction.x * sharedOffset,
+    y: centerA.y + direction.y * sharedOffset,
+  }
+  return { distance: 0, startAnchor: shared, endAnchor: { ...shared } }
+}
+
+export function closestPointsBetweenCircleAndPoint(
+  center: Point,
+  radius: number,
+  point: Point,
+): ClosestPointsResult {
+  const dx = point.x - center.x
+  const dy = point.y - center.y
+  const centerDistance = Math.hypot(dx, dy)
+  if (centerDistance <= radius) {
+    return { distance: 0, startAnchor: { ...point }, endAnchor: { ...point } }
+  }
+  const direction = { x: dx / centerDistance, y: dy / centerDistance }
+  return {
+    distance: centerDistance - radius,
+    startAnchor: {
+      x: center.x + direction.x * radius,
+      y: center.y + direction.y * radius,
+    },
+    endAnchor: { ...point },
+  }
+}
+
 export function circlesOverlap(
   centerA: Point,
   radiusA: number,

@@ -3,7 +3,11 @@ import { initialGameState } from './game/initialState'
 import { canUndoLastMovement, getMovementAllowance, getPlayerForModel, getUnitDefinition, getUnitForModel } from './game/selectors'
 import { TabletopCanvas } from './rendering/pixi/TabletopCanvas'
 import { gameReducer } from './state/reducer'
-import { measureBetweenCircularModels, type MeasurementPair } from './tools/measurement'
+import {
+  measureBetweenTargets,
+  type MeasurementPair,
+  type MeasurementTarget,
+} from './tools/measurement'
 import { DebugPanel } from './ui/DebugPanel'
 import { Toolbar, type ActiveTool } from './ui/Toolbar'
 import { MovementPanel, type MovementSummary } from './ui/MovementPanel'
@@ -18,7 +22,7 @@ export default function App() {
   const [gameState, dispatch] = useReducer(gameReducer, initialGameState)
   const [activeTool, setActiveTool] = useState<ActiveTool>('select')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [measurementStartId, setMeasurementStartId] = useState<string | null>(null)
+  const [measurementStartTarget, setMeasurementStartTarget] = useState<MeasurementTarget | null>(null)
   const [measurementPair, setMeasurementPair] = useState<MeasurementPair | null>(null)
   const [resetCameraSignal, setResetCameraSignal] = useState(0)
   const [spatialMode, setSpatialMode] = useState<SpatialMode>('range')
@@ -88,27 +92,23 @@ export default function App() {
 
   const measurement = useMemo(() => {
     if (!measurementPair) return null
-    const from = gameState.models.find((model) => model.id === measurementPair.fromModelId)
-    const to = gameState.models.find((model) => model.id === measurementPair.toModelId)
-    return from && to ? measureBetweenCircularModels(from, to) : null
-  }, [gameState.models, measurementPair])
+    return measureBetweenTargets(gameState, measurementPair.targetA, measurementPair.targetB)
+  }, [gameState, measurementPair])
 
   const changeTool = useCallback((tool: ActiveTool) => {
     setActiveTool(tool)
-    if (tool !== 'measure') setMeasurementStartId(null)
+    if (tool !== 'measure') setMeasurementStartTarget(null)
   }, [])
 
-  const handleMeasureModel = useCallback((id: string) => {
-    if (!measurementStartId || measurementStartId === id) {
-      setMeasurementStartId(id)
+  const handleMeasureTarget = useCallback((target: MeasurementTarget) => {
+    if (!measurementStartTarget || measurementPair) {
+      setMeasurementStartTarget(target)
       setMeasurementPair(null)
       return
     }
-    const from = gameState.models.find((model) => model.id === measurementStartId)
-    const to = gameState.models.find((model) => model.id === id)
-    if (from && to) setMeasurementPair({ fromModelId: from.id, toModelId: to.id })
-    setMeasurementStartId(null)
-  }, [gameState.models, measurementStartId])
+    setMeasurementPair({ targetA: measurementStartTarget, targetB: target })
+    setMeasurementStartTarget(null)
+  }, [measurementPair, measurementStartTarget])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -132,14 +132,17 @@ export default function App() {
           dispatch({ type: 'movement/cancelled' })
           return
         }
+        if (measurementStartTarget || measurementPair) {
+          setMeasurementStartTarget(null)
+          setMeasurementPair(null)
+          return
+        }
         setSelectedIds(new Set())
-        setMeasurementStartId(null)
-        setMeasurementPair(null)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [changeTool, gameState])
+  }, [changeTool, gameState, measurementPair, measurementStartTarget])
 
   const handleEndTurn = useCallback(() => {
     if (gameState.movementSession) {
@@ -181,11 +184,12 @@ export default function App() {
           activeTool={activeTool}
           selectedIds={selectedIds}
           measurement={measurement}
-          measurementStartId={measurementStartId}
+          measurementTargetA={measurementPair?.targetA ?? measurementStartTarget}
+          measurementTargetB={measurementPair?.targetB ?? null}
           spatialOverlay={spatialOverlay}
           resetCameraSignal={resetCameraSignal}
           onSelectionChange={setSelectedIds}
-          onMeasureModel={handleMeasureModel}
+          onMeasureTarget={handleMeasureTarget}
           dispatch={dispatch}
         />
         <DebugPanel

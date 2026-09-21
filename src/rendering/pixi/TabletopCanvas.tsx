@@ -9,12 +9,12 @@ import {
   type FederatedPointerEvent,
 } from 'pixi.js'
 import type { GameState } from '../../domain/types'
-import { circleIntersectsRectangle } from '../../engine/geometry/battlefield'
+import { circleIntersectsRectangle, isPointInsideBattlefield } from '../../engine/geometry/battlefield'
 import type { Point } from '../../engine/geometry/point'
 import { millimetersToInches } from '../../engine/units'
 import { baseRadiusInches, exclusionRadiusForTargetBase, rangeRadiusForBase } from '../../engine/spatial'
 import type { GameStateAction } from '../../state/actions'
-import type { ModelMeasurement } from '../../tools/measurement'
+import type { MeasurementResult, MeasurementTarget } from '../../tools/measurement'
 import { hasDragIntent, individualSameUnitHandoffTarget, selectionForModelPointerDown } from '../../tools/selection'
 import type { SpatialOverlayConfig } from '../../tools/spatialOverlay'
 import type { ActiveTool } from '../../ui/Toolbar'
@@ -23,12 +23,13 @@ interface TabletopCanvasProps {
   gameState: GameState
   activeTool: ActiveTool
   selectedIds: ReadonlySet<string>
-  measurement: ModelMeasurement | null
-  measurementStartId: string | null
+  measurement: MeasurementResult | null
+  measurementTargetA: MeasurementTarget | null
+  measurementTargetB: MeasurementTarget | null
   spatialOverlay: SpatialOverlayConfig | null
   resetCameraSignal: number
   onSelectionChange: (ids: Set<string>) => void
-  onMeasureModel: (id: string) => void
+  onMeasureTarget: (target: MeasurementTarget) => void
   dispatch: (action: GameStateAction) => void
 }
 
@@ -111,11 +112,19 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
       app.renderer.on('resize', updateHitArea)
 
       app.stage.on('pointerdown', (event: FederatedPointerEvent) => {
-        if (event.target !== app.stage) return
-        if (propsRef.current.activeTool !== 'measure') {
+        if (propsRef.current.activeTool === 'measure') {
+          if (event.button === 0) {
+            const point = screenToWorld(event.global, cameraRef.current)
+            if (isPointInsideBattlefield(point, propsRef.current.gameState.battlefield)) {
+              propsRef.current.onMeasureTarget({ type: 'point', point })
+            }
+          }
+        } else {
           if (event.button === 0 && !propsRef.current.gameState.movementSession) {
             const start = screenToWorld(event.global, cameraRef.current)
-            selectionBoxRef.current = { start, current: start, additive: event.shiftKey, active: false }
+            if (isPointInsideBattlefield(start, propsRef.current.gameState.battlefield)) {
+              selectionBoxRef.current = { start, current: start, additive: event.shiftKey, active: false }
+            }
           } else if (event.button !== 0) {
             panRef.current = {
               start: { x: event.global.x, y: event.global.y },
@@ -238,7 +247,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
   useEffect(() => {
     const world = worldRef.current
     if (world) drawScene(world, propsRef, dragRef, cameraRef, selectionBoxRef)
-  }, [props.gameState, props.selectedIds, props.activeTool, props.measurement, props.measurementStartId, props.spatialOverlay])
+  }, [props.gameState, props.selectedIds, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay])
 
   useEffect(() => {
     if (props.resetCameraSignal > 0) fitCamera()
@@ -249,7 +258,11 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
       <div className="board-size-badge"><strong>60</strong> × <strong>44</strong> IN</div>
       <div className="interaction-hint">
         {props.activeTool === 'measure'
-          ? props.measurementStartId ? 'Choose a second model' : 'Choose a starting model'
+          ? props.measurementTargetB
+            ? 'Measurement complete · choose any target to start another'
+            : props.measurementTargetA
+              ? 'Choose a second model, unit, or battlefield point'
+              : 'Click model or point · Ctrl/Cmd-click model for unit'
           : props.activeTool === 'spatial'
             ? 'Select a model or Ctrl/Cmd-click a whole unit · overlays do not restrict movement'
           : 'Click model · Shift multi-select · Ctrl/Cmd unit · Drag empty space to box select · Ctrl/Cmd+Z undo'}
@@ -313,15 +326,23 @@ function drawScene(
     const radius = millimetersToInches(model.base.diameterMm) / 2
     const colors = OWNER_COLORS[model.ownerId] ?? { fill: 0x8f9290, rim: 0xcfd3d0 }
     const selected = props.selectedIds.has(model.id)
-    const measuring = props.measurementStartId === model.id
+    const measurementHighlightActive = props.activeTool === 'measure'
+    const measuringA = measurementHighlightActive
+      && measurementTargetIncludesModel(props.measurementTargetA, model.id, props.gameState)
+    const measuringB = measurementHighlightActive
+      && measurementTargetIncludesModel(props.measurementTargetB, model.id, props.gameState)
     const token = new Container()
     token.position.set(model.position.x, model.position.y)
     token.eventMode = 'static'
     token.cursor = props.activeTool === 'measure' ? 'crosshair' : 'grab'
     token.hitArea = new Rectangle(-radius, -radius, radius * 2, radius * 2)
 
-    if (selected || measuring) {
-      token.addChild(new Graphics().circle(0, 0, radius + 0.2).stroke({ color: measuring ? 0xf1c969 : 0xf3e4b7, width: 0.14, alpha: 0.95 }))
+    if (selected || measuringA || measuringB) {
+      token.addChild(new Graphics().circle(0, 0, radius + 0.2).stroke({
+        color: measuringB ? 0x8bd4ee : measuringA ? 0xf1c969 : 0xf3e4b7,
+        width: measuringA || measuringB ? 0.16 : 0.14,
+        alpha: 0.95,
+      }))
     }
     token.addChild(new Graphics()
       .circle(0.05, 0.08, radius).fill({ color: 0x07100d, alpha: 0.3 })
@@ -340,8 +361,13 @@ function drawScene(
     token.on('pointerdown', (event: FederatedPointerEvent) => {
       event.stopPropagation()
       const currentProps = propsRef.current
+      const unit = currentProps.gameState.units.find((candidate) => candidate.id === model.unitId)
       if (currentProps.activeTool === 'measure') {
-        currentProps.onMeasureModel(model.id)
+        if (event.button === 0) {
+          currentProps.onMeasureTarget(event.ctrlKey || event.metaKey
+            ? { type: 'unit', unitId: unit?.id ?? model.unitId }
+            : { type: 'model', modelId: model.id })
+        }
         return
       }
       const activeSessionIds = currentProps.gameState.movementSession?.modelIds
@@ -371,7 +397,6 @@ function drawScene(
         }
         return
       }
-      const unit = currentProps.gameState.units.find((candidate) => candidate.id === model.unitId)
       if (unitKey && !activeSessionIds) {
         currentProps.onSelectionChange(selectionForModelPointerDown(
           currentProps.selectedIds,
@@ -423,11 +448,16 @@ function drawScene(
 
   // Analysis overlays are deliberately added after model tokens. They remain
   // visually legible while staying non-interactive so model pointer events win.
-  if (props.measurement) {
-    const from = models.find((model) => model.id === props.measurement?.fromModelId)
-    const to = models.find((model) => model.id === props.measurement?.toModelId)
-    if (from && to) drawMeasurement(world, from.position, to.position, props.measurement.distanceInches)
+  if (props.activeTool === 'measure') {
+    drawMeasurementPointTarget(world, props.measurementTargetA, 0xf1c969, 'A')
+    drawMeasurementPointTarget(world, props.measurementTargetB, 0x8bd4ee, 'B')
   }
+  if (props.measurement) drawMeasurement(
+    world,
+    props.measurement.startAnchor,
+    props.measurement.endAnchor,
+    props.measurement.distanceInches,
+  )
 
   const selectionBox = selectionBoxRef.current
   if (selectionBox?.active) drawSelectionBox(world, selectionBox.start, selectionBox.current)
@@ -517,6 +547,42 @@ function drawCoherencyStatus(
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return a.size === b.size && [...a].every((value) => b.has(value))
+}
+
+function measurementTargetIncludesModel(
+  target: MeasurementTarget | null,
+  modelId: string,
+  gameState: GameState,
+): boolean {
+  if (!target || target.type === 'point') return false
+  if (target.type === 'model') return target.modelId === modelId
+  return gameState.units.find((unit) => unit.id === target.unitId)?.modelIds.includes(modelId) ?? false
+}
+
+function drawMeasurementPointTarget(
+  world: Container,
+  target: MeasurementTarget | null,
+  color: number,
+  label: string,
+) {
+  if (target?.type !== 'point') return
+  const { point } = target
+  const marker = new Graphics()
+    .moveTo(point.x - 0.22, point.y).lineTo(point.x + 0.22, point.y)
+    .moveTo(point.x, point.y - 0.22).lineTo(point.x, point.y + 0.22)
+    .circle(point.x, point.y, 0.11)
+    .stroke({ color, width: 0.08, alpha: 0.98 })
+  marker.eventMode = 'none'
+  const text = new Text({
+    text: label,
+    style: new TextStyle({ fontFamily: 'Arial', fontSize: 16, fontWeight: '700', fill: color }),
+    resolution: 4,
+  })
+  text.anchor.set(0.5)
+  text.scale.set(0.3 / 16)
+  text.position.set(point.x + 0.3, point.y - 0.3)
+  text.eventMode = 'none'
+  world.addChild(marker, text)
 }
 
 function normalizeRectangle(a: Point, b: Point) {

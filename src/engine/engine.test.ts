@@ -7,7 +7,7 @@ import { distanceBetween, type Point } from './geometry/point'
 import { inchesToMillimeters, millimetersToInches } from './units'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
 import { gameReducer } from '../state/reducer'
-import { measureBetweenCircularModels } from '../tools/measurement'
+import { measureBetweenTargets } from '../tools/measurement'
 import { DRAG_THRESHOLD_PIXELS, hasDragIntent, selectionForModelPointerDown } from '../tools/selection'
 import { isEditableKeyboardTarget, isUndoMovementShortcut } from '../tools/keyboard'
 import { appendAcceptedPathPoint, resolveRigidTranslation } from './movement'
@@ -23,6 +23,14 @@ const model: TabletopModel = {
 
 function circularModel(id: string, x: number, y: number, diameterMm = 25.4): TabletopModel {
   return { ...model, id, position: { x, y }, base: { shape: 'circle', diameterMm } }
+}
+
+function measureModels(source: TabletopModel, target: TabletopModel) {
+  return measureBetweenTargets(
+    { models: [source, target], units: [] },
+    { type: 'model', modelId: source.id },
+    { type: 'model', modelId: target.id },
+  )
 }
 
 function relativeOffset(a: TabletopModel, b: TabletopModel) {
@@ -301,10 +309,10 @@ describe('authoritative state', () => {
 
   it('derives a measurement from current model positions', () => {
     const moved = { ...model, position: { x: 14, y: 10 } }
-    const initial = measureBetweenCircularModels(model, { ...model, id: 'model-2', position: { x: 15, y: 10 } })
-    const afterMove = measureBetweenCircularModels(moved, { ...model, id: 'model-2', position: { x: 15, y: 10 } })
-    expect(afterMove.distanceInches).toBeLessThan(initial.distanceInches)
-    expect(measureBetweenCircularModels(model, { ...model, id: 'model-2', position: { x: 11, y: 10 } }).distanceInches).toBe(0)
+    const initial = measureModels(model, { ...model, id: 'model-2', position: { x: 15, y: 10 } })
+    const afterMove = measureModels(moved, { ...model, id: 'model-2', position: { x: 15, y: 10 } })
+    expect(afterMove!.distanceInches).toBeLessThan(initial!.distanceInches)
+    expect(measureModels(model, { ...model, id: 'model-2', position: { x: 11, y: 10 } })?.distanceInches).toBe(0)
   })
 })
 
