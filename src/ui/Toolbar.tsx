@@ -1,8 +1,11 @@
-export type ActiveTool = 'select' | 'measure' | 'spatial' | 'smart-move'
+/** Mutually exclusive primary pointer interactions. Spatial is an independent overlay. */
+export type ActiveTool = 'select' | 'measure' | 'smart-move'
 
 interface ToolbarProps {
   activeTool: ActiveTool
+  spatialEnabled: boolean
   onToolChange: (tool: ActiveTool) => void
+  onSpatialToggle: () => void
   onResetCamera: () => void
 }
 
@@ -51,7 +54,7 @@ function SmartMoveIcon() {
   )
 }
 
-export function Toolbar({ activeTool, onToolChange, onResetCamera }: ToolbarProps) {
+export function Toolbar({ activeTool, spatialEnabled, onToolChange, onSpatialToggle, onResetCamera }: ToolbarProps) {
   return (
     <nav className="toolbar" aria-label="Tabletop tools">
       <div className="brand-mark" aria-hidden="true"><span /></div>
@@ -71,9 +74,9 @@ export function Toolbar({ activeTool, onToolChange, onResetCamera }: ToolbarProp
           <MeasureIcon /><span>Measure</span><kbd>M</kbd>
         </button>
         <button
-          className={activeTool === 'spatial' ? 'tool-button active' : 'tool-button'}
-          onClick={() => onToolChange('spatial')}
-          aria-pressed={activeTool === 'spatial'}
+          className={spatialEnabled ? 'tool-button active' : 'tool-button'}
+          onClick={onSpatialToggle}
+          aria-pressed={spatialEnabled}
         >
           <SpatialIcon /><span>Spatial</span><kbd>S</kbd>
         </button>

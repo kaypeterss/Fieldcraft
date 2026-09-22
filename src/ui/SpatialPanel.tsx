@@ -11,6 +11,10 @@ interface SpatialPanelProps {
   range: number
   requiredSeparation: number
   targetBaseDiameterMm: number
+  targetModelId: string | null
+  targetModelOptions: Array<{ id: string; label: string }>
+  sourceGeometryLabel: string
+  targetGeometryLabel: string
   coherencyAnalysisMode: CoherencyAnalysisMode
   coherencyPolicy: CoherencyPolicy
   customCoherencyPolicy: CoherencyPolicy
@@ -22,6 +26,7 @@ interface SpatialPanelProps {
   onRangeChange: (range: number) => void
   onRequiredSeparationChange: (distance: number) => void
   onTargetBaseDiameterChange: (diameterMm: number) => void
+  onTargetModelChange: (modelId: string | null) => void
   onCoherencyAnalysisModeChange: (mode: CoherencyAnalysisMode) => void
   onCoherencyPolicyChange: (policy: CoherencyPolicy) => void
 }
@@ -49,6 +54,7 @@ export function SpatialPanel(props: SpatialPanelProps) {
       {props.mode === 'range' && (
         <>
           <div className="panel-section-label">BASE-EDGE RANGE</div>
+          <GeometrySummary source={props.sourceGeometryLabel} />
           <PresetButtons values={RANGE_PRESETS} value={props.range} suffix="″" onChange={props.onRangeChange} />
           <NumberField key={`range-${props.range}`} label="Custom range" value={props.range} min={0.01} step="any" suffix="in" onChange={props.onRangeChange} />
         </>
@@ -56,16 +62,31 @@ export function SpatialPanel(props: SpatialPanelProps) {
 
       {props.mode === 'exclusion' && (
         <>
-          <div className="panel-section-label">TARGET-CENTER EXCLUSION</div>
+          <div className="panel-section-label">TARGET-ORIGIN EXCLUSION</div>
+          <GeometrySummary source={props.sourceGeometryLabel} target={props.targetGeometryLabel} />
           <NumberField key={`separation-${props.requiredSeparation}`} label="Required separation" value={props.requiredSeparation} min={0} step="any" suffix="in" onChange={props.onRequiredSeparationChange} />
-          <div className="spatial-field-label">Target base</div>
-          <PresetButtons values={TARGET_BASE_PRESETS} value={props.targetBaseDiameterMm} suffix="mm" onChange={props.onTargetBaseDiameterChange} />
+          <label className="spatial-select-field">
+            <span>Target footprint</span>
+            <select
+              aria-label="Target footprint"
+              value={props.targetModelId ?? ''}
+              onChange={(event) => props.onTargetModelChange(event.target.value || null)}
+            >
+              <option value="">Manual circle</option>
+              {props.targetModelOptions.map((option) => (
+                <option key={option.id} value={option.id}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <div className="spatial-field-label">Manual circle presets</div>
+          <PresetButtons values={TARGET_BASE_PRESETS} value={props.targetModelId ? Number.NaN : props.targetBaseDiameterMm} suffix="mm" onChange={props.onTargetBaseDiameterChange} />
         </>
       )}
 
       {props.mode === 'coherency' && (
         <>
           <div className="panel-section-label">COHERENCY POLICY</div>
+          <GeometrySummary source={props.sourceGeometryLabel} />
           <div className="segmented-control" aria-label="Coherency policy source">
             <button
               className={props.coherencyAnalysisMode === 'unit-policy' ? 'active' : ''}
@@ -116,6 +137,15 @@ export function SpatialPanel(props: SpatialPanelProps) {
       )}
       <p className="spatial-note">Overlay only · movement remains permissive</p>
     </aside>
+  )
+}
+
+function GeometrySummary({ source, target }: { source: string; target?: string }) {
+  return (
+    <dl className="spatial-policy-summary spatial-geometry-summary">
+      <div><dt>Source</dt><dd>{source}</dd></div>
+      {target && <div><dt>Target</dt><dd>{target}</dd></div>}
+    </dl>
   )
 }
 

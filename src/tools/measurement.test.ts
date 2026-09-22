@@ -74,6 +74,66 @@ describe('generic measurement targets', () => {
     expect(result?.endAnchor).toEqual({ x: 4, y: 0 })
   })
 
+  it('measures between rotated non-circular footprint edges', () => {
+    const ellipse: TabletopModel = {
+      ...model('ellipse', 0, 0),
+      rotation: Math.PI / 2,
+      base: { shape: 'ellipse', widthMm: 50.8, heightMm: 25.4 },
+    }
+    const rectangle: TabletopModel = {
+      ...model('rectangle', 5, 0),
+      base: { shape: 'rectangle', widthMm: 50.8, heightMm: 25.4 },
+    }
+    const result = measureBetweenTargets(
+      { models: [ellipse, rectangle], units: [] },
+      targetModel(ellipse.id),
+      targetModel(rectangle.id),
+    )
+    expect(result?.distanceInches).toBeCloseTo(3.5)
+    expect(result?.startAnchor.x).toBeCloseTo(0.5)
+    expect(result?.startAnchor.y).toBeCloseTo(0)
+    expect(result?.endAnchor.x).toBeCloseTo(4)
+    expect(result?.endAnchor.y).toBeCloseTo(0)
+  })
+
+  it('uses rotated footprint anchors across model, unit, and point targets', () => {
+    const oval: TabletopModel = {
+      ...model('oval', 0, 0, 25.4, 'unit-a'),
+      rotation: Math.PI / 2,
+      base: { shape: 'ellipse', widthMm: 50.8, heightMm: 25.4 },
+    }
+    const rectangle: TabletopModel = {
+      ...model('rectangle', 4, 0, 25.4, 'unit-b'),
+      base: { shape: 'rectangle', widthMm: 50.8, heightMm: 25.4 },
+    }
+    const hull: TabletopModel = {
+      ...model('hull', 10, 0, 25.4, 'unit-b'),
+      rotation: Math.PI / 2,
+      base: {
+        shape: 'polygon',
+        verticesMm: [{ x: -25.4, y: -12.7 }, { x: 25.4, y: -12.7 }, { x: 0, y: 25.4 }],
+      },
+    }
+    const state = {
+      models: [oval, rectangle, hull],
+      units: [unit('unit-a', ['oval']), unit('unit-b', ['rectangle', 'hull'])],
+    }
+
+    const modelToUnit = measureBetweenTargets(state, targetModel('oval'), targetUnit('unit-b'))
+    expect(modelToUnit).toMatchObject({ sourceModelId: 'oval', targetModelId: 'rectangle' })
+    expect(modelToUnit?.distanceInches).toBeCloseTo(2.5)
+    expect(distanceBetween(modelToUnit!.startAnchor, modelToUnit!.endAnchor)).toBeCloseTo(modelToUnit!.distanceInches)
+
+    const unitToPoint = measureBetweenTargets(state, targetUnit('unit-b'), targetPoint(12, 0))
+    expect(unitToPoint?.sourceModelId).toBe('hull')
+    expect(distanceBetween(unitToPoint!.startAnchor, unitToPoint!.endAnchor)).toBeCloseTo(unitToPoint!.distanceInches)
+    expect(unitToPoint!.startAnchor).not.toEqual(hull.position)
+
+    const unitToUnit = measureBetweenTargets(state, targetUnit('unit-a'), targetUnit('unit-b'))
+    expect(unitToUnit?.startAnchor).toEqual(modelToUnit?.startAnchor)
+    expect(unitToUnit?.endAnchor).toEqual(modelToUnit?.endAnchor)
+  })
+
   it('returns coincident anchors for touching, overlapping, and concentric bases', () => {
     const cases = [
       [model('a', 0, 0), model('b', 1, 0)],

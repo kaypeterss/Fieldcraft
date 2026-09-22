@@ -337,10 +337,8 @@ describe('units and movement sessions', () => {
   }
 
   it('keeps normalized Unit and UnitDefinition relationships independent', () => {
-    expect(initialGameState.units).toHaveLength(9)
-    expect(initialGameState.units[0].modelIds).toHaveLength(10)
-    expect(initialGameState.units[1].modelIds).toHaveLength(10)
-    expect(initialGameState.units[2].modelIds).toHaveLength(10)
+    expect(initialGameState.units).toHaveLength(7)
+    expect(initialGameState.units.map((unit) => unit.modelIds.length)).toEqual([10, 20, 6, 5, 3, 3, 10])
     expect(initialGameState.units[0].ownerId).toBe('player-1')
     expect(initialGameState.unitDefinitions.find((definition) => definition.id === initialGameState.units[0].definitionId)?.movementAllowance).toBe(6)
   })
@@ -356,7 +354,7 @@ describe('units and movement sessions', () => {
   })
 
   it('accumulates actual accepted path segments when direction changes', () => {
-    let current = gameReducer(sessionState, { type: 'movement/sessionStarted', sessionId: 'move-test', modelIds: ['model-1'] })
+    let current = gameReducer(sessionState, { type: 'movement/sessionStarted', sessionId: 'move-test', modelIds: ['model-1'], movementPolicy: { type: 'free-rotation' } })
     current = gameReducer(current, { type: 'movement/requested', positions: { 'model-1': { x: 12, y: 10 } } })
     current = gameReducer(current, { type: 'movement/requested', positions: { 'model-1': { x: 12, y: 13 } } })
     expect(current.movementSession?.models['model-1'].movementUsed).toBe(5)
@@ -364,7 +362,7 @@ describe('units and movement sessions', () => {
   })
 
   it('stops exactly at allowance and preserves full precision', () => {
-    let current = gameReducer(sessionState, { type: 'movement/sessionStarted', sessionId: 'move-limit', modelIds: ['model-1'] })
+    let current = gameReducer(sessionState, { type: 'movement/sessionStarted', sessionId: 'move-limit', modelIds: ['model-1'], movementPolicy: { type: 'free-rotation' } })
     current = gameReducer(current, { type: 'movement/requested', positions: { 'model-1': { x: 20, y: 10 } } })
     expect(current.models[0].position.x).toBe(16)
     expect(current.movementSession?.models['model-1'].movementUsed).toBe(6)
@@ -388,7 +386,7 @@ describe('units and movement sessions', () => {
   })
 
   it('stops a translated group at the earliest allowance while preserving formation', () => {
-    let current = gameReducer(sessionState, { type: 'movement/sessionStarted', sessionId: 'move-group', modelIds: ['model-1', 'model-2'] })
+    let current = gameReducer(sessionState, { type: 'movement/sessionStarted', sessionId: 'move-group', modelIds: ['model-1', 'model-2'], movementPolicy: { type: 'free-rotation' } })
     current = gameReducer(current, { type: 'movement/requested', positions: {
       'model-1': { x: 20, y: 10 },
       'model-2': { x: 20, y: 20 },
@@ -401,7 +399,7 @@ describe('units and movement sessions', () => {
   })
 
   it('records one reference path across multiple accepted rigid translations', () => {
-    let current = gameReducer(sessionState, { type: 'movement/sessionStarted', sessionId: 'move-group-path', modelIds: ['model-1', 'model-2'] })
+    let current = gameReducer(sessionState, { type: 'movement/sessionStarted', sessionId: 'move-group-path', modelIds: ['model-1', 'model-2'], movementPolicy: { type: 'free-rotation' } })
     current = gameReducer(current, { type: 'movement/requested', positions: {
       'model-1': { x: 12, y: 10 },
       'model-2': { x: 12, y: 20 },
@@ -429,7 +427,7 @@ describe('units and movement sessions', () => {
         { id: 'unit-2', ownerId: 'player-a', definitionId: 'definition-2', modelIds: ['blocker'] },
       ],
     }
-    const started = gameReducer(state, { type: 'movement/sessionStarted', sessionId: 'move-slide-path', modelIds: ['model-1', 'model-2'] })
+    const started = gameReducer(state, { type: 'movement/sessionStarted', sessionId: 'move-slide-path', modelIds: ['model-1', 'model-2'], movementPolicy: { type: 'free-rotation' } })
     const moved = gameReducer(started, { type: 'movement/requested', positions: {
       'model-1': { x: 18, y: 11 },
       'model-2': { x: 18, y: 14 },

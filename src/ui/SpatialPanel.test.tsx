@@ -15,6 +15,10 @@ function renderPanel(overrides: Partial<Parameters<typeof SpatialPanel>[0]> = {}
     range: 3,
     requiredSeparation: 3,
     targetBaseDiameterMm: 32,
+    targetModelId: null,
+    targetModelOptions: [],
+    sourceGeometryLabel: 'Circle 25mm',
+    targetGeometryLabel: 'Circle 32mm',
     coherencyAnalysisMode: 'unit-policy',
     coherencyPolicy: policy,
     customCoherencyPolicy: policy,
@@ -26,6 +30,7 @@ function renderPanel(overrides: Partial<Parameters<typeof SpatialPanel>[0]> = {}
     onRangeChange: vi.fn(),
     onRequiredSeparationChange: vi.fn(),
     onTargetBaseDiameterChange: vi.fn(),
+    onTargetModelChange: vi.fn(),
     onCoherencyAnalysisModeChange: vi.fn(),
     onCoherencyPolicyChange: vi.fn(),
     ...overrides,
@@ -120,6 +125,10 @@ describe('spatial numeric input editing', () => {
           range={3}
           requiredSeparation={3}
           targetBaseDiameterMm={32}
+          targetModelId={null}
+          targetModelOptions={[]}
+          sourceGeometryLabel="Circle 25mm"
+          targetGeometryLabel="Circle 32mm"
           coherencyAnalysisMode="unit-policy"
           coherencyPolicy={policy}
           customCoherencyPolicy={policy}
@@ -131,6 +140,7 @@ describe('spatial numeric input editing', () => {
           onRangeChange={vi.fn()}
           onRequiredSeparationChange={vi.fn()}
           onTargetBaseDiameterChange={vi.fn()}
+          onTargetModelChange={vi.fn()}
           onCoherencyAnalysisModeChange={vi.fn()}
           onCoherencyPolicyChange={vi.fn()}
         />
@@ -160,5 +170,20 @@ describe('spatial numeric input editing', () => {
     fireEvent.change(neighborInput, { target: { value: '-2.5' } })
     fireEvent.blur(neighborInput)
     expect(coherency).toHaveBeenLastCalledWith({ distance: 1, requiredNeighbors: 0 })
+  })
+
+  it('shows explicit source/target geometry and selects an actual target model', () => {
+    const onTargetModelChange = vi.fn()
+    renderPanel({
+      mode: 'exclusion',
+      sourceGeometryLabel: 'Rectangle 80×45mm @ 45°',
+      targetGeometryLabel: 'Oval 80 × 40mm @ 30°',
+      targetModelOptions: [{ id: 'oval', label: 'OVAL 30° · Oval 80 × 40mm @ 30°' }],
+      onTargetModelChange,
+    })
+    expect(screen.getByText('Rectangle 80×45mm @ 45°')).toBeTruthy()
+    expect(screen.getByText('Oval 80 × 40mm @ 30°')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Target footprint'), { target: { value: 'oval' } })
+    expect(onTargetModelChange).toHaveBeenCalledWith('oval')
   })
 })

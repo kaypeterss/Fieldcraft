@@ -1,8 +1,16 @@
-import type { Battlefield, TabletopModel } from '../domain/types'
-import { firstCirclePathCollisionT, isGroupPlacementValid } from './geometry/circles'
+import type { Battlefield, Pose, TabletopModel } from '../domain/types'
+import { firstCirclePathCollisionT } from './geometry/circles'
+import {
+  circleFootprintRadiusInches,
+  footprintBounds,
+  footprintInsideBattlefield,
+  footprintsOverlap,
+  poseForModel,
+  sweepFootprintTranslation,
+} from './geometry/footprints'
 import { distanceBetween, type Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
-import { millimetersToInches } from './units'
+import { poseFitsMovementEnvelope, sweepTranslationToMovementEnvelope } from './movementEnvelope'
 
 export interface MovementResolution {
   positions: Map<string, Point>
@@ -19,12 +27,14 @@ export interface RigidTranslationRequest {
   translation: Point
   battlefield: Battlefield
   remainingMovement?: ReadonlyMap<string, number>
+  movementEnvelopes?: ReadonlyMap<string, { startPose: Pose; allowance: number }>
 }
 
 interface ObstacleContact {
   movingModel: TabletopModel
   obstacle: TabletopModel
   fraction: number
+  normal: Point
 }
 
 interface BoundaryContact {
@@ -54,7 +64,7 @@ function resolveRigidTranslationForModels(
   movingModels: ReadonlyArray<TabletopModel>,
   movingIds: ReadonlySet<string>,
 ): MovementResolution {
-  const { allModels, battlefield, remainingMovement } = request
+  const { allModels, battlefield, remainingMovement, movementEnvelopes } = request
   const requestedTranslation = request.translation
   const maximumDistance = Math.min(...movingModels.map((model) =>
     Math.max(0, remainingMovement?.get(model.id) ?? Number.POSITIVE_INFINITY)))
@@ -70,6 +80,12 @@ function resolveRigidTranslationForModels(
 
     const permittedVector = scale(remainingVector, Math.min(1, allowanceRemaining / requestedLength))
     const boundaryContacts = boundaryContactCandidates(movingModels, currentOffset, permittedVector, battlefield)
+    const envelopeContacts = envelopeContactCandidates(
+      movingModels,
+      currentOffset,
+      permittedVector,
+      movementEnvelopes,
+    )
     const obstacleContacts = obstacleContactCandidates(
       movingModels,
       movingIds,
@@ -79,6 +95,7 @@ function resolveRigidTranslationForModels(
     )
     const contactFraction = Math.min(
       boundaryContacts[0]?.fraction ?? 1,
+      envelopeContacts[0]?.fraction ?? 1,
       obstacleContacts[0]?.fraction ?? 1,
     )
 
@@ -99,19 +116,21 @@ function resolveRigidTranslationForModels(
       ...boundaryContacts
         .filter((contact) => Math.abs(contact.fraction - contactFraction) <= tolerance)
         .map((contact) => contact.normal),
+      ...envelopeContacts
+        .filter((contact) => Math.abs(contact.fraction - contactFraction) <= tolerance)
+        .map((contact) => contact.normal),
       ...obstacleContacts
         .filter((contact) => Math.abs(contact.fraction - contactFraction) <= tolerance)
-        .map((contact) => normalized(subtract(
-          add(contact.movingModel.position, currentOffset),
-          contact.obstacle.position,
-        ))),
+        .map((contact) => contact.normal),
     ]
     remainingVector = projectOntoContactConstraints(untravelled, normals)
   }
 
   currentOffset = snapBoundaryOffset(movingModels, currentOffset, battlefield)
   let positions = positionsAtOffset(movingModels, currentOffset)
-  if (!isGroupPlacementValid(allModels, positions) || !isFormationInsideBattlefield(movingModels, positions, battlefield)) {
+  if (!isProposedPlacementValid(allModels, positions)
+    || !isFormationInsideBattlefield(movingModels, positions, battlefield)
+    || !isFormationInsideMovementEnvelopes(movingModels, positions, movementEnvelopes)) {
     currentOffset = { x: 0, y: 0 }
     distanceUsed = 0
     translationPath.splice(0, translationPath.length, { x: 0, y: 0 })
@@ -126,6 +145,29 @@ function resolveRigidTranslationForModels(
   return { positions, distances, paths, translationPath }
 }
 
+function envelopeContactCandidates(
+  movingModels: ReadonlyArray<TabletopModel>,
+  currentOffset: Point,
+  translation: Point,
+  envelopes: RigidTranslationRequest['movementEnvelopes'],
+): BoundaryContact[] {
+  if (!envelopes) return []
+  const contacts: BoundaryContact[] = []
+  for (const model of movingModels) {
+    const envelope = envelopes.get(model.id)
+    if (!envelope) continue
+    const contact = sweepTranslationToMovementEnvelope(
+      model.base,
+      envelope.startPose,
+      poseForModel(model, add(model.position, currentOffset)),
+      translation,
+      envelope.allowance,
+    )
+    if (contact) contacts.push({ ...contact, key: `${model.id}:movement-envelope` })
+  }
+  return contacts.sort((a, b) => a.fraction - b.fraction || a.key.localeCompare(b.key))
+}
+
 function obstacleContactCandidates(
   movingModels: ReadonlyArray<TabletopModel>,
   movingIds: ReadonlySet<string>,
@@ -136,18 +178,41 @@ function obstacleContactCandidates(
   const candidates: ObstacleContact[] = []
 
   for (const movingModel of movingModels) {
-    const radius = radiusInches(movingModel)
     const start = add(movingModel.position, currentOffset)
     const end = add(start, translation)
 
     for (const obstacle of allModels) {
       if (movingIds.has(obstacle.id)) continue
-      const obstacleRadius = radiusInches(obstacle)
-      if (movingModel.canPassOverModels && !circlesOverlapAt(end, radius, obstacle.position, obstacleRadius)) continue
+      const destinationOverlaps = footprintsOverlap(
+        movingModel.base,
+        poseForModel(movingModel, end),
+        obstacle.base,
+        poseForModel(obstacle),
+      )
+      if (movingModel.canPassOverModels && !destinationOverlaps) continue
 
-      const fraction = firstCirclePathCollisionT(start, end, obstacle.position, radius + obstacleRadius)
-      if (fraction === null) continue
-      candidates.push({ movingModel, obstacle, fraction })
+      if (movingModel.base.shape === 'circle' && obstacle.base.shape === 'circle') {
+        const radius = circleFootprintRadiusInches(movingModel.base)
+        const obstacleRadius = circleFootprintRadiusInches(obstacle.base)
+        const fraction = firstCirclePathCollisionT(start, end, obstacle.position, radius + obstacleRadius)
+        if (fraction === null) continue
+        candidates.push({
+          movingModel,
+          obstacle,
+          fraction,
+          normal: normalized(subtract(add(start, scale(translation, fraction)), obstacle.position)),
+        })
+        continue
+      }
+
+      const contact = sweepFootprintTranslation(
+        movingModel.base,
+        poseForModel(movingModel, start),
+        translation,
+        obstacle.base,
+        poseForModel(obstacle),
+      )
+      if (contact) candidates.push({ movingModel, obstacle, ...contact })
     }
   }
 
@@ -168,13 +233,12 @@ function boundaryContactCandidates(
 ): BoundaryContact[] {
   const contacts: BoundaryContact[] = []
   for (const model of movingModels) {
-    const start = add(model.position, currentOffset)
-    const end = add(start, translation)
-    const radius = radiusInches(model)
-    const left = battlefieldLeftContact(start.x, end.x, radius)
-    const right = battlefieldRightContact(start.x, end.x, radius, battlefield.width)
-    const top = battlefieldLeftContact(start.y, end.y, radius)
-    const bottom = battlefieldRightContact(start.y, end.y, radius, battlefield.height)
+    const startPosition = add(model.position, currentOffset)
+    const bounds = footprintBounds(model.base, poseForModel(model, startPosition))
+    const left = lowerBoundaryContact(bounds.left, bounds.left + translation.x, 0)
+    const right = upperBoundaryContact(bounds.right, bounds.right + translation.x, battlefield.width)
+    const top = lowerBoundaryContact(bounds.top, bounds.top + translation.y, 0)
+    const bottom = upperBoundaryContact(bounds.bottom, bounds.bottom + translation.y, battlefield.height)
     if (left !== null) contacts.push({ fraction: left, normal: { x: 1, y: 0 }, key: `${model.id}:left` })
     if (right !== null) contacts.push({ fraction: right, normal: { x: -1, y: 0 }, key: `${model.id}:right` })
     if (top !== null) contacts.push({ fraction: top, normal: { x: 0, y: 1 }, key: `${model.id}:top` })
@@ -218,10 +282,6 @@ function fractionTolerance(translation: Point): number {
   return Math.min(1, GEOMETRY_EPSILON / Math.max(vectorLength(translation), GEOMETRY_EPSILON))
 }
 
-function radiusInches(model: TabletopModel): number {
-  return millimetersToInches(model.base.diameterMm) / 2
-}
-
 export function appendAcceptedPathPoint(path: ReadonlyArray<Point>, point: Point): Point[] {
   if (path.length === 0) return [{ ...point }]
   const last = path[path.length - 1]
@@ -241,13 +301,12 @@ export function appendAcceptedPathPoint(path: ReadonlyArray<Point>, point: Point
   return [...path, { ...point }]
 }
 
-function battlefieldLeftContact(start: number, end: number, radius: number): number | null {
-  if (end >= radius || end >= start) return start <= radius + GEOMETRY_EPSILON && end < start ? 0 : null
-  return Math.max(0, Math.min(1, (radius - start) / (end - start)))
+function lowerBoundaryContact(start: number, end: number, limit: number): number | null {
+  if (end >= limit || end >= start) return start <= limit + GEOMETRY_EPSILON && end < start ? 0 : null
+  return Math.max(0, Math.min(1, (limit - start) / (end - start)))
 }
 
-function battlefieldRightContact(start: number, end: number, radius: number, extent: number): number | null {
-  const limit = extent - radius
+function upperBoundaryContact(start: number, end: number, limit: number): number | null {
   if (end <= limit || end <= start) return start >= limit - GEOMETRY_EPSILON && end > start ? 0 : null
   return Math.max(0, Math.min(1, (limit - start) / (end - start)))
 }
@@ -260,12 +319,11 @@ function snapBoundaryOffset(
   let correctionX = 0
   let correctionY = 0
   for (const model of models) {
-    const radius = radiusInches(model)
-    const center = add(model.position, offset)
-    if (center.x < radius && center.x >= radius - GEOMETRY_EPSILON) correctionX = Math.max(correctionX, radius - center.x)
-    if (center.x > battlefield.width - radius && center.x <= battlefield.width - radius + GEOMETRY_EPSILON) correctionX = Math.min(correctionX, battlefield.width - radius - center.x)
-    if (center.y < radius && center.y >= radius - GEOMETRY_EPSILON) correctionY = Math.max(correctionY, radius - center.y)
-    if (center.y > battlefield.height - radius && center.y <= battlefield.height - radius + GEOMETRY_EPSILON) correctionY = Math.min(correctionY, battlefield.height - radius - center.y)
+    const bounds = footprintBounds(model.base, poseForModel(model, add(model.position, offset)))
+    if (bounds.left < 0 && bounds.left >= -GEOMETRY_EPSILON) correctionX = Math.max(correctionX, -bounds.left)
+    if (bounds.right > battlefield.width && bounds.right <= battlefield.width + GEOMETRY_EPSILON) correctionX = Math.min(correctionX, battlefield.width - bounds.right)
+    if (bounds.top < 0 && bounds.top >= -GEOMETRY_EPSILON) correctionY = Math.max(correctionY, -bounds.top)
+    if (bounds.bottom > battlefield.height && bounds.bottom <= battlefield.height + GEOMETRY_EPSILON) correctionY = Math.min(correctionY, battlefield.height - bounds.bottom)
   }
   return { x: offset.x + correctionX, y: offset.y + correctionY }
 }
@@ -277,16 +335,47 @@ function isFormationInsideBattlefield(
 ): boolean {
   return models.every((model) => {
     const position = positions.get(model.id) ?? model.position
-    const radius = radiusInches(model)
-    return position.x >= radius - GEOMETRY_EPSILON
-      && position.x <= battlefield.width - radius + GEOMETRY_EPSILON
-      && position.y >= radius - GEOMETRY_EPSILON
-      && position.y <= battlefield.height - radius + GEOMETRY_EPSILON
+    return footprintInsideBattlefield(model.base, poseForModel(model, position), battlefield)
   })
 }
 
-function circlesOverlapAt(centerA: Point, radiusA: number, centerB: Point, radiusB: number): boolean {
-  return distanceBetween(centerA, centerB) < radiusA + radiusB - GEOMETRY_EPSILON
+function isFormationInsideMovementEnvelopes(
+  models: ReadonlyArray<TabletopModel>,
+  positions: ReadonlyMap<string, Point>,
+  envelopes: RigidTranslationRequest['movementEnvelopes'],
+): boolean {
+  if (!envelopes) return true
+  return models.every((model) => {
+    const envelope = envelopes.get(model.id)
+    if (!envelope) return true
+    return poseFitsMovementEnvelope(
+      model.base,
+      envelope.startPose,
+      poseForModel(model, positions.get(model.id) ?? model.position),
+      envelope.allowance,
+    )
+  })
+}
+
+function isProposedPlacementValid(
+  allModels: ReadonlyArray<TabletopModel>,
+  proposedPositions: ReadonlyMap<string, Point>,
+): boolean {
+  const movingIds = new Set(proposedPositions.keys())
+  const movingModels = allModels.filter((model) => movingIds.has(model.id))
+  for (const movingModel of movingModels) {
+    const movingPosition = proposedPositions.get(movingModel.id) ?? movingModel.position
+    for (const obstacle of allModels) {
+      if (movingIds.has(obstacle.id)) continue
+      if (footprintsOverlap(
+        movingModel.base,
+        poseForModel(movingModel, movingPosition),
+        obstacle.base,
+        poseForModel(obstacle),
+      )) return false
+    }
+  }
+  return true
 }
 
 function subtract(a: Point, b: Point): Point {

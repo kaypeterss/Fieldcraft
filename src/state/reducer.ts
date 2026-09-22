@@ -1,5 +1,22 @@
 import type { GameState, MovementSession } from '../domain/types'
 import { appendAcceptedPathPoint, resolveRigidTranslation } from '../engine/movement'
+import {
+  calculatePathMovementCost,
+  isPathCostPolicy,
+  maximumAdditionalPathRotation,
+  maximumAdditionalPathTranslation,
+  normalizeMovementPolicy,
+} from '../engine/movementCost'
+import { movementEnvelopeReach, poseFitsMovementEnvelope, projectPoseIntoMovementEnvelope } from '../engine/movementEnvelope'
+import { resolveModelRotation, shortestSignedAngularDelta } from '../engine/rotation'
+import {
+  appendPoseTrajectorySegment,
+  createPoseTrajectory,
+  derivePoseTrajectoryMetrics,
+  poseTrajectoryEndPose,
+  poseTrajectoryFromPositions,
+} from '../engine/trajectory'
+import { normalizeRotation } from '../engine/geometry/footprints'
 import { GEOMETRY_EPSILON } from '../engine/geometry/tolerance'
 import { createMoveAction } from '../game/moveActions'
 import { getMovementAllowance } from '../game/selectors'
@@ -12,18 +29,23 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       if (state.movementSession) return state
       const models = state.models.filter((model) => action.modelIds.includes(model.id))
       if (models.length === 0) return state
+      if (models.some((model) => getMovementAllowance(state, model) <= GEOMETRY_EPSILON)) return state
       const referenceStart = {
         x: models.reduce((total, model) => total + model.position.x, 0) / models.length,
         y: models.reduce((total, model) => total + model.position.y, 0) / models.length,
       }
       const session: MovementSession = {
         id: action.sessionId,
+        movementPolicy: normalizeMovementPolicy(action.movementPolicy),
         modelIds: models.map((model) => model.id),
         referenceStart,
         referencePath: [{ ...referenceStart }],
         models: Object.fromEntries(models.map((model) => [model.id, {
           modelId: model.id,
-          startPosition: { ...model.position },
+          startPose: { position: { ...model.position }, rotation: model.rotation },
+          trajectory: createPoseTrajectory({ position: model.position, rotation: model.rotation }),
+          translationDistance: 0,
+          angularRotation: 0,
           movementUsed: 0,
           path: [{ ...model.position }],
         }])),
@@ -47,17 +69,36 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       if (!translation || translations.some((candidate) => !candidate
         || Math.abs(candidate.x - translation.x) > GEOMETRY_EPSILON
         || Math.abs(candidate.y - translation.y) > GEOMETRY_EPSILON)) return state
-      const remainingMovement = new Map(session.modelIds.map((modelId) => {
+      const pathCostPolicy = isPathCostPolicy(session.movementPolicy) ? session.movementPolicy : null
+      const remainingMovement = pathCostPolicy ? new Map(session.modelIds.map((modelId) => {
         const model = state.models.find((candidate) => candidate.id === modelId)
-        const used = session.models[modelId]?.movementUsed ?? 0
-        return [modelId, model ? Math.max(0, getMovementAllowance(state, model) - used) : 0]
-      }))
+        const movement = session.models[modelId]
+        return [modelId, model && movement ? maximumAdditionalPathTranslation(
+          pathCostPolicy,
+          {
+            translationDistance: movement.translationDistance,
+            angularDistance: movement.angularRotation,
+          },
+          getMovementAllowance(state, model),
+        ) : 0]
+      })) : undefined
+      const movementEnvelopes = session.movementPolicy.type === 'movement-envelope'
+        ? new Map(session.modelIds.map((modelId) => {
+            const model = state.models.find((candidate) => candidate.id === modelId)
+            const movement = session.models[modelId]
+            return [modelId, {
+              startPose: movement.startPose,
+              allowance: model ? getMovementAllowance(state, model) : 0,
+            }]
+          }))
+        : undefined
       const resolution = resolveRigidTranslation({
         allModels: state.models,
         modelIds: session.modelIds,
         translation,
         battlefield: state.battlefield,
         remainingMovement,
+        movementEnvelopes,
       })
       const nextSession: MovementSession = {
         ...session,
@@ -70,11 +111,27 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         ),
         models: Object.fromEntries(Object.entries(session.models).map(([modelId, movement]) => {
           const acceptedPosition = resolution.positions.get(modelId)
-          const acceptedDistance = resolution.distances.get(modelId) ?? 0
           const acceptedPath = resolution.paths.get(modelId)?.slice(1) ?? []
+          const model = state.models.find((candidate) => candidate.id === modelId)
+          const trajectory = model ? acceptedPath.reduce(
+            (current, position) => appendPoseTrajectorySegment(current, {
+              endPose: { position, rotation: model.rotation },
+              angularDelta: 0,
+            }),
+            movement.trajectory,
+          ) : movement.trajectory
+          const trajectoryMetrics = derivePoseTrajectoryMetrics(trajectory)
           return [modelId, acceptedPosition ? {
             ...movement,
-            movementUsed: movement.movementUsed + acceptedDistance,
+            trajectory,
+            translationDistance: trajectoryMetrics.centerPathLength,
+            angularRotation: trajectoryMetrics.totalAbsoluteAngularTravel,
+            movementUsed: model ? movementUsedForPose(
+              session,
+              model,
+              { position: acceptedPosition, rotation: model.rotation },
+              trajectoryMetrics,
+            ) : movement.movementUsed,
             path: acceptedPath.reduce(appendAcceptedPathPoint, movement.path),
           } : movement]
         })),
@@ -89,19 +146,118 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       }
     }
 
+    case 'movement/rotationRequested': {
+      const session = state.movementSession
+      if (!session || session.modelIds.length !== 1 || session.modelIds[0] !== action.modelId) return state
+      const model = state.models.find((candidate) => candidate.id === action.modelId)
+      if (!model || !Number.isFinite(action.rotation)) return state
+      const movement = session.models[model.id]
+      if (!movement) return state
+      const requestedAngularDelta = shortestSignedAngularDelta(model.rotation, normalizeRotation(action.rotation))
+      const maximumAngularDistance = isPathCostPolicy(session.movementPolicy)
+        ? maximumAdditionalPathRotation(
+            session.movementPolicy,
+            {
+              translationDistance: movement.translationDistance,
+              angularDistance: movement.angularRotation,
+            },
+            getMovementAllowance(state, model),
+          )
+        : Number.POSITIVE_INFINITY
+      const angularDelta = Math.sign(requestedAngularDelta) * Math.min(
+        Math.abs(requestedAngularDelta),
+        maximumAngularDistance,
+      )
+      const resolution = resolveModelRotation({
+        allModels: state.models,
+        modelId: model.id,
+        angularDelta,
+        battlefield: state.battlefield,
+      })
+      const allowance = getMovementAllowance(state, model)
+      const requestedPose = { position: model.position, rotation: resolution.rotation }
+      const projected = session.movementPolicy.type === 'movement-envelope'
+        ? projectPoseIntoMovementEnvelope(model.base, movement.startPose, requestedPose, allowance)
+        : { pose: requestedPose, retreat: { x: 0, y: 0 } }
+      const rotatedModels = state.models.map((candidate) => candidate.id === model.id
+        ? { ...candidate, rotation: resolution.rotation }
+        : candidate)
+      const retreatResolution = resolveRigidTranslation({
+        allModels: rotatedModels,
+        modelIds: [model.id],
+        translation: projected.retreat,
+        battlefield: state.battlefield,
+      })
+      const finalPosition = retreatResolution.positions.get(model.id) ?? model.position
+      const finalRotation = session.movementPolicy.type !== 'movement-envelope'
+        || poseFitsMovementEnvelope(model.base, movement.startPose, {
+          position: finalPosition,
+          rotation: resolution.rotation,
+        }, allowance)
+        ? resolution.rotation
+        : model.rotation
+      const acceptedPosition = finalRotation === resolution.rotation ? finalPosition : model.position
+      const acceptedAngularRotation = finalRotation === resolution.rotation ? resolution.angularRotation : 0
+      const trajectory = appendPoseTrajectorySegment(movement.trajectory, {
+        endPose: { position: acceptedPosition, rotation: finalRotation },
+        angularDelta: Math.sign(angularDelta) * acceptedAngularRotation,
+      })
+      const trajectoryMetrics = derivePoseTrajectoryMetrics(trajectory)
+      const movementCost = movementUsedForPose(session, model, {
+        position: acceptedPosition,
+        rotation: finalRotation,
+      }, trajectoryMetrics)
+      return {
+        ...state,
+        models: state.models.map((candidate) => candidate.id === model.id
+          ? { ...candidate, position: acceptedPosition, rotation: finalRotation }
+          : candidate),
+        movementSession: {
+          ...session,
+          referencePath: retreatResolution.translationPath.slice(1).reduce(
+            (path, offset) => appendAcceptedPathPoint(path, {
+              x: session.referencePath[session.referencePath.length - 1].x + offset.x,
+              y: session.referencePath[session.referencePath.length - 1].y + offset.y,
+            }),
+            session.referencePath,
+          ),
+          models: {
+            ...session.models,
+            [model.id]: {
+              ...movement,
+              trajectory,
+              translationDistance: trajectoryMetrics.centerPathLength,
+              angularRotation: trajectoryMetrics.totalAbsoluteAngularTravel,
+              movementUsed: movementCost,
+              path: retreatResolution.paths.get(model.id)?.slice(1)
+                .reduce(appendAcceptedPathPoint, movement.path) ?? movement.path,
+            },
+          },
+        },
+      }
+    }
+
     case 'movement/confirmed': {
       const session = state.movementSession
       if (!session) return state
       const changed = session.modelIds.some((modelId) => {
         const current = state.models.find((model) => model.id === modelId)
-        const start = session.models[modelId]?.startPosition
-        return current && start && (current.position.x !== start.x || current.position.y !== start.y)
+        const start = session.models[modelId]?.startPose
+        return current && start && (
+          current.position.x !== start.position.x
+          || current.position.y !== start.position.y
+          || Math.abs(shortestSignedAngularDelta(start.rotation, current.rotation)) > GEOMETRY_EPSILON
+        )
       })
       if (!changed) return { ...state, movementSession: null }
 
       const beforeModels = state.models.map((model) => {
-        const startPosition = session.models[model.id]?.startPosition
-        return startPosition ? { ...model, position: { ...startPosition } } : { ...model }
+        const startPose = session.models[model.id]?.startPose
+        return startPose ? {
+          ...model,
+          position: { ...startPose.position },
+          rotation: startPose.rotation,
+        } : { ...model }
       })
       const sequence = state.nextActionSequence
       const participatingModels = session.modelIds
@@ -112,11 +268,26 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         actorPlayerId: state.gameContext.activePlayerId,
         gameContext: state.gameContext,
         affectedModels: participatingModels,
-        startingPositions: Object.fromEntries(participatingModels.map((model) => [
+        startingPoses: Object.fromEntries(participatingModels.map((model) => [
           model.id,
-          session.models[model.id].startPosition,
+          session.models[model.id].startPose,
         ])),
-        finalPositions: Object.fromEntries(participatingModels.map((model) => [model.id, model.position])),
+        finalPoses: Object.fromEntries(participatingModels.map((model) => [model.id, {
+          position: model.position,
+          rotation: model.rotation,
+        }])),
+        trajectories: Object.fromEntries(participatingModels.map((model) => [
+          model.id,
+          session.models[model.id].trajectory,
+        ])),
+        translationDistance: Object.fromEntries(participatingModels.map((model) => [
+          model.id,
+          session.models[model.id].translationDistance,
+        ])),
+        angularRotation: Object.fromEntries(participatingModels.map((model) => [
+          model.id,
+          session.models[model.id].angularRotation,
+        ])),
         movementUsed: Object.fromEntries(participatingModels.map((model) => [
           model.id,
           session.models[model.id].movementUsed,
@@ -140,7 +311,11 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       const modelIds = Object.keys(action.finalPositions).sort((a, b) => a.localeCompare(b))
       if (modelIds.length === 0
         || !sameIdSet(modelIds, Object.keys(action.startingPositions))
-        || !sameIdSet(modelIds, Object.keys(action.movementUsed))) return state
+        || !sameIdSet(modelIds, Object.keys(action.movementUsed))
+        || (action.startingRotations && !sameIdSet(modelIds, Object.keys(action.startingRotations)))
+        || (action.finalRotations && !sameIdSet(modelIds, Object.keys(action.finalRotations)))
+        || (action.trajectories && Object.keys(action.trajectories).some((id) => !modelIds.includes(id)))
+        || (action.paths && !sameIdSet(modelIds, Object.keys(action.paths)))) return state
       const affectedModels = modelIds.flatMap((modelId) => {
         const model = state.models.find((candidate) => candidate.id === modelId)
         return model ? [model] : []
@@ -150,10 +325,25 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         const start = action.startingPositions[model.id]
         const final = action.finalPositions[model.id]
         const used = action.movementUsed[model.id]
+        const path = action.paths?.[model.id]
+        const finalRotation = action.finalRotations?.[model.id] ?? model.rotation
+        const trajectory = action.trajectories?.[model.id]
+        const trajectoryEnd = trajectory ? poseTrajectoryEndPose(trajectory) : null
         return start && final
           && Number.isFinite(start.x) && Number.isFinite(start.y)
           && Number.isFinite(final.x) && Number.isFinite(final.y)
           && Number.isFinite(used) && used >= 0
+          && Number.isFinite(finalRotation)
+          && (action.startingRotations === undefined
+            || Math.abs(shortestSignedAngularDelta(model.rotation, action.startingRotations[model.id])) <= GEOMETRY_EPSILON)
+          && (!trajectory || (Math.abs(trajectory.startPose.position.x - start.x) <= GEOMETRY_EPSILON
+            && Math.abs(trajectory.startPose.position.y - start.y) <= GEOMETRY_EPSILON
+            && Math.abs(shortestSignedAngularDelta(trajectory.startPose.rotation, model.rotation)) <= GEOMETRY_EPSILON
+            && trajectoryEnd !== null
+            && Math.abs(trajectoryEnd.position.x - final.x) <= GEOMETRY_EPSILON
+            && Math.abs(trajectoryEnd.position.y - final.y) <= GEOMETRY_EPSILON
+            && Math.abs(shortestSignedAngularDelta(trajectoryEnd.rotation, finalRotation)) <= GEOMETRY_EPSILON))
+          && (!path || validCenterPath(path, start, final))
           && Math.abs(model.position.x - start.x) <= GEOMETRY_EPSILON
           && Math.abs(model.position.y - start.y) <= GEOMETRY_EPSILON
       })
@@ -162,6 +352,8 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         const final = action.finalPositions[model.id]
         return Math.abs(model.position.x - final.x) > GEOMETRY_EPSILON
           || Math.abs(model.position.y - final.y) > GEOMETRY_EPSILON
+          || Math.abs(shortestSignedAngularDelta(model.rotation,
+            action.finalRotations?.[model.id] ?? model.rotation)) > GEOMETRY_EPSILON
       })
       if (changedModels.length === 0) return state
 
@@ -172,15 +364,38 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         actorPlayerId: state.gameContext.activePlayerId,
         gameContext: state.gameContext,
         affectedModels: changedModels,
-        startingPositions: action.startingPositions,
-        finalPositions: action.finalPositions,
+        startingPoses: Object.fromEntries(affectedModels.map((model) => [model.id, {
+          position: action.startingPositions[model.id],
+          rotation: action.startingRotations?.[model.id] ?? model.rotation,
+        }])),
+        finalPoses: Object.fromEntries(affectedModels.map((model) => [model.id, {
+          position: action.finalPositions[model.id],
+          rotation: action.finalRotations?.[model.id] ?? model.rotation,
+        }])),
+        trajectories: Object.fromEntries(affectedModels.map((model) => [model.id,
+          action.trajectories?.[model.id] ?? poseTrajectoryFromPositions(
+            action.paths?.[model.id] ?? [action.startingPositions[model.id], action.finalPositions[model.id]],
+            model.rotation,
+          ),
+        ])),
+        translationDistance: Object.fromEntries(affectedModels.map((model) => [model.id,
+          action.trajectories?.[model.id]
+            ? derivePoseTrajectoryMetrics(action.trajectories[model.id]).centerPathLength
+            : action.movementUsed[model.id],
+        ])),
+        angularRotation: Object.fromEntries(affectedModels.map((model) => [model.id,
+          action.trajectories?.[model.id]
+            ? derivePoseTrajectoryMetrics(action.trajectories[model.id]).totalAbsoluteAngularTravel
+            : 0,
+        ])),
         movementUsed: action.movementUsed,
       })
       return {
         ...state,
         models: state.models.map((model) => {
           const final = action.finalPositions[model.id]
-          return final ? { ...model, position: { ...final } } : model
+          return final ? { ...model, position: { ...final },
+            rotation: normalizeRotation(action.finalRotations?.[model.id] ?? model.rotation) } : model
         }),
         actionHistory: [...state.actionHistory, moveAction],
         nextActionSequence: sequence + 1,
@@ -213,8 +428,12 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       return {
         ...state,
         models: state.models.map((model) => {
-          const startPosition = session.models[model.id]?.startPosition
-          return startPosition ? { ...model, position: { ...startPosition } } : model
+          const startPose = session.models[model.id]?.startPose
+          return startPose ? {
+            ...model,
+            position: { ...startPose.position },
+            rotation: startPose.rotation,
+          } : model
         }),
         movementSession: null,
       }
@@ -234,4 +453,37 @@ function sameIdSet(left: ReadonlyArray<string>, right: ReadonlyArray<string>): b
   if (left.length !== right.length) return false
   const leftIds = new Set(left)
   return leftIds.size === right.length && right.every((id) => leftIds.has(id))
+}
+
+function movementUsedForPose(
+  session: MovementSession,
+  model: GameState['models'][number],
+  pose: { position: { x: number; y: number }; rotation: number },
+  metrics: { centerPathLength: number; totalAbsoluteAngularTravel: number },
+): number {
+  const movement = session.models[model.id]
+  if (!movement) return 0
+  if (session.movementPolicy.type === 'movement-envelope') {
+    return movementEnvelopeReach(model.base, movement.startPose, pose).distance
+  }
+  return calculatePathMovementCost(session.movementPolicy, {
+    translationDistance: metrics.centerPathLength,
+    angularDistance: metrics.totalAbsoluteAngularTravel,
+  }).totalCost
+}
+
+function validCenterPath(
+  path: ReadonlyArray<{ x: number; y: number }>,
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+): boolean {
+  if (path.length === 0 || path.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
+    return false
+  }
+  const first = path[0]
+  const last = path[path.length - 1]
+  return Math.abs(first.x - start.x) <= GEOMETRY_EPSILON
+    && Math.abs(first.y - start.y) <= GEOMETRY_EPSILON
+    && Math.abs(last.x - end.x) <= GEOMETRY_EPSILON
+    && Math.abs(last.y - end.y) <= GEOMETRY_EPSILON
 }

@@ -1,6 +1,7 @@
 import type { CoherencyPolicy, TabletopModel } from '../domain/types'
 import type { CoherencyResult } from '../engine/coherency'
 import { formatInches, millimetersToInches } from '../engine/units'
+import { describeFootprint } from '../tools/spatialOverlay'
 
 interface DebugPanelProps {
   model?: TabletopModel
@@ -47,9 +48,11 @@ export function DebugPanel(props: DebugPanelProps) {
           </div>
           <div className="panel-section-label">BASE GEOMETRY</div>
           <dl>
-            <div><dt>Shape</dt><dd>{model.base.shape}</dd></div>
-            <div><dt>Diameter</dt><dd>{model.base.diameterMm} mm</dd></div>
-            <div><dt>Converted</dt><dd>{formatInches(millimetersToInches(model.base.diameterMm))}</dd></div>
+            <div><dt>Footprint</dt><dd>{describeFootprint(model.base, model.rotation)}</dd></div>
+            {model.base.shape === 'circle' && <>
+              <div><dt>Converted</dt><dd>{formatInches(millimetersToInches(model.base.diameterMm))}</dd></div>
+            </>}
+            <div><dt>Rotation</dt><dd>{(model.rotation * 180 / Math.PI).toFixed(1)}°</dd></div>
             {props.movementAllowance !== undefined
               && <div><dt>Move</dt><dd>{formatInches(props.movementAllowance)}</dd></div>}
             {props.movementUsed !== undefined

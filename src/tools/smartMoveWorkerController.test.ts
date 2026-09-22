@@ -165,6 +165,21 @@ describe('Smart Move worker execution', () => {
     controller.dispose()
   })
 
+  it('gives an exact lock its longer budget even when the live target already resolved', () => {
+    const { controller, workers, states } = setup()
+    controller.previewTarget({ x: 10, y: 5 })
+    workers[0].complete(0)
+    expect(states.at(-1)?.status).toBe('ready-valid')
+    controller.lockTarget({ x: 10, y: 5 })
+    expect(states.at(-1)?.status).toBe('calculating')
+    expect(states.at(-1)?.canApply).toBe(false)
+    expect(workers[0].messages[1].kind).toBe('locked')
+    expect(workers[0].messages[1].request.searchBudgetMs).toBe(10_000)
+    workers[0].complete(1)
+    expect(controller.getApplicableResult()?.valid).toBe(true)
+    controller.dispose()
+  })
+
   it('invalidates old sessions and authoritative-state revisions', () => {
     const { controller, workers, states } = setup()
     controller.previewTarget({ x: 10, y: 5 })
@@ -175,11 +190,33 @@ describe('Smart Move worker execution', () => {
     expect(workers[1].messages[0].request.target).toEqual({ x: 16, y: 5 })
     controller.updateSnapshot(3, requestFor)
     workers[1].complete(0)
-    expect(workers[1].messages[1].stateRevision).toBe(3)
+    expect(workers[1].terminated).toBe(true)
+    expect(workers[2].messages[0].stateRevision).toBe(3)
     expect(states.at(-1)?.canApply).toBe(false)
-    workers[1].complete(1)
+    workers[2].complete(0)
     expect(states.at(-1)?.canApply).toBe(true)
-    expect(controller.getDiagnostics().staleResultsDiscarded).toBe(1)
+    expect(controller.getDiagnostics().staleResultsDiscarded).toBe(0)
+    controller.dispose()
+  })
+
+  it('invalidates a ready preview when the movement policy changes without a state revision', () => {
+    const { controller, workers, states } = setup()
+    controller.lockTarget({ x: 10, y: 5 })
+    workers[0].complete(0)
+    expect(controller.getApplicableResult()?.valid).toBe(true)
+
+    controller.updateSnapshot(1, (target) => ({
+      ...requestFor(target),
+      movementPolicy: { type: 'fixed-rotation-charge', rotationCharge: 2 },
+    }))
+    expect(states.at(-1)?.canApply).toBe(false)
+    expect(controller.getApplicableResult()).toBeNull()
+    expect(workers[0].messages).toHaveLength(2)
+    expect(workers[0].messages[1].request.movementPolicy).toEqual({
+      type: 'fixed-rotation-charge', rotationCharge: 2,
+    })
+    workers[0].complete(1)
+    expect(controller.getApplicableResult()?.valid).toBe(true)
     controller.dispose()
   })
 
@@ -241,5 +278,51 @@ describe('Smart Move worker execution', () => {
     })
     expect(states.at(-1)).toMatchObject({ status: 'error', result: null, canApply: false })
     controller.dispose()
+  })
+
+  it('ends a locked solve at its hard limit and permits an exact retry', () => {
+    const { controller, workers, states } = setup()
+    controller.lockTarget({ x: 10, y: 5 })
+    expect(workers[0].messages[0].request.searchBudgetMs).toBe(10_000)
+    vi.advanceTimersByTime(10_000)
+    expect(workers[0].terminated).toBe(true)
+    expect(states.at(-1)).toMatchObject({
+      status: 'search-limit', result: null, canApply: false, thinkingVisible: false,
+    })
+    expect(controller.getApplicableResult()).toBeNull()
+    workers[0].complete(0)
+    expect(states.at(-1)?.status).toBe('search-limit')
+
+    controller.lockTarget({ x: 10, y: 5 })
+    expect(workers[1].messages[0].kind).toBe('locked')
+    expect(states.at(-1)?.status).toBe('calculating')
+    workers[1].complete(0)
+    expect(controller.getApplicableResult()?.valid).toBe(true)
+    controller.dispose()
+  })
+
+  it('replaces a timed-out stale live solve with the latest queued target', () => {
+    const { controller, workers, states } = setup()
+    controller.previewTarget({ x: 10, y: 5 })
+    vi.advanceTimersByTime(80)
+    controller.previewTarget({ x: 12, y: 5 })
+    vi.advanceTimersByTime(920)
+    expect(workers[0].terminated).toBe(true)
+    expect(workers[1].messages[0].request.target).toEqual({ x: 12, y: 5 })
+    expect(states.at(-1)?.status).toBe('calculating')
+    expect(controller.getApplicableResult()).toBeNull()
+    workers[1].complete(0)
+    expect(states.at(-1)?.status).toBe('ready-valid')
+    controller.dispose()
+  })
+
+  it('uses the cooperative search budget to return a safe limit result', () => {
+    const response = solveSmartMoveWorkerRequest({
+      type: 'solve', requestId: 4, sessionId: 2, stateRevision: 1, kind: 'live',
+      request: { ...requestFor({ x: 10, y: 5 }), searchBudgetMs: 0 },
+    })
+    expect(response.result.valid).toBe(false)
+    expect(response.result.failureReasons).toContain('SEARCH_LIMIT')
+    expect(response.result.positions).toEqual({})
   })
 })

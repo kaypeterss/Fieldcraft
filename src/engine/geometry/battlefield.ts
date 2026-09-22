@@ -1,20 +1,11 @@
 import type { Battlefield, TabletopModel } from '../../domain/types'
 import type { Point } from './point'
-import { GEOMETRY_EPSILON } from './tolerance'
 import { millimetersToInches } from '../units'
+import { footprintInsideBattlefield, poseForModel } from './footprints'
+export { circleIntersectsRectangle, type RectangleBounds } from './circles'
 
 export function isPointInsideBattlefield(point: Point, battlefield: Battlefield): boolean {
   return point.x >= 0 && point.x <= battlefield.width && point.y >= 0 && point.y <= battlefield.height
-}
-
-export interface RectangleBounds { left: number; top: number; right: number; bottom: number }
-
-export function circleIntersectsRectangle(center: Point, radius: number, rectangle: RectangleBounds): boolean {
-  const closestX = Math.max(rectangle.left, Math.min(center.x, rectangle.right))
-  const closestY = Math.max(rectangle.top, Math.min(center.y, rectangle.bottom))
-  const dx = center.x - closestX
-  const dy = center.y - closestY
-  return dx * dx + dy * dy <= radius * radius
 }
 
 export function clampModelPosition(
@@ -22,6 +13,7 @@ export function clampModelPosition(
   model: Pick<TabletopModel, 'base'>,
   battlefield: Battlefield,
 ): Point {
+  if (model.base.shape !== 'circle') throw new Error('Movement currently supports circular footprints only')
   const radius = millimetersToInches(model.base.diameterMm) / 2
   return {
     x: Math.min(battlefield.width - radius, Math.max(radius, position.x)),
@@ -31,14 +23,10 @@ export function clampModelPosition(
 
 export function isModelPositionInsideBattlefield(
   position: Point,
-  model: Pick<TabletopModel, 'base'>,
+  model: Pick<TabletopModel, 'base' | 'rotation'>,
   battlefield: Battlefield,
 ): boolean {
-  const radius = millimetersToInches(model.base.diameterMm) / 2
-  return position.x >= radius - GEOMETRY_EPSILON
-    && position.x <= battlefield.width - radius + GEOMETRY_EPSILON
-    && position.y >= radius - GEOMETRY_EPSILON
-    && position.y <= battlefield.height - radius + GEOMETRY_EPSILON
+  return footprintInsideBattlefield(model.base, poseForModel({ position, rotation: model.rotation }), battlefield)
 }
 
 export function clampGroupDelta(
@@ -54,6 +42,7 @@ export function clampGroupDelta(
   let maxDy = Number.POSITIVE_INFINITY
 
   for (const model of models) {
+    if (model.base.shape !== 'circle') throw new Error('Movement currently supports circular footprints only')
     const radius = millimetersToInches(model.base.diameterMm) / 2
     minDx = Math.max(minDx, radius - model.position.x)
     maxDx = Math.min(maxDx, battlefield.width - radius - model.position.x)

@@ -1,14 +1,17 @@
-import type { CircularBase, TabletopModel } from '../domain/types'
+import type { Footprint, TabletopModel } from '../domain/types'
+import type { ClosestPointsResult } from './geometry/circles'
 import {
-  circularEdgeDistance,
-  closestPointsBetweenCircleAndPoint,
-  closestPointsBetweenCircles,
-  type ClosestPointsResult,
-} from './geometry/circles'
-import { distanceBetween } from './geometry/point'
+  circleFootprintRadiusInches,
+  closestPointsBetweenFootprints,
+  closestPointsFromFootprintToPoint,
+  footprintExclusionOutline,
+  footprintOffsetOutline,
+  footprintsOverlap,
+  pointWithinFootprintOffset,
+  poseForModel,
+} from './geometry/footprints'
 import type { Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
-import { millimetersToInches } from './units'
 
 export interface RangeQueryOptions {
   includeSource?: boolean
@@ -29,41 +32,49 @@ export interface UnitPointDistanceResult {
   pointAnchor: Point
 }
 
-export function baseRadiusInches(base: CircularBase): number {
-  return millimetersToInches(base.diameterMm) / 2
+export function baseRadiusInches(base: Footprint): number {
+  return circleFootprintRadiusInches(base)
 }
 
 /** Shortest physical distance between model bases in tabletop inches. */
 export function distanceBetweenBases(a: TabletopModel, b: TabletopModel): number {
-  return circularEdgeDistance(
-    a.position,
-    baseRadiusInches(a.base),
-    b.position,
-    baseRadiusInches(b.base),
-  )
+  return closestPointsBetweenBases(a, b).distance
 }
 
 export function closestPointsBetweenBases(a: TabletopModel, b: TabletopModel): ClosestPointsResult {
-  return closestPointsBetweenCircles(
-    a.position,
-    baseRadiusInches(a.base),
-    b.position,
-    baseRadiusInches(b.base),
-  )
+  return closestPointsBetweenFootprints(a.base, poseForModel(a), b.base, poseForModel(b))
 }
 
 /** Shortest distance from a model base to a tabletop point. */
 export function distanceFromBaseToPoint(model: TabletopModel, point: Point): number {
-  return Math.max(0, distanceBetween(model.position, point) - baseRadiusInches(model.base))
+  return closestPointsFromBaseToPoint(model, point).distance
 }
 
 export function closestPointsFromBaseToPoint(model: TabletopModel, point: Point): ClosestPointsResult {
-  return closestPointsBetweenCircleAndPoint(model.position, baseRadiusInches(model.base), point)
+  return closestPointsFromFootprintToPoint(model.base, poseForModel(model), point)
 }
 
-export function rangeRadiusForBase(base: CircularBase, range: number): number {
+export function rangeRadiusForBase(base: Footprint, range: number): number {
   if (range < 0) throw new RangeError('Range cannot be negative')
   return baseRadiusInches(base) + range
+}
+
+/** Rendering outline for every point within range of the model's actual footprint. */
+export function rangeOutlineForModel(
+  model: TabletopModel,
+  range: number,
+  segmentCount?: number,
+): Point[] {
+  return footprintOffsetOutline(model.base, poseForModel(model), range, segmentCount)
+}
+
+/** Exact membership counterpart to rangeOutlineForModel. */
+export function isPointWithinModelRangeArea(
+  model: TabletopModel,
+  point: Point,
+  range: number,
+): boolean {
+  return pointWithinFootprintOffset(model.base, poseForModel(model), point, range)
 }
 
 export function isDistanceWithinRange(distance: number, range: number): boolean {
@@ -145,20 +156,49 @@ export function minimumDistanceFromUnitToPoint(
  */
 export function exclusionRadiusForTargetBase(
   source: TabletopModel,
-  targetBase: CircularBase,
+  targetBase: Footprint,
   requiredSeparation: number,
 ): number {
   if (requiredSeparation < 0) throw new RangeError('Required separation cannot be negative')
   return baseRadiusInches(source.base) + requiredSeparation + baseRadiusInches(targetBase)
 }
 
+/**
+ * Rendering outline for target origins that violate the required edge gap at
+ * one fixed target orientation.
+ */
+export function exclusionOutlineForTargetFootprint(
+  source: TabletopModel,
+  targetFootprint: Footprint,
+  targetRotation: number,
+  requiredSeparation: number,
+  segmentCount?: number,
+): Point[] {
+  return footprintExclusionOutline(
+    source.base,
+    poseForModel(source),
+    targetFootprint,
+    targetRotation,
+    requiredSeparation,
+    segmentCount,
+  )
+}
+
 /** Boundary contact is legal; only centers meaningfully inside the zone violate it. */
 export function isTargetCenterWithinExclusionZone(
   source: TabletopModel,
   targetCenter: Point,
-  targetBase: CircularBase,
+  targetBase: Footprint,
   requiredSeparation: number,
+  targetRotation = 0,
 ): boolean {
-  return distanceBetween(source.position, targetCenter)
-    < exclusionRadiusForTargetBase(source, targetBase, requiredSeparation) - GEOMETRY_EPSILON
+  if (requiredSeparation < 0) throw new RangeError('Required separation cannot be negative')
+  const targetPose = { position: targetCenter, rotation: targetRotation }
+  if (footprintsOverlap(source.base, poseForModel(source), targetBase, targetPose)) return true
+  return closestPointsBetweenFootprints(
+    source.base,
+    poseForModel(source),
+    targetBase,
+    targetPose,
+  ).distance < requiredSeparation - GEOMETRY_EPSILON
 }

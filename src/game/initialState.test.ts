@@ -1,26 +1,77 @@
 import { describe, expect, it } from 'vitest'
 import { evaluateUnitCoherency, isCoherencyResultValid } from '../engine/coherency'
 import { isModelPositionInsideBattlefield } from '../engine/geometry/battlefield'
-import { circlesOverlap } from '../engine/geometry/circles'
-import { baseRadiusInches } from '../engine/spatial'
-import { initialGameState } from './initialState'
+import { footprintsOverlap, poseForModel } from '../engine/geometry/footprints'
+import { footprintDemoGameState, initialGameState, orientationGapGameState } from './initialState'
 import { getUnitCoherencyPolicy, getUnitDefinition } from './selectors'
 import { gameReducer } from '../state/reducer'
 import { solveSmartMove } from '../engine/smartMove'
 import { hasUnitPerformedAction, movementUsedByModelInTurn } from './actionQueries'
 
 describe('prototype Smart Move units', () => {
-  it('defines the expanded roster with physical profiles and varied policies', () => {
+  it('keeps the orientation-aware QA playground inside the table, non-overlapping, and coherent', () => {
+    const state = orientationGapGameState
+    expect(state.battlefield).toEqual({ width: 80, height: 60 })
+    for (const model of state.models) {
+      expect(Number.isFinite(model.position.x) && Number.isFinite(model.position.y), model.id).toBe(true)
+      expect(isModelPositionInsideBattlefield(model.position, model, state.battlefield), model.id).toBe(true)
+    }
+    for (let first = 0; first < state.models.length; first += 1) {
+      for (let second = first + 1; second < state.models.length; second += 1) {
+        expect(footprintsOverlap(
+          state.models[first].base, poseForModel(state.models[first]),
+          state.models[second].base, poseForModel(state.models[second]),
+        ),
+          `${state.models[first].id} overlaps ${state.models[second].id}`).toBe(false)
+      }
+    }
+    for (const unit of state.units) {
+      const policy = getUnitCoherencyPolicy(state, unit)!
+      const result = evaluateUnitCoherency(unit, state.models, policy)
+      expect(isCoherencyResultValid(result, policy), unit.id).toBe(true)
+    }
+    for (const [unitId, expectedCount] of [
+      ['qa-cavalry', 6], ['qa-large-ovals', 3], ['qa-rectangles', 5],
+      ['qa-hulls', 4], ['qa-circles', 10],
+    ] as const) {
+      expect(state.units.find((unit) => unit.id === unitId)?.modelIds).toHaveLength(expectedCount)
+    }
+  })
+
+  it('keeps the four-shape geometry board isolated from the realistic gameplay roster', () => {
+    expect(footprintDemoGameState.models.map((model) => model.base.shape)).toEqual([
+      'circle', 'ellipse', 'rectangle', 'polygon',
+    ])
+    expect(footprintDemoGameState.models.map((model) => model.rotation)).toEqual([
+      0, Math.PI / 6, Math.PI / 4, Math.PI / 2,
+    ])
+    const started = gameReducer(footprintDemoGameState, {
+      type: 'movement/sessionStarted', sessionId: 'mixed-shape-demo',
+      modelIds: footprintDemoGameState.models.map((model) => model.id),
+    })
+    expect(started.movementSession?.modelIds).toEqual(footprintDemoGameState.models.map((model) => model.id))
+    const demoUnit = footprintDemoGameState.units[0]
+    const demoPolicy = getUnitCoherencyPolicy(footprintDemoGameState, demoUnit)!
+    const demoCoherency = evaluateUnitCoherency(
+      demoUnit,
+      footprintDemoGameState.models,
+      demoPolicy,
+    )
+    expect(demoCoherency.models).toHaveLength(4)
+    expect(demoCoherency.links.length).toBeGreaterThan(0)
+    expect(demoCoherency.connected).toBe(true)
+    expect(initialGameState.models.some((model) => model.base.shape === 'ellipse')).toBe(true)
+    expect(initialGameState.models.some((model) => model.base.shape === 'polygon')).toBe(true)
+  })
+  it('defines the realistic test roster with requested physical profiles and policies', () => {
     const expected = [
-      { id: 'unit-a', name: 'Line 10', ownerId: 'player-1', count: 10, diameters: [25], movement: 6, distance: 1, requiredNeighbors: 1 },
-      { id: 'unit-b', name: 'Medium 10', ownerId: 'player-2', count: 10, diameters: [32], movement: 6, distance: 1, requiredNeighbors: 2 },
-      { id: 'unit-c', name: 'Heavy 10', ownerId: 'player-2', count: 10, diameters: [50], movement: 6, distance: 2, requiredNeighbors: 2 },
-      { id: 'unit-skirmish', name: 'Skirmish 5', ownerId: 'player-1', count: 5, diameters: [25], movement: 6, distance: 1, requiredNeighbors: 1 },
-      { id: 'unit-horde', name: 'Horde 20', ownerId: 'player-1', count: 20, diameters: [25], movement: 6, distance: 1, requiredNeighbors: 1 },
-      { id: 'unit-cohort', name: 'Cohort 20', ownerId: 'player-2', count: 20, diameters: [32], movement: 5, distance: 1, requiredNeighbors: 2 },
-      { id: 'unit-fast', name: 'Fast 6', ownerId: 'player-1', count: 6, diameters: [40], movement: 10, distance: 1.5, requiredNeighbors: 1 },
-      { id: 'unit-giants', name: 'Giants 3', ownerId: 'player-2', count: 3, diameters: [80], movement: 8, distance: 2, requiredNeighbors: 1 },
-      { id: 'unit-mixed', name: 'Mixed 8', ownerId: 'player-1', count: 8, diameters: [32, 40, 50], movement: 6, distance: 1.5, requiredNeighbors: 1 },
+      { id: 'unit-a', name: 'Standard Infantry', ownerId: 'player-1', count: 10, footprint: { shape: 'circle', diameterMm: 32 }, movement: 6, distance: 1, requiredNeighbors: 1 },
+      { id: 'unit-horde', name: 'Horde', ownerId: 'player-2', count: 20, footprint: { shape: 'circle', diameterMm: 25 }, movement: 6, distance: 1, requiredNeighbors: 1 },
+      { id: 'unit-cavalry', name: 'Oval Cavalry', ownerId: 'player-1', count: 6, footprint: { shape: 'ellipse', widthMm: 75, heightMm: 42 }, movement: 10, distance: 1, requiredNeighbors: 1 },
+      { id: 'unit-b', name: 'Elite Large-Base Unit', ownerId: 'player-2', count: 5, footprint: { shape: 'circle', diameterMm: 50 }, movement: 6, distance: 1, requiredNeighbors: 1 },
+      { id: 'unit-c', name: 'Heavy Oval Unit', ownerId: 'player-2', count: 3, footprint: { shape: 'ellipse', widthMm: 90, heightMm: 52 }, movement: 8, distance: 2, requiredNeighbors: 1 },
+      { id: 'unit-vehicles', name: 'Vehicle / Hull Unit', ownerId: 'player-2', count: 3, footprint: { shape: 'polygon' }, movement: 10, distance: 1, requiredNeighbors: 1 },
+      { id: 'unit-strong', name: 'Strong Coherency Unit', ownerId: 'player-1', count: 10, footprint: { shape: 'circle', diameterMm: 40 }, movement: 5, distance: 1, requiredNeighbors: 2 },
     ]
     expect(initialGameState.units).toHaveLength(expected.length)
     initialGameState.units.forEach((unit, index) => {
@@ -38,13 +89,15 @@ describe('prototype Smart Move units', () => {
         requireConnected: true,
       })
       expect(models).toHaveLength(expectedUnit.count)
-      expect([...new Set(models.map((model) => model.base.diameterMm))].sort((a, b) => a - b)).toEqual(expectedUnit.diameters)
+      expect(models.every((model) => JSON.stringify(model.base) === JSON.stringify(models[0].base))).toBe(true)
+      expect(models[0].base).toMatchObject(expectedUnit.footprint)
+      expect(models.every((model) => model.rotation === models[0].rotation)).toBe(true)
     })
 
     const cloned = structuredClone(initialGameState)
     cloned.unitDefinitions[0].coherencyPolicy!.distance = 9
     expect(cloned.unitDefinitions[1].coherencyPolicy?.distance).toBe(1)
-    expect(cloned.unitDefinitions.find((definition) => definition.id === 'def-heavy')?.coherencyPolicy?.distance).toBe(2)
+    expect(cloned.unitDefinitions.find((definition) => definition.id === 'def-heavy-oval')?.coherencyPolicy?.distance).toBe(2)
   })
 
   it('starts every unit coherent according to its real policy', () => {
@@ -84,6 +137,31 @@ describe('prototype Smart Move units', () => {
     ))).toBe(true)
   })
 
+  it('smoke-tests Oval Cavalry Smart Move against a hull blocker', () => {
+    const unit = initialGameState.units.find((candidate) => candidate.id === 'unit-cavalry')!
+    const models = initialGameState.models.filter((candidate) => candidate.unitId === unit.id)
+    const blocker = structuredClone(initialGameState.models.find((candidate) => candidate.unitId === 'unit-vehicles')!)
+    blocker.id = 'cavalry-smoke-blocker'
+    blocker.position = { x: 27, y: 6.05 }
+    const target = { x: 30.35, y: 6.05 }
+    const policy = getUnitCoherencyPolicy(initialGameState, unit)!
+    const result = solveSmartMove({
+      allModels: [...models, blocker],
+      units: [unit],
+      battlefield: initialGameState.battlefield,
+      selectedModelIds: unit.modelIds,
+      target,
+      movementRemaining: Object.fromEntries(unit.modelIds.map((id) => [id, 10])),
+      coherencyPolicy: policy,
+    })
+    expect(result.valid, JSON.stringify(result)).toBe(true)
+    expect(result.assignments.some((assignment) => assignment.movementCost > 0)).toBe(true)
+    for (const model of models) {
+      const position = result.positions[model.id] ?? model.position
+      expect(footprintsOverlap(model.base, poseForModel(model, position), blocker.base, poseForModel(blocker))).toBe(false)
+    }
+  })
+
   it('starts inside the battlefield without any overlapping bases', () => {
     expect(initialGameState.models.every((model) => isModelPositionInsideBattlefield(
       model.position,
@@ -94,12 +172,7 @@ describe('prototype Smart Move units', () => {
       for (let target = source + 1; target < initialGameState.models.length; target += 1) {
         const a = initialGameState.models[source]
         const b = initialGameState.models[target]
-        expect(circlesOverlap(
-          a.position,
-          baseRadiusInches(a.base),
-          b.position,
-          baseRadiusInches(b.base),
-        ), `${a.id} overlaps ${b.id}`).toBe(false)
+        expect(footprintsOverlap(a.base, poseForModel(a), b.base, poseForModel(b)), `${a.id} overlaps ${b.id}`).toBe(false)
       }
     }
   })
@@ -277,7 +350,7 @@ describe('prototype Smart Move units', () => {
       units: [unit],
       battlefield: current.battlefield,
       selectedModelIds: selectedIds,
-      target: { x: 22, y: 8 },
+      target: { x: 14, y: 7 },
       movementRemaining: Object.fromEntries(selectedIds.map((id) => [id, 6])),
       coherencyPolicy: policy,
     })

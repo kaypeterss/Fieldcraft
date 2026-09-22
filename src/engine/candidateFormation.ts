@@ -1,11 +1,9 @@
 import type { Battlefield, TabletopModel, Unit } from '../domain/types'
 import type { CoherencyPolicy } from './coherency'
 import { evaluateUnitCoherency, isCoherencyResultValid } from './coherency'
-import { isModelPositionInsideBattlefield } from './geometry/battlefield'
-import { circlesOverlap } from './geometry/circles'
+import { footprintInsideBattlefield, footprintsOverlap, poseForModel } from './geometry/footprints'
 import type { Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
-import { baseRadiusInches } from './spatial'
 
 export type CandidateFormation = Readonly<Record<string, Point>>
 
@@ -24,6 +22,8 @@ export interface CandidateFormationRequest {
   allModels: ReadonlyArray<TabletopModel>
   battlefield: Battlefield
   positions: CandidateFormation
+  /** Optional final orientations; omitted models retain their current rotation. */
+  rotations?: Readonly<Record<string, number>>
   reachability?: CandidateReachabilityConstraint
   coherency?: CandidateCoherencyConstraint
 }
@@ -48,10 +48,14 @@ export interface CandidateFormationResult {
 export function projectCandidateModels(
   allModels: ReadonlyArray<TabletopModel>,
   positions: CandidateFormation,
+  rotations: Readonly<Record<string, number>> = {},
 ): TabletopModel[] {
   return allModels.map((model) => {
     const position = positions[model.id]
-    return position ? { ...model, position: { ...position } } : model
+    const rotation = rotations[model.id]
+    return position || rotation !== undefined
+      ? { ...model, ...(position ? { position: { ...position } } : {}), ...(rotation !== undefined ? { rotation } : {}) }
+      : model
   })
 }
 
@@ -72,9 +76,10 @@ export function validateCandidateFormation(request: CandidateFormationRequest): 
       violations.push({ type: 'MODEL_NOT_FOUND', modelIds: [modelId] })
       continue
     }
-    candidateModels.push(model)
+    const candidate = { ...model, rotation: request.rotations?.[modelId] ?? model.rotation }
+    candidateModels.push(candidate)
     const position = request.positions[modelId]
-    if (!isModelPositionInsideBattlefield(position, model, request.battlefield)) {
+    if (!footprintInsideBattlefield(candidate.base, poseForModel(candidate, position), request.battlefield)) {
       violations.push({ type: 'OUT_OF_BOUNDS', modelIds: [modelId] })
     }
   }
@@ -82,9 +87,13 @@ export function validateCandidateFormation(request: CandidateFormationRequest): 
   const stationaryModels = request.allModels.filter((model) => !candidateIdSet.has(model.id))
   for (const candidate of candidateModels) {
     const position = request.positions[candidate.id]
-    const radius = baseRadiusInches(candidate.base)
     for (const stationary of stationaryModels) {
-      if (circlesOverlap(position, radius, stationary.position, baseRadiusInches(stationary.base))) {
+      if (footprintsOverlap(
+        candidate.base,
+        poseForModel(candidate, position),
+        stationary.base,
+        poseForModel(stationary),
+      )) {
         violations.push({
           type: 'COLLIDES_WITH_STATIONARY_MODEL',
           modelIds: [candidate.id, stationary.id],
@@ -97,11 +106,11 @@ export function validateCandidateFormation(request: CandidateFormationRequest): 
     for (let targetIndex = sourceIndex + 1; targetIndex < candidateModels.length; targetIndex += 1) {
       const source = candidateModels[sourceIndex]
       const target = candidateModels[targetIndex]
-      if (circlesOverlap(
-        request.positions[source.id],
-        baseRadiusInches(source.base),
-        request.positions[target.id],
-        baseRadiusInches(target.base),
+      if (footprintsOverlap(
+        source.base,
+        poseForModel(source, request.positions[source.id]),
+        target.base,
+        poseForModel(target, request.positions[target.id]),
       )) {
         violations.push({ type: 'CANDIDATE_INTERNAL_OVERLAP', modelIds: [source.id, target.id] })
       }
@@ -109,7 +118,7 @@ export function validateCandidateFormation(request: CandidateFormationRequest): 
   }
 
   if (request.coherency) {
-    const projectedModels = projectCandidateModels(request.allModels, request.positions)
+    const projectedModels = projectCandidateModels(request.allModels, request.positions, request.rotations)
     const result = evaluateUnitCoherency(request.coherency.unit, projectedModels, request.coherency.policy)
     const coherent = isCoherencyResultValid(result, {
       ...request.coherency.policy,

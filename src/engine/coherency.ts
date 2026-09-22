@@ -1,5 +1,6 @@
 import type { CoherencyPolicy, TabletopModel, Unit } from '../domain/types'
-import { distanceBetweenBases, isDistanceWithinRange } from './spatial'
+import type { Point } from './geometry/point'
+import { closestPointsBetweenBases, isDistanceWithinRange } from './spatial'
 
 export type { CoherencyPolicy } from '../domain/types'
 
@@ -14,6 +15,8 @@ export interface CoherencyLink {
   sourceModelId: string
   targetModelId: string
   distance: number
+  startAnchor: Point
+  endAnchor: Point
 }
 
 export interface CoherencyResult {
@@ -43,11 +46,17 @@ export function evaluateUnitCoherency(
     for (let targetIndex = sourceIndex + 1; targetIndex < models.length; targetIndex += 1) {
       const source = models[sourceIndex]
       const target = models[targetIndex]
-      const distance = distanceBetweenBases(source, target)
-      if (!isDistanceWithinRange(distance, policy.distance)) continue
+      const closest = closestPointsBetweenBases(source, target)
+      if (!isDistanceWithinRange(closest.distance, policy.distance)) continue
       neighbors.get(source.id)?.push(target.id)
       neighbors.get(target.id)?.push(source.id)
-      links.push({ sourceModelId: source.id, targetModelId: target.id, distance })
+      links.push({
+        sourceModelId: source.id,
+        targetModelId: target.id,
+        distance: closest.distance,
+        startAnchor: closest.startAnchor,
+        endAnchor: closest.endAnchor,
+      })
     }
   }
 

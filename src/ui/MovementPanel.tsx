@@ -5,6 +5,10 @@ export interface MovementSummary {
   allowanceLabel: string
   maximumUsed: number
   minimumRemaining: number
+  maximumTranslationDistance: number
+  maximumRotationCost: number
+  maximumRotationDegrees: number
+  policyLabel: string
 }
 
 interface MovementPanelProps {
@@ -22,8 +26,12 @@ export function MovementPanel({ summary, onConfirm, onCancel }: MovementPanelPro
       </div>
       <dl>
         <div><dt>Allowance</dt><dd>{summary.allowanceLabel}</dd></div>
-        <div><dt>Maximum used</dt><dd>{formatInches(summary.maximumUsed)}</dd></div>
-        <div><dt>Minimum remaining</dt><dd>{formatInches(summary.minimumRemaining)}</dd></div>
+        <div><dt>Movement</dt><dd>{formatInches(summary.maximumUsed)} / {summary.allowanceLabel}</dd></div>
+        <div><dt>Translation travelled</dt><dd>{formatInches(summary.maximumTranslationDistance)}</dd></div>
+        <div><dt>Rotation travelled</dt><dd>{summary.maximumRotationDegrees.toFixed(1)}°</dd></div>
+        <div><dt>Rotation cost</dt><dd>{formatInches(summary.maximumRotationCost)}</dd></div>
+        <div><dt>Remaining</dt><dd>{formatInches(summary.minimumRemaining)}</dd></div>
+        <div><dt>Policy</dt><dd>{summary.policyLabel}</dd></div>
       </dl>
       {summary.participantCount === 1 && (
         <p className="movement-handoff-hint">Click another model in this unit to confirm and continue.</p>

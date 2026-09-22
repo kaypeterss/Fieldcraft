@@ -1,6 +1,7 @@
 import type { SmartMoveResult } from '../engine/smartMove'
 import type { CoherencyPolicy } from '../domain/types'
 import type { SmartMoveAsyncStatus } from '../tools/smartMoveWorkerController'
+import { smartMoveBadge } from './smartMoveStatus'
 
 interface SmartMovePanelProps {
   selectedCount: number
@@ -19,20 +20,15 @@ interface SmartMovePanelProps {
 }
 
 export function SmartMovePanel(props: SmartMovePanelProps) {
-  const result = props.result
+  const badge = smartMoveBadge(props.asyncStatus)
+  const result = props.asyncStatus === 'ready-valid' || props.asyncStatus === 'ready-invalid'
+    ? props.result : null
   const diagnostics = result?.diagnostics
-  const candidateLabel = props.asyncStatus === 'error'
-    ? 'ERROR'
-    : props.asyncStatus === 'calculating' && (props.targetMode === 'locked' || props.thinkingVisible)
-      ? 'CALCULATING'
-      : result
-        ? (result.valid ? 'VALID' : 'INVALID')
-        : 'AWAITING TARGET'
   return (
     <aside className="smart-move-panel" aria-label="Smart Move preview">
       <div className="smart-move-panel-heading">
         <div><span className="eyebrow">FORMATION PREVIEW</span><h2>Smart Move</h2></div>
-        <span className={result?.valid ? 'smart-candidate valid' : 'smart-candidate invalid'}>{candidateLabel}</span>
+        <span className={`smart-candidate ${badge.tone}`}>{badge.label}</span>
       </div>
       <dl>
         <div><dt>Selected</dt><dd>{props.selectedCount} / {props.unitSize} models</dd></div>
@@ -59,7 +55,7 @@ export function SmartMovePanel(props: SmartMovePanelProps) {
       {props.targetMode === 'locked' && props.asyncStatus === 'calculating' && !props.thinkingVisible && (
         <p className="smart-calculating-text" role="status" aria-live="polite">Calculating exact target...</p>
       )}
-      {props.errorMessage ? <p className="smart-failure" role="alert">{props.errorMessage}</p> : props.message ? <p className="smart-message">{props.message}</p> : (
+      {props.errorMessage ? <p className={props.asyncStatus === 'search-limit' ? 'smart-warning' : 'smart-failure'} role="alert">{props.errorMessage}</p> : props.message ? <p className="smart-message">{props.message}</p> : (
         <div className="smart-validation">
           <Status label="Movement" value={result?.validation.movement} />
           <Status label="Collision" value={result?.validation.collision} />
@@ -86,6 +82,7 @@ export function SmartMovePanel(props: SmartMovePanelProps) {
 function formatSolverStage(stage: NonNullable<SmartMoveResult['diagnostics']>['solverStage']) {
   if (stage === 'COMMON_TRANSLATION') return 'Common Translation'
   if (stage === 'DIRECT_MAXIMUM') return 'Direct Maximum'
+  if (stage === 'ROTATION_FALLBACK') return 'Rotation Fallback'
   return 'Fallback'
 }
 

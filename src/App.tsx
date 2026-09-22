@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { initialGameState } from './game/initialState'
-import type { GameState } from './domain/types'
+import { footprintDemoGameState, initialGameState, orientationGapGameState } from './game/initialState'
+import type { GameState, MovementPolicyConfig } from './domain/types'
 import {
   canUndoLastMovement,
   getMovementAllowance,
@@ -21,11 +21,14 @@ import {
 import { DebugPanel } from './ui/DebugPanel'
 import { Toolbar, type ActiveTool } from './ui/Toolbar'
 import { MovementPanel, type MovementSummary } from './ui/MovementPanel'
+import { MovementCostPolicyPanel } from './ui/MovementCostPolicyPanel'
 import { isEditableKeyboardTarget, isUndoMovementShortcut } from './tools/keyboard'
 import { evaluateUnitCoherency, isCoherencyResultValid, type CoherencyPolicy } from './engine/coherency'
 import {
   resolveSpatialCoherencyPolicy,
   resolveSpatialCoherencyUnit,
+  describeFootprint,
+  describeSpatialSources,
   type CoherencyAnalysisMode,
   type SpatialMode,
   type SpatialOverlayConfig,
@@ -48,6 +51,7 @@ import {
   type SmartMoveSchedulingDiagnostics,
 } from './tools/smartMoveWorkerController'
 import './styles.css'
+import { calculatePathMovementCost, isPathCostPolicy, movementPolicyLabel } from './engine/movementCost'
 
 interface SmartMoveSessionState {
   modelIds: string[]
@@ -55,11 +59,16 @@ interface SmartMoveSessionState {
 }
 
 export default function App() {
+  const footprintDemoEnabled = new URLSearchParams(window.location.search).has('footprints')
+  const orientationGapEnabled = new URLSearchParams(window.location.search).has('orientationGap')
+  const startupGameState = orientationGapEnabled ? orientationGapGameState
+    : footprintDemoEnabled ? footprintDemoGameState : initialGameState
   const [{ gameState, revision: gameStateRevision }, dispatch] = useReducer(
     versionedGameReducer,
-    { gameState: initialGameState, revision: 0 },
+    { gameState: startupGameState, revision: 0 },
   )
   const [activeTool, setActiveTool] = useState<ActiveTool>('select')
+  const [spatialEnabled, setSpatialEnabled] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [measurementStartTarget, setMeasurementStartTarget] = useState<MeasurementTarget | null>(null)
   const [measurementPair, setMeasurementPair] = useState<MeasurementPair | null>(null)
@@ -68,9 +77,11 @@ export default function App() {
   const [rangeInches, setRangeInches] = useState(3)
   const [requiredSeparation, setRequiredSeparation] = useState(3)
   const [targetBaseDiameterMm, setTargetBaseDiameterMm] = useState(32)
+  const [exclusionTargetModelId, setExclusionTargetModelId] = useState<string | null>(null)
   const [coherencyAnalysisMode, setCoherencyAnalysisMode] = useState<CoherencyAnalysisMode>('unit-policy')
   const [analysisCoherencyPolicy, setAnalysisCoherencyPolicy] = useState<CoherencyPolicy>({ distance: 1, requiredNeighbors: 1, requireConnected: false })
   const [blockedMovementSessionId, setBlockedMovementSessionId] = useState<string | null>(null)
+  const [movementPolicy, setMovementPolicy] = useState<MovementPolicyConfig>({ type: 'movement-envelope' })
   const [smartMoveSession, setSmartMoveSession] = useState<SmartMoveSessionState | null>(null)
   const [smartMoveTargeting, setSmartMoveTargeting] = useState(initialSmartMoveTargetState)
   const [smartMoveAsync, setSmartMoveAsync] = useState(initialSmartMoveAsyncState)
@@ -130,6 +141,31 @@ export default function App() {
     return selectedModel ? [selectedModel.id] : []
   }, [selectedModel, selectedWholeUnit])
 
+  const exclusionTargetModel = useMemo(
+    () => gameState.models.find((model) => model.id === exclusionTargetModelId),
+    [exclusionTargetModelId, gameState.models],
+  )
+  const exclusionTargetFootprint = useMemo(
+    () => exclusionTargetModel?.base ?? { shape: 'circle' as const, diameterMm: targetBaseDiameterMm },
+    [exclusionTargetModel, targetBaseDiameterMm],
+  )
+  const exclusionTargetRotation = exclusionTargetModel?.rotation ?? 0
+  const exclusionTargetOptions = useMemo(() => {
+    const seen = new Set<string>()
+    return gameState.models.flatMap((model) => {
+      const geometryKey = JSON.stringify({
+        footprint: model.base,
+        rotation: model.base.shape === 'circle' ? 0 : model.rotation,
+      })
+      if (seen.has(geometryKey)) return []
+      seen.add(geometryKey)
+      return [{
+        id: model.id,
+        label: `${model.label ?? model.id} · ${describeFootprint(model.base, model.rotation)}`,
+      }]
+    })
+  }, [gameState.models])
+
   const coherencyUnit = useMemo(
     () => selectedWholeUnit ?? resolveSpatialCoherencyUnit(gameState.units, selectedIds),
     [gameState.units, selectedIds, selectedWholeUnit],
@@ -151,15 +187,21 @@ export default function App() {
     [coherencyUnit, gameState.models, spatialCoherencyPolicy],
   )
 
-  const spatialOverlay = useMemo<SpatialOverlayConfig | null>(() => activeTool === 'spatial' ? {
+  const spatialDisplaySourceIds = spatialMode === 'coherency'
+    ? coherencyUnit?.modelIds ?? []
+    : spatialSourceIds
+  const spatialDisplaySources = gameState.models.filter((model) => spatialDisplaySourceIds.includes(model.id))
+
+  const spatialOverlay = useMemo<SpatialOverlayConfig | null>(() => spatialEnabled ? {
     mode: spatialMode,
     sourceModelIds: spatialMode === 'coherency' ? coherencyUnit?.modelIds ?? [] : spatialSourceIds,
     range: rangeInches,
     requiredSeparation,
-    targetBaseDiameterMm,
+    targetFootprint: exclusionTargetFootprint,
+    targetRotation: exclusionTargetRotation,
     coherencyPolicy: spatialCoherencyPolicy,
     coherency,
-  } : null, [activeTool, coherency, coherencyUnit, rangeInches, requiredSeparation, spatialCoherencyPolicy, spatialMode, spatialSourceIds, targetBaseDiameterMm])
+  } : null, [coherency, coherencyUnit, exclusionTargetFootprint, exclusionTargetRotation, rangeInches, requiredSeparation, spatialCoherencyPolicy, spatialEnabled, spatialMode, spatialSourceIds])
 
   const movementSummary = useMemo<MovementSummary | null>(() => {
     const session = gameState.movementSession
@@ -167,6 +209,15 @@ export default function App() {
     const participants = gameState.models.filter((model) => session.modelIds.includes(model.id))
     const allowances = participants.map((model) => getMovementAllowance(gameState, model))
     const used = participants.map((model) => session.models[model.id]?.movementUsed ?? 0)
+    const translationDistance = participants.map((model) => session.models[model.id]?.translationDistance ?? 0)
+    const angularRotation = participants.map((model) => session.models[model.id]?.angularRotation ?? 0)
+    const rotationCost = participants.map((model) => {
+      const movement = session.models[model.id]
+      return movement && isPathCostPolicy(session.movementPolicy) ? calculatePathMovementCost(session.movementPolicy, {
+        translationDistance: movement.translationDistance,
+        angularDistance: movement.angularRotation,
+      }).rotationCost : 0
+    })
     const remaining = participants.map((_, index) => Math.max(0, allowances[index] - used[index]))
     const distinctAllowances = [...new Set(allowances)]
     return {
@@ -176,6 +227,10 @@ export default function App() {
         : `${Math.min(...allowances).toFixed(2)}–${Math.max(...allowances).toFixed(2)}\u2033`,
       maximumUsed: Math.max(0, ...used),
       minimumRemaining: Math.min(...remaining),
+      maximumTranslationDistance: Math.max(0, ...translationDistance),
+      maximumRotationCost: Math.max(0, ...rotationCost),
+      maximumRotationDegrees: Math.max(0, ...angularRotation) * 180 / Math.PI,
+      policyLabel: movementPolicyLabel(session.movementPolicy),
     }
   }, [gameState])
 
@@ -202,9 +257,9 @@ export default function App() {
 
   const smartMoveRequestFactory = useMemo(() => (
     smartMoveSession && smartMovePolicy
-      ? createSmartMoveRequestFactory(gameState, smartMoveSession.modelIds, smartMovePolicy)
+      ? createSmartMoveRequestFactory(gameState, smartMoveSession.modelIds, smartMovePolicy, movementPolicy)
       : null
-  ), [gameState, smartMovePolicy, smartMoveSession])
+  ), [gameState, movementPolicy, smartMovePolicy, smartMoveSession])
 
   useEffect(() => {
     if (!smartMoveRequestFactory || !smartMoveSession) return
@@ -214,14 +269,16 @@ export default function App() {
   const smartMoveResult = smartMoveAsync.result
 
   const previewSmartMoveTarget = useCallback((target: { x: number; y: number }) => {
+    if (!smartMoveSession) return
     setSmartMoveTargeting((state) => previewTarget(state, target))
     smartMoveControllerRef.current?.previewTarget(target)
-  }, [])
+  }, [smartMoveSession])
 
   const lockSmartMoveTarget = useCallback((target: { x: number; y: number }) => {
+    if (!smartMoveSession) return
     setSmartMoveTargeting(lockTarget(target))
     smartMoveControllerRef.current?.lockTarget(target)
-  }, [])
+  }, [smartMoveSession])
 
   const cancelSmartMove = useCallback(() => {
     smartMoveControllerRef.current?.cancelSession()
@@ -229,6 +286,39 @@ export default function App() {
     setSmartMoveTargeting(initialSmartMoveTargetState())
     setSmartMoveMessage(null)
   }, [])
+
+  const handleSelectionChange = useCallback((nextSelectedIds: Set<string>) => {
+    setSelectedIds(nextSelectedIds)
+    if (activeTool !== 'smart-move') return
+    smartMoveControllerRef.current?.cancelSession()
+    setSmartMoveSession(null)
+    setSmartMoveTargeting(initialSmartMoveTargetState())
+    const models = gameState.models
+      .filter((model) => nextSelectedIds.has(model.id))
+      .sort((a, b) => a.id.localeCompare(b.id))
+    const unitIds = [...new Set(models.map((model) => model.unitId))]
+    if (models.length === 0) {
+      setSmartMoveMessage('Select one or more models first.')
+      return
+    }
+    if (unitIds.length !== 1) {
+      setSmartMoveMessage('Smart Move requires models from a single unit.')
+      return
+    }
+    const unit = gameState.units.find((candidate) => candidate.id === unitIds[0])
+    const policy = unit ? getUnitCoherencyPolicy(gameState, unit) : undefined
+    if (!unit || !policy) {
+      setSmartMoveMessage('This unit has no configured coherency policy.')
+      return
+    }
+    const session = { modelIds: models.map((model) => model.id), unitId: unit.id }
+    setSmartMoveSession(session)
+    setSmartMoveMessage(null)
+    smartMoveControllerRef.current?.beginSession(
+      gameStateRevision,
+      createSmartMoveRequestFactory(gameState, session.modelIds, policy, movementPolicy),
+    )
+  }, [activeTool, gameState, gameStateRevision, movementPolicy])
 
   const applySmartMove = useCallback(() => {
     const result = smartMoveControllerRef.current?.getApplicableResult()
@@ -238,11 +328,17 @@ export default function App() {
       return model
         && Math.abs(model.position.x - assignment.start.x) <= GEOMETRY_EPSILON
         && Math.abs(model.position.y - assignment.start.y) <= GEOMETRY_EPSILON
+        && (!assignment.trajectory
+          || Math.abs(model.rotation - assignment.trajectory.startPose.rotation) <= GEOMETRY_EPSILON)
     })
     const authoritativeValidation = validateCandidateFormation({
       allModels: gameState.models,
       battlefield: gameState.battlefield,
       positions: result.positions,
+      rotations: Object.fromEntries(result.assignments.map((assignment) => {
+        const model = gameState.models.find((candidate) => candidate.id === assignment.modelId)
+        return [assignment.modelId, assignment.finalRotation ?? model?.rotation ?? 0]
+      })),
       reachability: {
         movementCosts: Object.fromEntries(result.assignments.map((assignment) => [
           assignment.modelId,
@@ -269,9 +365,23 @@ export default function App() {
         assignment.modelId,
         assignment.destination,
       ])),
+      startingRotations: Object.fromEntries(result.assignments.map((assignment) => {
+        const model = gameState.models.find((candidate) => candidate.id === assignment.modelId)
+        return [assignment.modelId, model?.rotation ?? 0]
+      })),
+      finalRotations: Object.fromEntries(result.assignments.map((assignment) => {
+        const model = gameState.models.find((candidate) => candidate.id === assignment.modelId)
+        return [assignment.modelId, assignment.finalRotation ?? model?.rotation ?? 0]
+      })),
+      trajectories: Object.fromEntries(result.assignments.flatMap((assignment) =>
+        assignment.trajectory ? [[assignment.modelId, assignment.trajectory]] : [])),
       movementUsed: Object.fromEntries(result.assignments.map((assignment) => [
         assignment.modelId,
         assignment.movementCost,
+      ])),
+      paths: Object.fromEntries(result.assignments.map((assignment) => [
+        assignment.modelId,
+        assignment.path,
       ])),
     })
     cancelSmartMove()
@@ -313,14 +423,24 @@ export default function App() {
       setSmartMoveSession(session)
       smartMoveControllerRef.current?.beginSession(
         gameStateRevision,
-        createSmartMoveRequestFactory(gameState, session.modelIds, policy),
+        createSmartMoveRequestFactory(gameState, session.modelIds, policy, movementPolicy),
       )
       return
     }
     cancelSmartMove()
     setActiveTool(tool)
     if (tool !== 'measure') setMeasurementStartTarget(null)
-  }, [cancelSmartMove, gameState, gameStateRevision, selectedIds])
+  }, [cancelSmartMove, gameState, gameStateRevision, movementPolicy, selectedIds])
+
+  const toggleSpatialOverlay = useCallback(() => {
+    if (!spatialEnabled) {
+      // Opening analysis returns the pointer to ordinary tabletop manipulation.
+      cancelSmartMove()
+      setActiveTool('select')
+      setMeasurementStartTarget(null)
+    }
+    setSpatialEnabled((enabled) => !enabled)
+  }, [cancelSmartMove, spatialEnabled])
 
   const handleMeasureTarget = useCallback((target: MeasurementTarget) => {
     if (!measurementStartTarget || measurementPair) {
@@ -360,7 +480,7 @@ export default function App() {
       }
       if (event.key.toLowerCase() === 'v') changeTool('select')
       if (event.key.toLowerCase() === 'm') changeTool('measure')
-      if (event.key.toLowerCase() === 's') changeTool('spatial')
+      if (event.key.toLowerCase() === 's') toggleSpatialOverlay()
       if (event.key.toLowerCase() === 'g') changeTool('smart-move')
       if (event.key.toLowerCase() === 'f') setResetCameraSignal((value) => value + 1)
       if (event.key === 'Escape') {
@@ -383,7 +503,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, gameState, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting])
+  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, gameState, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay])
 
   const handleEndTurn = useCallback(() => {
     if (gameState.movementSession) {
@@ -415,12 +535,14 @@ export default function App() {
         <div className="session-info">
           <span className="status-dot" /> LOCAL SANDBOX
           <span className="divider" />
-          <strong>60 × 44</strong>
+          <strong>{gameState.battlefield.width} × {gameState.battlefield.height}</strong>
         </div>
       </header>
       <Toolbar
         activeTool={activeTool}
+        spatialEnabled={spatialEnabled}
         onToolChange={changeTool}
+        onSpatialToggle={toggleSpatialOverlay}
         onResetCamera={() => setResetCameraSignal((value) => value + 1)}
       />
       <section className="workspace">
@@ -436,12 +558,20 @@ export default function App() {
           smartMoveRawTarget={smartMoveTargeting.target}
           smartMoveTargetLocked={smartMoveTargeting.mode === 'locked'}
           resetCameraSignal={resetCameraSignal}
-          onSelectionChange={setSelectedIds}
+          movementPolicy={movementPolicy}
+          onSelectionChange={handleSelectionChange}
           onMeasureTarget={handleMeasureTarget}
           onSmartMoveTargetPreview={previewSmartMoveTarget}
           onSmartMoveTargetLock={lockSmartMoveTarget}
           dispatch={dispatch}
         />
+        {(footprintDemoEnabled || orientationGapEnabled) && (
+          <MovementCostPolicyPanel
+            policy={movementPolicy}
+            disabled={Boolean(gameState.movementSession)}
+            onChange={setMovementPolicy}
+          />
+        )}
         <DebugPanel
           model={selectedModel}
           selectedCount={selectedIds.size}
@@ -459,12 +589,16 @@ export default function App() {
             ? isCoherencyResultValid(selectedUnitCoherency, selectedUnitPolicy)
             : undefined}
         />
-        {activeTool === 'spatial' && (
+        {spatialEnabled && (
           <SpatialPanel
             mode={spatialMode}
             range={rangeInches}
             requiredSeparation={requiredSeparation}
             targetBaseDiameterMm={targetBaseDiameterMm}
+            targetModelId={exclusionTargetModel?.id ?? null}
+            targetModelOptions={exclusionTargetOptions}
+            sourceGeometryLabel={describeSpatialSources(spatialDisplaySources)}
+            targetGeometryLabel={describeFootprint(exclusionTargetFootprint, exclusionTargetRotation)}
             coherencyAnalysisMode={coherencyAnalysisMode}
             coherencyPolicy={spatialCoherencyPolicy}
             customCoherencyPolicy={analysisCoherencyPolicy}
@@ -475,7 +609,11 @@ export default function App() {
             onModeChange={setSpatialMode}
             onRangeChange={setRangeInches}
             onRequiredSeparationChange={setRequiredSeparation}
-            onTargetBaseDiameterChange={setTargetBaseDiameterMm}
+            onTargetBaseDiameterChange={(diameterMm) => {
+              setTargetBaseDiameterMm(diameterMm)
+              setExclusionTargetModelId(null)
+            }}
+            onTargetModelChange={setExclusionTargetModelId}
             onCoherencyAnalysisModeChange={setCoherencyAnalysisMode}
             onCoherencyPolicyChange={setAnalysisCoherencyPolicy}
           />
@@ -529,6 +667,7 @@ function createSmartMoveRequestFactory(
   gameState: GameState,
   modelIds: string[],
   coherencyPolicy: CoherencyPolicy,
+  movementPolicy: MovementPolicyConfig,
 ): (target: SmartMoveRequest['target']) => SmartMoveRequest {
   const movementRemaining = Object.fromEntries(modelIds.map((modelId) => {
     const model = gameState.models.find((candidate) => candidate.id === modelId)
@@ -542,6 +681,7 @@ function createSmartMoveRequestFactory(
     target: { ...target },
     movementRemaining,
     coherencyPolicy,
+    movementPolicy,
   })
 }
 

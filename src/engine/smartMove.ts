@@ -1,4 +1,4 @@
-import type { Battlefield, TabletopModel, Unit } from '../domain/types'
+import type { Battlefield, MovementPolicyConfig, PoseTrajectory, TabletopModel, Unit } from '../domain/types'
 import {
   projectCandidateModels,
   validateCandidateFormation,
@@ -12,8 +12,20 @@ import {
 } from './coherency'
 import { isModelPositionInsideBattlefield } from './geometry/battlefield'
 import { circlesOverlap, firstCirclePathCollisionT } from './geometry/circles'
+import {
+  footprintBounds,
+  footprintCircumradiusInches,
+  footprintExclusionOutline,
+  footprintsOverlap,
+  poseForModel,
+  sweepFootprintTranslation,
+} from './geometry/footprints'
 import { distanceBetween, type Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
+import { movementEnvelopeReach } from './movementEnvelope'
+import { calculatePathMovementCost, DEFAULT_MOVEMENT_POLICY } from './movementCost'
+import { resolveModelRotation, shortestSignedAngularDelta } from './rotation'
+import { appendPoseTrajectorySegment, createPoseTrajectory, derivePoseTrajectoryMetrics } from './trajectory'
 import {
   createModelPathPlanner,
   findDirectModelPath,
@@ -22,7 +34,7 @@ import {
   type ModelPathRequest,
   type ModelPathResult,
 } from './pathfinding'
-import { baseRadiusInches } from './spatial'
+import { baseRadiusInches, distanceBetweenBases } from './spatial'
 
 export type SmartMoveFailureReason =
   | 'INVALID_SELECTION'
@@ -42,6 +54,9 @@ export interface SmartMoveRequest {
   target: Point
   movementRemaining: Readonly<Record<string, number>>
   coherencyPolicy?: CoherencyPolicy
+  movementPolicy?: MovementPolicyConfig
+  /** Optional wall-clock search allowance. The UI worker sets this per intent. */
+  searchBudgetMs?: number
 }
 
 export interface SmartMoveAssignment {
@@ -52,6 +67,9 @@ export interface SmartMoveAssignment {
   path: Point[]
   movementCost: number
   movementRemaining: number
+  /** Present on orientation-aware assignments; older fixed-orientation results omit it. */
+  finalRotation?: number
+  trajectory?: PoseTrajectory
 }
 
 export interface SmartMoveValidationStatus {
@@ -61,7 +79,7 @@ export interface SmartMoveValidationStatus {
   coherency: boolean
 }
 
-export type SmartMoveSolverStage = 'COMMON_TRANSLATION' | 'DIRECT_MAXIMUM' | 'FALLBACK'
+export type SmartMoveSolverStage = 'COMMON_TRANSLATION' | 'DIRECT_MAXIMUM' | 'FALLBACK' | 'ROTATION_FALLBACK'
 
 export interface SmartMoveDiagnostics {
   solverStage: SmartMoveSolverStage
@@ -130,6 +148,7 @@ interface TemplateFailure {
 }
 
 interface SolverMetrics {
+  deadlineAt: number
   fallbackOrder: string[]
   candidatePositionsGenerated: number
   candidatePositionsDeduplicated: number
@@ -175,11 +194,22 @@ export const SMART_MOVE_FALLBACK_MAX_DETOUR_CANDIDATES_SMALL_UNIT = 12
 export const SMART_MOVE_EFFECTIVE_PROGRESS_TOLERANCE = 0.01
 const FORMATION_ROTATIONS = [0, Math.PI / 6]
 const FALLBACK_PROGRESS_FRACTIONS = [1, 0.875, 0.75, 0.625, 0.5, 0.375, 0.25, 0.125, 0]
+const GENERIC_RELATIONSHIP_SAMPLES = 16
+const MAX_GENERIC_RELATIONSHIP_ANCHORS = 6
+const SMART_MOVE_GENERIC_MAX_DETOUR_CANDIDATES = 2
 export const SMART_MOVE_CANDIDATE_DEDUPLICATION_TOLERANCE = 1e-5
 
 export function solveSmartMove(request: SmartMoveRequest): SmartMoveResult {
+  const budgetMs = request.searchBudgetMs
+  const deadlineAt = budgetMs === undefined || !Number.isFinite(budgetMs)
+    ? Number.POSITIVE_INFINITY : nowMilliseconds() + Math.max(0, budgetMs)
+  const fixed = solveFixedOrientationSmartMove(request, deadlineAt)
+  return tryOrientationFallback(request, fixed, deadlineAt)
+}
+
+function solveFixedOrientationSmartMove(request: SmartMoveRequest, deadlineAt: number): SmartMoveResult {
   const solveStartedAt = nowMilliseconds()
-  const metrics = createSolverMetrics()
+  const metrics = createSolverMetrics(deadlineAt)
   const selectedIds = [...new Set(request.selectedModelIds)].sort((a, b) => a.localeCompare(b))
   const selectedModels = selectedIds.flatMap((id) => {
     const model = request.allModels.find((candidate) => candidate.id === id)
@@ -195,6 +225,7 @@ export function solveSmartMove(request: SmartMoveRequest): SmartMoveResult {
   if (!unit || selectedModels.some((model) => !unit.modelIds.includes(model.id))) {
     return failedResult(request.target, selectedIds, ['INVALID_SELECTION'])
   }
+  if (nowMilliseconds() >= deadlineAt) return failedResult(request.target, selectedIds, ['SEARCH_LIMIT'])
   metrics.requestSetupMs = nowMilliseconds() - solveStartedAt
 
   let candidatesTested = 0
@@ -269,8 +300,13 @@ export function solveSmartMove(request: SmartMoveRequest): SmartMoveResult {
 
   const movableModels = selectedModels.filter((model) => remainingFor(request, model.id) > GEOMETRY_EPSILON)
   const templateModels = movableModels.length > 0 ? movableModels : selectedModels
-  const largestRadius = Math.max(...templateModels.map((model) => baseRadiusInches(model.base)))
-  const spacings = formationSpacings(largestRadius, request.coherencyPolicy, templateModels.length)
+  const circleTemplates = templateModels.every((model) => model.base.shape === 'circle')
+  const largestRadius = circleTemplates
+    ? Math.max(...templateModels.map((model) => baseRadiusInches(model.base)))
+    : 0
+  const spacings = circleTemplates
+    ? formationSpacings(largestRadius, request.coherencyPolicy, templateModels.length)
+    : genericFormationSeparations(request.coherencyPolicy, templateModels.length)
   const startCentroid = pointsCentroid(templateModels.map((model) => model.position))
   const focuses = formationFocuses(
     request.target,
@@ -284,12 +320,22 @@ export function solveSmartMove(request: SmartMoveRequest): SmartMoveResult {
   outer: for (const focus of focuses) {
     for (const spacing of spacings) {
       for (const rotation of rotations) {
+        if (nowMilliseconds() >= deadlineAt) {
+          metrics.searchBudgetExhausted = true
+          break outer
+        }
         if (candidatesTested >= templateLimit) break outer
-        const slots = clampSlotsToBattlefield(
-          generateHexSlots(templateModels.length, spacing, rotation, focus),
-          largestRadius,
-          request.battlefield,
-        )
+        const slots = circleTemplates
+          ? clampSlotsToBattlefield(
+              generateHexSlots(templateModels.length, spacing, rotation, focus),
+              largestRadius,
+              request.battlefield,
+            )
+          : clampFootprintSlotsToBattlefield(
+              generateFootprintFormationSlots(templateModels, spacing, rotation, focus),
+              templateModels,
+              request.battlefield,
+            )
         candidatesTested += 1
         const planned = planTemplate(
           request,
@@ -342,6 +388,270 @@ export function solveSmartMove(request: SmartMoveRequest): SmartMoveResult {
     metrics,
     solveStartedAt,
   )
+}
+
+const MAX_ORIENTATION_MODELS = 3
+const MAX_ORIENTATIONS_PER_MODEL = 3
+const MAX_ORIENTATION_ATTEMPTS = 4
+const MIN_ROTATION_PROGRESS_GAIN = 0.1
+
+/** A late, bounded escape hatch. The proven fixed-orientation solver always runs first. */
+function tryOrientationFallback(request: SmartMoveRequest, fixed: SmartMoveResult, deadlineAt: number): SmartMoveResult {
+  if (nowMilliseconds() >= deadlineAt) return fixed.valid ? fixed : withSearchLimit(fixed)
+  const selected = request.selectedModelIds.flatMap((id) => {
+    const model = request.allModels.find((candidate) => candidate.id === id)
+    return model && model.base.shape !== 'circle' && remainingFor(request, id) > GEOMETRY_EPSILON
+      ? [model] : []
+  })
+  if (selected.length === 0 || (fixed.valid && fixed.assignments.every((assignment) => {
+    const useful = Math.min(distanceBetween(assignment.start, request.target), assignment.movementRemaining)
+    const actual = distanceBetween(assignment.start, request.target)
+      - distanceBetween(assignment.destination, request.target)
+    return useful - actual <= MIN_ROTATION_PROGRESS_GAIN
+  }))) return fixed
+  // Large formations can have modest coherency-limited shortfalls even when
+  // their fixed-orientation solve already made useful progress for everyone.
+  if (selected.length > 3 && fixed.valid
+    && (fixed.diagnostics?.minimumUsefulProgressPercent ?? 0) >= 50) return fixed
+  if (!orientationMayHelp(request, selected)) return fixed
+
+  const policy = request.movementPolicy ?? DEFAULT_MOVEMENT_POLICY
+  const fixedProgress = fixed.valid ? totalTargetProgress(fixed.assignments, request.target) : Number.NEGATIVE_INFINITY
+  let best = fixed
+  let bestProgress = fixedProgress
+  let attempts = 0
+  const fixedById = new Map(fixed.assignments.map((assignment) => [assignment.modelId, assignment]))
+  const ordered = selected.sort((left, right) => {
+    const shortfall = (model: TabletopModel) => {
+      const assignment = fixedById.get(model.id)
+      const achieved = assignment
+        ? distanceBetween(model.position, request.target) - distanceBetween(assignment.destination, request.target)
+        : 0
+      return Math.min(remainingFor(request, model.id), distanceBetween(model.position, request.target)) - achieved
+    }
+    return shortfall(right) - shortfall(left) || left.id.localeCompare(right.id)
+  })
+  const candidatesById = new Map(ordered.map((model) => [model.id, orientationCandidates(model, request)]))
+
+  const variants: Array<Record<string, number>> = []
+  if (ordered.length > 1 && ordered.length <= 6) {
+    const shared = Object.fromEntries(ordered.flatMap((model) => {
+      const angle = candidatesById.get(model.id)?.[0]
+      return angle === undefined ? [] : [[model.id, angle]]
+    }))
+    if (Object.keys(shared).length > 1) variants.push(shared)
+  }
+  for (const model of ordered.slice(0, MAX_ORIENTATION_MODELS)) {
+    const angle = candidatesById.get(model.id)?.[0]
+    if (angle !== undefined) variants.push({ [model.id]: angle })
+  }
+  for (const model of ordered.slice(0, MAX_ORIENTATION_MODELS)) {
+    for (const angle of candidatesById.get(model.id)?.slice(1, MAX_ORIENTATIONS_PER_MODEL) ?? []) {
+      variants.push({ [model.id]: angle })
+    }
+  }
+  for (const variant of variants.slice(0, MAX_ORIENTATION_ATTEMPTS)) {
+    if (nowMilliseconds() >= deadlineAt) return best.valid ? best : withSearchLimit(best)
+    attempts += 1
+    const candidate = solveRotationVariant(request, variant, policy, deadlineAt)
+    if (!candidate) continue
+    const progress = totalTargetProgress(candidate.assignments, request.target)
+    if (progress <= bestProgress + MIN_ROTATION_PROGRESS_GAIN) continue
+    if (fixed.valid && candidate.assignments.some((assignment) => {
+      const previous = fixed.assignments.find((other) => other.modelId === assignment.modelId)
+      return previous && distanceBetween(assignment.destination, request.target)
+        > distanceBetween(previous.destination, request.target) + SMART_MOVE_EFFECTIVE_PROGRESS_TOLERANCE
+    })) continue
+    bestProgress = progress
+    best = candidate
+  }
+  if (nowMilliseconds() >= deadlineAt && !best.valid) return withSearchLimit(best)
+  return best === fixed ? fixed : { ...best, candidatesTested: fixed.candidatesTested + attempts }
+}
+
+function solveRotationVariant(
+  request: SmartMoveRequest,
+  angles: Readonly<Record<string, number>>,
+  policy: MovementPolicyConfig,
+  deadlineAt: number,
+): SmartMoveResult | null {
+  let rotatedModels = [...request.allModels]
+  const remaining = { ...request.movementRemaining }
+  const deltas: Record<string, number> = {}
+  for (const modelId of Object.keys(angles).sort((a, b) => a.localeCompare(b))) {
+    if (nowMilliseconds() >= deadlineAt) return null
+    const original = request.allModels.find((candidate) => candidate.id === modelId)
+    if (!original) return null
+    const delta = shortestSignedAngularDelta(original.rotation, angles[modelId])
+    if (Math.abs(delta) <= 1e-3) continue
+    const sweep = resolveModelRotation({
+      allModels: rotatedModels, modelId, angularDelta: delta, battlefield: request.battlefield,
+    })
+    if (sweep.blocked || Math.abs(sweep.angularRotation - Math.abs(delta)) > 1e-6) return null
+    const allowance = remainingFor(request, modelId)
+    if (policy.type === 'movement-envelope' && !rotationFitsEnvelope(original, delta, allowance)) return null
+    const rotationCharge = policy.type === 'fixed-rotation-charge' ? policy.rotationCharge : 0
+    if (rotationCharge > allowance + GEOMETRY_EPSILON) return null
+    const rotationReach = policy.type === 'movement-envelope'
+      ? movementEnvelopeReach(original.base, poseForModel(original), {
+        position: original.position, rotation: sweep.rotation,
+      }).distance
+      : 0
+    // This is a conservative search radius. Final policy legality below uses
+    // the full ordered trajectory relative to the original starting pose.
+    remaining[modelId] = Math.max(0, allowance - rotationCharge - rotationReach)
+    deltas[modelId] = delta
+    rotatedModels = rotatedModels.map((model) => model.id === modelId
+      ? { ...model, rotation: sweep.rotation } : model)
+  }
+  if (Object.keys(deltas).length === 0) return null
+  const solved = solveFixedOrientationSmartMove({
+    ...request, allModels: rotatedModels, movementRemaining: remaining,
+  }, deadlineAt)
+  if (!solved.valid) return null
+  const assignments = solved.assignments.map((assignment) => {
+    const original = request.allModels.find((model) => model.id === assignment.modelId)!
+    const finalRotation = rotatedModels.find((model) => model.id === assignment.modelId)!.rotation
+    let trajectory = createPoseTrajectory({ position: original.position, rotation: original.rotation })
+    if (deltas[original.id] !== undefined) {
+      trajectory = appendPoseTrajectorySegment(trajectory, {
+        endPose: { position: original.position, rotation: finalRotation },
+        angularDelta: deltas[original.id],
+      })
+    }
+    for (const position of assignment.path.slice(1)) {
+      trajectory = appendPoseTrajectorySegment(trajectory, {
+        endPose: { position, rotation: finalRotation }, angularDelta: 0,
+      })
+    }
+    const metrics = derivePoseTrajectoryMetrics(trajectory)
+    const movementCost = policy.type === 'movement-envelope'
+      ? envelopeTrajectoryCost(original, trajectory, remainingFor(request, original.id))
+      : calculatePathMovementCost(policy, {
+        translationDistance: metrics.centerPathLength,
+        angularDistance: metrics.totalAbsoluteAngularTravel,
+      }).totalCost
+    return { ...assignment, finalRotation, trajectory, movementCost,
+      movementRemaining: remainingFor(request, assignment.modelId) }
+  })
+  if (assignments.some((assignment) => !Number.isFinite(assignment.movementCost))) return null
+  const rotations = Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.finalRotation!]))
+  const unit = request.units.find((candidate) => candidate.id === solved.unitId)
+  const validation = validateCandidateFormation({
+    allModels: request.allModels, battlefield: request.battlefield,
+    positions: solved.positions, rotations,
+    reachability: {
+      movementCosts: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementCost])),
+      movementAllowances: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementRemaining])),
+    },
+    ...(request.coherencyPolicy && unit
+      ? { coherency: { unit, policy: request.coherencyPolicy } } : {}),
+  })
+  if (!validation.valid) return null
+  return {
+    ...solved, assignments, formationValidation: validation,
+    totalMovementCost: assignments.reduce((total, assignment) => total + assignment.movementCost, 0),
+    coherency: request.coherencyPolicy && unit
+      ? evaluateUnitCoherency(unit,
+        projectCandidateModels(request.allModels, solved.positions, rotations), request.coherencyPolicy)
+      : null,
+    diagnostics: solved.diagnostics && { ...solved.diagnostics, solverStage: 'ROTATION_FALLBACK',
+      fastPathAccepted: false, fallbackUsed: true },
+  }
+}
+
+function orientationMayHelp(request: SmartMoveRequest, selected: ReadonlyArray<TabletopModel>): boolean {
+  const selectedIds = new Set(request.selectedModelIds)
+  const stationary = request.allModels.filter((model) => !selectedIds.has(model.id))
+  return selected.some((model) => {
+    const distance = distanceBetween(model.position, request.target)
+    if (distance <= GEOMETRY_EPSILON) return false
+    const travel = Math.min(distance, remainingFor(request, model.id))
+    const direction = {
+      x: (request.target.x - model.position.x) / distance,
+      y: (request.target.y - model.position.y) / distance,
+    }
+    if (maximumBattlefieldAdvance(model, direction, request.battlefield)
+      < travel - MIN_ROTATION_PROGRESS_GAIN) return true
+    const translation = { x: direction.x * travel, y: direction.y * travel }
+    return stationary.some((obstacle) => {
+      if (obstacle.unitId === model.unitId && request.coherencyPolicy
+        && distanceBetween(model.position, obstacle.position)
+          <= travel + request.coherencyPolicy.distance
+            + footprintCircumradiusInches(model.base) + footprintCircumradiusInches(obstacle.base)) return true
+      return sweepFootprintTranslation(model.base, poseForModel(model), translation,
+        obstacle.base, poseForModel(obstacle)) !== null
+    })
+  })
+}
+
+function totalTargetProgress(assignments: ReadonlyArray<SmartMoveAssignment>, target: Point): number {
+  return assignments.reduce((sum, assignment) => sum
+    + distanceBetween(assignment.start, target) - distanceBetween(assignment.destination, target), 0)
+}
+
+function orientationCandidates(model: TabletopModel, request: SmartMoveRequest): number[] {
+  const heading = Math.atan2(request.target.y - model.position.y, request.target.x - model.position.x)
+  const majorAxis = model.base.shape === 'ellipse' || model.base.shape === 'rectangle'
+    ? model.base.widthMm >= model.base.heightMm ? 0 : Math.PI / 2
+    : longestPolygonAxis(model)
+  const candidates = [heading - majorAxis, heading + Math.PI / 2 - majorAxis]
+  const nearby = request.allModels
+    .filter((other) => other.id !== model.id && other.base.shape !== 'circle')
+    .sort((a, b) => distanceBetween(a.position, model.position) - distanceBetween(b.position, model.position)
+      || a.id.localeCompare(b.id))[0]
+  if (nearby && distanceBetween(nearby.position, model.position)
+    <= remainingFor(request, model.id) + footprintCircumradiusInches(model.base)
+      + footprintCircumradiusInches(nearby.base)) {
+    const obstacleAxis = nearby.base.shape === 'ellipse' || nearby.base.shape === 'rectangle'
+      ? nearby.base.widthMm >= nearby.base.heightMm ? 0 : Math.PI / 2
+      : longestPolygonAxis(nearby)
+    candidates.push(nearby.rotation + obstacleAxis - majorAxis)
+  }
+  return candidates.map((angle) => ((angle % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI))
+    .filter((angle, index, all) => Math.abs(shortestSignedAngularDelta(model.rotation, angle)) > 1e-3
+      && all.findIndex((other) => Math.abs(shortestSignedAngularDelta(other, angle)) < 1e-3) === index)
+}
+
+function longestPolygonAxis(model: TabletopModel): number {
+  if (model.base.shape !== 'polygon') return 0
+  const vertices = model.base.verticesMm
+  let bestLength = 0
+  let angle = 0
+  for (let first = 0; first < vertices.length; first += 1) {
+    for (let second = first + 1; second < vertices.length; second += 1) {
+      const dx = vertices[second].x - vertices[first].x
+      const dy = vertices[second].y - vertices[first].y
+      const length = dx * dx + dy * dy
+      if (length > bestLength) { bestLength = length; angle = Math.atan2(dy, dx) }
+    }
+  }
+  return angle
+}
+
+function rotationFitsEnvelope(model: TabletopModel, delta: number, allowance: number): boolean {
+  const start = poseForModel(model)
+  const radius = footprintCircumradiusInches(model.base)
+  const steps = Math.max(16, Math.ceil(Math.abs(delta) / 0.02))
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = model.rotation + delta * index / steps
+    const reach = movementEnvelopeReach(model.base, start, { position: model.position, rotation: angle }).distance
+    // A footprint point travels at most radius * angular delta between samples.
+    const margin = radius * Math.abs(delta) / (2 * steps)
+    if (reach + margin > allowance + GEOMETRY_EPSILON) return false
+  }
+  return true
+}
+
+function envelopeTrajectoryCost(model: TabletopModel, trajectory: PoseTrajectory, allowance: number): number {
+  const start = trajectory.startPose
+  let maximum = 0
+  for (const segment of trajectory.segments) {
+    const reach = movementEnvelopeReach(model.base, start, segment.endPose).distance
+    if (reach > allowance + GEOMETRY_EPSILON) return Number.POSITIVE_INFINITY
+    maximum = Math.max(maximum, reach)
+  }
+  return maximum
 }
 
 function candidateStrictlyDominates(
@@ -468,6 +778,7 @@ function hasSimultaneousSelectedPathCollision(
   selectedModels: ReadonlyArray<TabletopModel>,
   positions: Readonly<Record<string, Point>>,
 ): boolean {
+  const allCircles = selectedModels.every((model) => model.base.shape === 'circle')
   for (let sourceIndex = 0; sourceIndex < selectedModels.length; sourceIndex += 1) {
     for (let targetIndex = sourceIndex + 1; targetIndex < selectedModels.length; targetIndex += 1) {
       const source = selectedModels[sourceIndex]
@@ -480,11 +791,21 @@ function hasSimultaneousSelectedPathCollision(
         x: positions[source.id].x - positions[target.id].x,
         y: positions[source.id].y - positions[target.id].y,
       }
-      if (firstCirclePathCollisionT(
-        relativeStart,
-        relativeEnd,
-        { x: 0, y: 0 },
-        baseRadiusInches(source.base) + baseRadiusInches(target.base),
+      if (allCircles) {
+        if (firstCirclePathCollisionT(
+          relativeStart,
+          relativeEnd,
+          { x: 0, y: 0 },
+          baseRadiusInches(source.base) + baseRadiusInches(target.base),
+        ) !== null) return true
+        continue
+      }
+      if (sweepFootprintTranslation(
+        source.base,
+        { position: relativeStart, rotation: source.rotation },
+        { x: relativeEnd.x - relativeStart.x, y: relativeEnd.y - relativeStart.y },
+        target.base,
+        { position: { x: 0, y: 0 }, rotation: target.rotation },
       ) !== null) return true
     }
   }
@@ -582,6 +903,7 @@ function planTargetOrderedFallback(
   const search = (modelIndex: number) => {
     if (effectivelyOptimal
       || greedyLargeUnitSolutionFound
+      || nowMilliseconds() >= metrics.deadlineAt
       || metrics.backtrackingNodes >= SMART_MOVE_FALLBACK_MAX_BACKTRACKING_NODES
       || completeCandidatesTested >= SMART_MOVE_FALLBACK_MAX_COMPLETE_CANDIDATES) {
       metrics.searchBudgetExhausted = true
@@ -637,11 +959,7 @@ function planTargetOrderedFallback(
       placedIds,
       fixedAnchorIds,
       movable.slice(modelIndex + 1),
-      selectedModels.length >= 15
-        ? (request.coherencyPolicy?.requiredNeighbors ?? 0) >= 2
-          ? SMART_MOVE_FALLBACK_MAX_DETOUR_CANDIDATES_COMPLEX_POLICY
-          : SMART_MOVE_FALLBACK_MAX_DETOUR_CANDIDATES
-        : SMART_MOVE_FALLBACK_MAX_DETOUR_CANDIDATES_SMALL_UNIT,
+      detourCandidateLimitFor(request, selectedModels),
       metrics,
     )
     if (candidates.length === 0) {
@@ -721,11 +1039,10 @@ function generateTargetOrderedCandidates(
   const collisionStartedAt = nowMilliseconds()
   const viableDestinations = deduplicated
     .filter((destination) => isModelPositionInsideBattlefield(destination, model, request.battlefield))
-    .filter((destination) => !obstacles.some((obstacle) => circlesOverlap(
+    .filter((destination) => !obstacles.some((obstacle) => modelsOverlapAt(
+      model,
       destination,
-      baseRadiusInches(model.base),
-      obstacle.position,
-      baseRadiusInches(obstacle.base),
+      obstacle,
     )))
     .slice(0, SMART_MOVE_FALLBACK_MAX_RAW_POSITIONS)
   metrics.collisionFilteringMs += nowMilliseconds() - collisionStartedAt
@@ -762,12 +1079,7 @@ function generateTargetOrderedCandidates(
     if (!path || path.distance > remaining + GEOMETRY_EPSILON) return
     const finalPosition = path.path.at(-1)!
     if (!isModelPositionInsideBattlefield(finalPosition, model, request.battlefield)) return
-    if (obstacles.some((obstacle) => circlesOverlap(
-      finalPosition,
-      baseRadiusInches(model.base),
-      obstacle.position,
-      baseRadiusInches(obstacle.base),
-    ))) return
+    if (obstacles.some((obstacle) => modelsOverlapAt(model, finalPosition, obstacle))) return
     const progress = distanceBetween(model.position, request.target)
       - distanceBetween(finalPosition, request.target)
     if (progress < -GEOMETRY_EPSILON) return
@@ -834,11 +1146,61 @@ function generateMeaningfulPositions(
   }
 
   if (!request.coherencyPolicy) return positions
+  const allRelationshipModelsAreCircles = model.base.shape === 'circle'
+    && anchors.every((anchor) => anchor.base.shape === 'circle')
+    && futureGuides.every((guide) => guide.model.base.shape === 'circle')
+  if (allRelationshipModelsAreCircles) {
+    appendCircularRelationshipCandidates(
+      positions,
+      request,
+      model,
+      anchors,
+      futureGuides,
+    )
+    return positions
+  }
+
+  const relationshipAnchors = anchors.slice(0, MAX_GENERIC_RELATIONSHIP_ANCHORS)
+  const outlines = relationshipAnchors.map((anchor) => footprintExclusionOutline(
+    anchor.base,
+    poseForModel(anchor),
+    model.base,
+    model.rotation,
+    request.coherencyPolicy!.distance,
+    GENERIC_RELATIONSHIP_SAMPLES,
+  ))
+  for (const outline of outlines) positions.push(...outline)
+  for (let sourceIndex = 0; sourceIndex < outlines.length; sourceIndex += 1) {
+    for (let targetIndex = sourceIndex + 1; targetIndex < outlines.length; targetIndex += 1) {
+      positions.push(...closedOutlineIntersections(outlines[sourceIndex], outlines[targetIndex]))
+    }
+  }
+  for (const guide of futureGuides.slice(0, MAX_GENERIC_RELATIONSHIP_ANCHORS)) {
+    const projectedGuide = { ...guide.model, position: guide.position }
+    positions.push(...footprintExclusionOutline(
+      projectedGuide.base,
+      poseForModel(projectedGuide),
+      model.base,
+      model.rotation,
+      request.coherencyPolicy.distance,
+      GENERIC_RELATIONSHIP_SAMPLES,
+    ))
+  }
+  return positions
+}
+
+function appendCircularRelationshipCandidates(
+  positions: Point[],
+  request: SmartMoveRequest,
+  model: TabletopModel,
+  anchors: ReadonlyArray<TabletopModel>,
+  futureGuides: ReadonlyArray<{ model: TabletopModel; position: Point }>,
+): void {
+  const policy = request.coherencyPolicy
+  if (!policy) return
   const modelRadius = baseRadiusInches(model.base)
   for (const anchor of anchors) {
-    const relationshipRadius = modelRadius
-      + baseRadiusInches(anchor.base)
-      + request.coherencyPolicy.distance
+    const relationshipRadius = modelRadius + baseRadiusInches(anchor.base) + policy.distance
     const targetAngle = Math.atan2(
       request.target.y - anchor.position.y,
       request.target.x - anchor.position.x,
@@ -856,16 +1218,14 @@ function generateMeaningfulPositions(
       const target = anchors[targetIndex]
       positions.push(...circleIntersections(
         source.position,
-        modelRadius + baseRadiusInches(source.base) + request.coherencyPolicy.distance,
+        modelRadius + baseRadiusInches(source.base) + policy.distance,
         target.position,
-        modelRadius + baseRadiusInches(target.base) + request.coherencyPolicy.distance,
+        modelRadius + baseRadiusInches(target.base) + policy.distance,
       ))
     }
   }
   for (const guide of futureGuides) {
-    const relationshipRadius = modelRadius
-      + baseRadiusInches(guide.model.base)
-      + request.coherencyPolicy.distance
+    const relationshipRadius = modelRadius + baseRadiusInches(guide.model.base) + policy.distance
     const targetAngle = directionAngle(guide.position, request.target, model.position)
     for (const offset of [0, Math.PI / 3, -Math.PI / 3]) {
       positions.push({
@@ -874,7 +1234,6 @@ function generateMeaningfulPositions(
       })
     }
   }
-  return positions
 }
 
 function maximumDirectProgressPosition(
@@ -903,17 +1262,21 @@ function maximumBattlefieldAdvance(
   direction: Point,
   battlefield: Battlefield,
 ): number {
-  const radius = baseRadiusInches(model.base)
+  const bounds = footprintBounds(model.base, poseForModel(model))
+  const leftExtent = model.position.x - bounds.left
+  const rightExtent = bounds.right - model.position.x
+  const topExtent = model.position.y - bounds.top
+  const bottomExtent = bounds.bottom - model.position.y
   let maximum = Number.POSITIVE_INFINITY
   if (direction.x > GEOMETRY_EPSILON) {
-    maximum = Math.min(maximum, (battlefield.width - radius - model.position.x) / direction.x)
+    maximum = Math.min(maximum, (battlefield.width - rightExtent - model.position.x) / direction.x)
   } else if (direction.x < -GEOMETRY_EPSILON) {
-    maximum = Math.min(maximum, (radius - model.position.x) / direction.x)
+    maximum = Math.min(maximum, (leftExtent - model.position.x) / direction.x)
   }
   if (direction.y > GEOMETRY_EPSILON) {
-    maximum = Math.min(maximum, (battlefield.height - radius - model.position.y) / direction.y)
+    maximum = Math.min(maximum, (battlefield.height - bottomExtent - model.position.y) / direction.y)
   } else if (direction.y < -GEOMETRY_EPSILON) {
-    maximum = Math.min(maximum, (radius - model.position.y) / direction.y)
+    maximum = Math.min(maximum, (topExtent - model.position.y) / direction.y)
   }
   return Math.max(0, maximum)
 }
@@ -1097,10 +1460,10 @@ function assignModelsToSlots(
   const modelOrder = [...selectedModels].sort((a, b) => {
     const remainingOrder = remainingFor(request, a.id) - remainingFor(request, b.id)
     if (Math.abs(remainingOrder) > GEOMETRY_EPSILON) return remainingOrder
-    const radiusOrder = preferSmallerBases
-      ? baseRadiusInches(a.base) - baseRadiusInches(b.base)
-      : baseRadiusInches(b.base) - baseRadiusInches(a.base)
-    if (Math.abs(radiusOrder) > GEOMETRY_EPSILON) return radiusOrder
+    const sizeOrder = preferSmallerBases
+      ? footprintCircumradiusInches(a.base) - footprintCircumradiusInches(b.base)
+      : footprintCircumradiusInches(b.base) - footprintCircumradiusInches(a.base)
+    if (Math.abs(sizeOrder) > GEOMETRY_EPSILON) return sizeOrder
     if (order === 'nearest' || order === 'farthest') {
       const targetOrder = distanceBetween(b.position, request.target)
         - distanceBetween(a.position, request.target)
@@ -1120,11 +1483,7 @@ function assignModelsToSlots(
     const remaining = remainingFor(request, model.id)
     const pathPlanner = createModelPathPlanner()
     let detourCandidatesTested = 0
-    const detourCandidateLimit = selectedModels.length >= 15
-      ? (request.coherencyPolicy?.requiredNeighbors ?? 0) >= 2
-        ? SMART_MOVE_FALLBACK_MAX_DETOUR_CANDIDATES_COMPLEX_POLICY
-        : SMART_MOVE_FALLBACK_MAX_DETOUR_CANDIDATES
-      : SMART_MOVE_FALLBACK_MAX_DETOUR_CANDIDATES_SMALL_UNIT
+    const detourCandidateLimit = detourCandidateLimitFor(request, selectedModels)
     const options = [...availableSlots]
       .map((slotIndex) => ({ slotIndex, destination: slots[slotIndex] }))
       .sort((a, b) => {
@@ -1144,13 +1503,7 @@ function assignModelsToSlots(
       }
       if (!isModelPositionInsideBattlefield(option.destination, model, request.battlefield)) continue
       sawInside = true
-      const radius = baseRadiusInches(model.base)
-      if (obstacles.some((obstacle) => circlesOverlap(
-        option.destination,
-        radius,
-        obstacle.position,
-        baseRadiusInches(obstacle.base),
-      ))) continue
+      if (obstacles.some((obstacle) => modelsOverlapAt(model, option.destination, obstacle))) continue
       sawCollisionFree = true
       const pathRequest = {
         model,
@@ -1314,11 +1667,60 @@ function modelsAreCoherentNeighbors(
   policy: CoherencyPolicy | undefined,
 ): boolean {
   if (!policy) return false
-  return distanceBetween(modelPosition, anchor.position)
-    <= baseRadiusInches(model.base)
-      + baseRadiusInches(anchor.base)
-      + policy.distance
-      + GEOMETRY_EPSILON
+  return distanceBetweenBases({ ...model, position: modelPosition }, anchor)
+    <= policy.distance + GEOMETRY_EPSILON
+}
+
+function modelsOverlapAt(
+  model: TabletopModel,
+  position: Point,
+  obstacle: TabletopModel,
+): boolean {
+  if (model.base.shape === 'circle' && obstacle.base.shape === 'circle') {
+    return circlesOverlap(
+      position,
+      baseRadiusInches(model.base),
+      obstacle.position,
+      baseRadiusInches(obstacle.base),
+    )
+  }
+  return footprintsOverlap(
+    model.base,
+    poseForModel(model, position),
+    obstacle.base,
+    poseForModel(obstacle),
+  )
+}
+
+function closedOutlineIntersections(
+  first: ReadonlyArray<Point>,
+  second: ReadonlyArray<Point>,
+): Point[] {
+  const intersections: Point[] = []
+  for (let firstIndex = 0; firstIndex < first.length; firstIndex += 1) {
+    const firstStart = first[firstIndex]
+    const firstEnd = first[(firstIndex + 1) % first.length]
+    for (let secondIndex = 0; secondIndex < second.length; secondIndex += 1) {
+      const secondStart = second[secondIndex]
+      const secondEnd = second[(secondIndex + 1) % second.length]
+      const intersection = segmentIntersection(firstStart, firstEnd, secondStart, secondEnd)
+      if (intersection) intersections.push(intersection)
+    }
+  }
+  return intersections
+}
+
+function segmentIntersection(a: Point, b: Point, c: Point, d: Point): Point | null {
+  const ab = { x: b.x - a.x, y: b.y - a.y }
+  const cd = { x: d.x - c.x, y: d.y - c.y }
+  const determinant = ab.x * cd.y - ab.y * cd.x
+  if (Math.abs(determinant) <= GEOMETRY_EPSILON) return null
+  const offset = { x: c.x - a.x, y: c.y - a.y }
+  const firstFraction = (offset.x * cd.y - offset.y * cd.x) / determinant
+  const secondFraction = (offset.x * ab.y - offset.y * ab.x) / determinant
+  if (firstFraction < -GEOMETRY_EPSILON || firstFraction > 1 + GEOMETRY_EPSILON
+    || secondFraction < -GEOMETRY_EPSILON || secondFraction > 1 + GEOMETRY_EPSILON) return null
+  return { x: a.x + ab.x * firstFraction, y: a.y + ab.y * firstFraction }
 }
 
 function circleIntersections(
@@ -1358,7 +1760,8 @@ function findPath(
 ): ModelPathResult | null {
   metrics.pathfindingCalls += 1
   const startedAt = nowMilliseconds()
-  const result = findModelPath(request, planner)
+  // The caller already established that the exact direct path is blocked.
+  const result = findModelPath(request, planner, true)
   metrics.pathfindingMs += nowMilliseconds() - startedAt
   if (!result) metrics.failedPaths += 1
   else if (result.path.length <= 2) metrics.directPaths += 1
@@ -1367,8 +1770,24 @@ function findPath(
 }
 
 function pathBudgetExhausted(metrics: SolverMetrics): boolean {
-  return metrics.pathfindingCalls >= SMART_MOVE_FALLBACK_MAX_PATH_ATTEMPTS
+  return nowMilliseconds() >= metrics.deadlineAt
+    || metrics.pathfindingCalls >= SMART_MOVE_FALLBACK_MAX_PATH_ATTEMPTS
     || metrics.directPathChecks >= SMART_MOVE_FALLBACK_MAX_DIRECT_PATH_CHECKS
+}
+
+function detourCandidateLimitFor(
+  request: SmartMoveRequest,
+  selectedModels: ReadonlyArray<TabletopModel>,
+): number {
+  const usesGenericGeometry = selectedModels.some((model) => model.base.shape !== 'circle')
+    || request.allModels.some((model) => model.base.shape !== 'circle')
+  if (usesGenericGeometry) return SMART_MOVE_GENERIC_MAX_DETOUR_CANDIDATES
+  if (selectedModels.length >= 15) {
+    return (request.coherencyPolicy?.requiredNeighbors ?? 0) >= 2
+      ? SMART_MOVE_FALLBACK_MAX_DETOUR_CANDIDATES_COMPLEX_POLICY
+      : SMART_MOVE_FALLBACK_MAX_DETOUR_CANDIDATES
+  }
+  return SMART_MOVE_FALLBACK_MAX_DETOUR_CANDIDATES_SMALL_UNIT
 }
 
 function findDirectPath(request: ModelPathRequest, metrics: SolverMetrics): ModelPathResult | null {
@@ -1438,7 +1857,7 @@ function addValidationFailures(
   }
 }
 
-function generateHexSlots(count: number, spacing: number, rotation: number, focus: Point): Point[] {
+function generateHexAxial(count: number): Array<{ q: number; r: number }> {
   const axial: Array<{ q: number; r: number }> = [{ q: 0, r: 0 }]
   const directions = [
     { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
@@ -1453,7 +1872,11 @@ function generateHexSlots(count: number, spacing: number, rotation: number, focu
       }
     }
   }
-  const raw = axial.slice(0, count).map(({ q, r }) => ({
+  return axial.slice(0, count)
+}
+
+function generateHexSlots(count: number, spacing: number, rotation: number, focus: Point): Point[] {
+  const raw = generateHexAxial(count).map(({ q, r }) => ({
     x: spacing * (q + r / 2),
     y: spacing * (Math.sqrt(3) / 2) * r,
   }))
@@ -1470,6 +1893,41 @@ function generateHexSlots(count: number, spacing: number, rotation: number, focu
   })
 }
 
+function generateFootprintFormationSlots(
+  models: ReadonlyArray<TabletopModel>,
+  separation: number,
+  rotation: number,
+  focus: Point,
+): Point[] {
+  if (models.length === 0) return []
+  const axial = generateHexAxial(models.length)
+  const centerModel = { ...models[0], position: focus }
+  return axial.map(({ q, r }, index) => {
+    if (index === 0) return { ...focus }
+    const ring = Math.max(Math.abs(q), Math.abs(r), Math.abs(-q - r))
+    const angle = Math.atan2((Math.sqrt(3) / 2) * r, q + r / 2) + rotation
+    const direction = { x: Math.cos(angle), y: Math.sin(angle) }
+    const outline = footprintExclusionOutline(
+      centerModel.base,
+      poseForModel(centerModel),
+      models[index].base,
+      models[index].rotation,
+      separation,
+      GENERIC_RELATIONSHIP_SAMPLES,
+    )
+    const boundary = outline.reduce((best, point) => (
+      (point.x - focus.x) * direction.x + (point.y - focus.y) * direction.y
+        > (best.x - focus.x) * direction.x + (best.y - focus.y) * direction.y
+        ? point
+        : best
+    ))
+    return {
+      x: focus.x + (boundary.x - focus.x) * ring,
+      y: focus.y + (boundary.y - focus.y) * ring,
+    }
+  })
+}
+
 function formationSpacings(
   largestRadius: number,
   policy: CoherencyPolicy | undefined,
@@ -1480,6 +1938,16 @@ function formationSpacings(
   // These are bounded samples of the legal distance envelope, not a preferred
   // gameplay gap. The real complete-unit evaluator decides which are legal.
   return [0.65, 0.4, 0.15, 0.9, 0].map((fraction) => touching + policy.distance * fraction)
+}
+
+function genericFormationSeparations(
+  policy: CoherencyPolicy | undefined,
+  modelCount: number,
+): number[] {
+  if (modelCount <= 1 || !policy || policy.distance <= GEOMETRY_EPSILON) {
+    return [GEOMETRY_EPSILON * 16]
+  }
+  return [0.15, 0.4, 0.65, 0, 0.9].map((fraction) => policy.distance * fraction)
 }
 
 function formationFocuses(target: Point, start: Point, maximumProgress: number): Point[] {
@@ -1532,6 +2000,31 @@ function clampSlotsToBattlefield(
   let shiftY = minY < radius ? radius - minY : 0
   if (maxX + shiftX > battlefield.width - radius) shiftX += battlefield.width - radius - (maxX + shiftX)
   if (maxY + shiftY > battlefield.height - radius) shiftY += battlefield.height - radius - (maxY + shiftY)
+  return slots.map((slot) => ({ x: slot.x + shiftX, y: slot.y + shiftY }))
+}
+
+function clampFootprintSlotsToBattlefield(
+  slots: ReadonlyArray<Point>,
+  models: ReadonlyArray<TabletopModel>,
+  battlefield: Battlefield,
+): Point[] {
+  let minimumShiftX = Number.NEGATIVE_INFINITY
+  let maximumShiftX = Number.POSITIVE_INFINITY
+  let minimumShiftY = Number.NEGATIVE_INFINITY
+  let maximumShiftY = Number.POSITIVE_INFINITY
+  for (let index = 0; index < Math.min(slots.length, models.length); index += 1) {
+    const bounds = footprintBounds(models[index].base, poseForModel(models[index], slots[index]))
+    minimumShiftX = Math.max(minimumShiftX, -bounds.left)
+    maximumShiftX = Math.min(maximumShiftX, battlefield.width - bounds.right)
+    minimumShiftY = Math.max(minimumShiftY, -bounds.top)
+    maximumShiftY = Math.min(maximumShiftY, battlefield.height - bounds.bottom)
+  }
+  const shiftX = minimumShiftX <= maximumShiftX
+    ? Math.min(maximumShiftX, Math.max(minimumShiftX, 0))
+    : 0
+  const shiftY = minimumShiftY <= maximumShiftY
+    ? Math.min(maximumShiftY, Math.max(minimumShiftY, 0))
+    : 0
   return slots.map((slot) => ({ x: slot.x + shiftX, y: slot.y + shiftY }))
 }
 
@@ -1655,8 +2148,9 @@ function deriveDiagnostics(
   }
 }
 
-function createSolverMetrics(): SolverMetrics {
+function createSolverMetrics(deadlineAt: number): SolverMetrics {
   return {
+    deadlineAt,
     fallbackOrder: [],
     candidatePositionsGenerated: 0,
     candidatePositionsDeduplicated: 0,
@@ -1680,6 +2174,14 @@ function createSolverMetrics(): SolverMetrics {
     finalValidationMs: 0,
     candidateScoringMs: 0,
     fallbackSearchMs: 0,
+  }
+}
+
+function withSearchLimit(result: SmartMoveResult): SmartMoveResult {
+  return result.failureReasons.includes('SEARCH_LIMIT') ? result : {
+    ...result,
+    failureReasons: [...result.failureReasons, 'SEARCH_LIMIT'],
+    diagnostics: result.diagnostics && { ...result.diagnostics, searchBudgetExhausted: true },
   }
 }
 

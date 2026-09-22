@@ -5,9 +5,61 @@ export interface Battlefield {
   height: number
 }
 
-export interface CircularBase {
+export interface CircleFootprint {
   shape: 'circle'
   diameterMm: number
+}
+
+export interface EllipseFootprint {
+  shape: 'ellipse'
+  widthMm: number
+  heightMm: number
+}
+
+export interface RectangleFootprint {
+  shape: 'rectangle'
+  widthMm: number
+  heightMm: number
+}
+
+export interface PolygonFootprint {
+  shape: 'polygon'
+  /** Model-local millimeter coordinates relative to the model origin. */
+  verticesMm: Point[]
+}
+
+export type Footprint =
+  | CircleFootprint
+  | EllipseFootprint
+  | RectangleFootprint
+  | PolygonFootprint
+
+/** Compatibility name retained while serialized models still use `base`. */
+export type CircularBase = CircleFootprint
+
+/**
+ * A tabletop pose. Rotation is radians normalized to [0, 2π), with zero on
+ * +X and positive rotation appearing clockwise in the +Y-down tabletop space.
+ */
+export interface Pose {
+  position: Point
+  rotation: number
+}
+
+/**
+ * One ordered rigid-motion segment. The center travels linearly from the
+ * previous pose to `endPose` while rotation advances by `angularDelta`.
+ * Keeping the signed delta avoids losing direction at angle wraparound.
+ */
+export interface PoseTrajectorySegment {
+  endPose: Pose
+  angularDelta: number
+}
+
+/** Plain JSON-safe pose history; adjacent entries may represent coupled motion. */
+export interface PoseTrajectory {
+  startPose: Pose
+  segments: PoseTrajectorySegment[]
 }
 
 export interface CoherencyPolicy {
@@ -21,9 +73,10 @@ export interface TabletopModel {
   id: string
   unitId: string
   ownerId: string
-  position: Point
-  rotation: number
-  base: CircularBase
+  position: Pose['position']
+  rotation: Pose['rotation']
+  /** Serialized compatibility field; its value is the model footprint. */
+  base: Footprint
   canPassOverModels: boolean
   label?: string
 }
@@ -63,15 +116,29 @@ export interface TurnConfiguration {
   phases?: string[]
 }
 
+/**
+ * Serializable prototype movement-policy configuration. Movement Envelope is
+ * geometric reach; the other policies consume scalar trajectory cost.
+ */
+export type MovementPolicyConfig =
+  | { type: 'movement-envelope' }
+  | { type: 'fixed-rotation-charge'; rotationCharge: number }
+  | { type: 'free-rotation' }
+
 export interface ModelMovementState {
   modelId: string
-  startPosition: Point
+  startPose: Pose
+  /** Ordered authoritative movement facts; scalar fields below are derived compatibility views. */
+  trajectory: PoseTrajectory
+  translationDistance: number
+  angularRotation: number
   movementUsed: number
   path: Point[]
 }
 
 export interface MovementSession {
   id: string
+  movementPolicy: MovementPolicyConfig
   modelIds: string[]
   models: Record<string, ModelMovementState>
   referenceStart: Point
@@ -98,8 +165,16 @@ export interface MoveAction {
     modelIds: string[]
     unitIds: string[]
     ownerIds: string[]
+    /** Complete pose snapshots are authoritative for movement history. */
+    startingPoses: Record<string, Pose>
+    finalPoses: Record<string, Pose>
+    /** Ordered accepted motion retained for future path-sensitive game policies. */
+    trajectories: Record<string, PoseTrajectory>
+    /** Compatibility projections retained for existing history consumers. */
     startingPositions: Record<string, Point>
     finalPositions: Record<string, Point>
+    translationDistance: Record<string, number>
+    angularRotation: Record<string, number>
     movementUsed: Record<string, number>
   }
 }

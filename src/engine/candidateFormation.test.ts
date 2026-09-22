@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { TabletopModel, Unit } from '../domain/types'
+import type { Footprint, TabletopModel, Unit } from '../domain/types'
 import {
   projectCandidateModels,
   validateCandidateFormation,
@@ -17,6 +17,10 @@ function model(id: string, x: number, y: number, unitId = 'unit-1'): TabletopMod
     base: { shape: 'circle', diameterMm: 25.4 },
     canPassOverModels: false,
   }
+}
+
+function shapedModel(id: string, x: number, y: number, base: Footprint, rotation = 0): TabletopModel {
+  return { ...model(id, x, y), base, rotation }
 }
 
 describe('candidate formation validation', () => {
@@ -65,6 +69,26 @@ describe('candidate formation validation', () => {
     expect(result.violations).toContainEqual({
       type: 'CANDIDATE_INTERNAL_OVERLAP',
       modelIds: ['a', 'b'],
+    })
+  })
+
+  it('validates static rotated non-circular destinations with exact footprints', () => {
+    const moving = shapedModel(
+      'oval', 2, 2,
+      { shape: 'ellipse', widthMm: 50.8, heightMm: 25.4 },
+      Math.PI / 2,
+    )
+    const blocker = shapedModel(
+      'rect', 8, 2,
+      { shape: 'rectangle', widthMm: 50.8, heightMm: 25.4 },
+    )
+    expect(validateCandidateFormation({
+      allModels: [moving, blocker], battlefield, positions: { oval: { x: 6.5, y: 2 } },
+    }).valid).toBe(true)
+    expect(validateCandidateFormation({
+      allModels: [moving, blocker], battlefield, positions: { oval: { x: 6.51, y: 2 } },
+    }).violations).toContainEqual({
+      type: 'COLLIDES_WITH_STATIONARY_MODEL', modelIds: ['oval', 'rect'],
     })
   })
 

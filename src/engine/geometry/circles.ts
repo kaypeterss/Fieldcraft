@@ -88,6 +88,16 @@ export function circlesOverlap(
   return distanceBetween(centerA, centerB) < radiusA + radiusB - GEOMETRY_EPSILON
 }
 
+export interface RectangleBounds { left: number; top: number; right: number; bottom: number }
+
+export function circleIntersectsRectangle(center: Point, radius: number, rectangle: RectangleBounds): boolean {
+  const closestX = Math.max(rectangle.left, Math.min(center.x, rectangle.right))
+  const closestY = Math.max(rectangle.top, Math.min(center.y, rectangle.bottom))
+  const dx = center.x - closestX
+  const dy = center.y - closestY
+  return dx * dx + dy * dy <= radius * radius
+}
+
 /** Returns the first interior intersection fraction along a center segment, or null. */
 export function firstCirclePathCollisionT(
   start: Point,
@@ -133,9 +143,11 @@ export function isGroupPlacementValid(
 
   for (const movingModel of movingModels) {
     const movingPosition = proposedPositions.get(movingModel.id) ?? movingModel.position
+    if (movingModel.base.shape !== 'circle') throw new Error('Movement currently supports circular footprints only')
     const movingRadius = millimetersToInches(movingModel.base.diameterMm) / 2
     for (const otherModel of allModels) {
       if (movingIds.has(otherModel.id)) continue
+      if (otherModel.base.shape !== 'circle') throw new Error('Movement currently supports circular footprints only')
       const otherRadius = millimetersToInches(otherModel.base.diameterMm) / 2
       if (circlesOverlap(movingPosition, movingRadius, otherModel.position, otherRadius)) return false
     }

@@ -11,8 +11,11 @@ export const SMART_MOVE_LIVE_TARGET_DISTANCE = 0.05
 export const SMART_MOVE_LIVE_REQUEST_INTERVAL_MS = 80
 export const SMART_MOVE_SETTLE_DELAY_MS = 120
 export const SMART_MOVE_THINKING_DELAY_MS = 180
+export const SMART_MOVE_LIVE_SEARCH_BUDGET_MS = 1_000
+export const SMART_MOVE_LOCKED_SEARCH_BUDGET_MS = 10_000
+export const SMART_MOVE_SEARCH_LIMIT_MESSAGE = 'No Smart Move solution found within the search limit. Try another target or move manually.'
 
-export type SmartMoveAsyncStatus = 'idle' | 'calculating' | 'ready-valid' | 'ready-invalid' | 'error'
+export type SmartMoveAsyncStatus = 'idle' | 'calculating' | 'ready-valid' | 'ready-invalid' | 'search-limit' | 'error'
 
 export interface SmartMoveAsyncState {
   status: SmartMoveAsyncStatus
@@ -58,6 +61,7 @@ interface CompletedIntent {
   sessionId: number
   stateRevision: number
   target: Point
+  kind: SmartMoveRequestKind
 }
 
 export interface SmartMoveWorkerControllerOptions {
@@ -68,6 +72,8 @@ export interface SmartMoveWorkerControllerOptions {
   liveRequestIntervalMs?: number
   settleDelayMs?: number
   thinkingDelayMs?: number
+  liveSearchBudgetMs?: number
+  lockedSearchBudgetMs?: number
 }
 
 export const initialSmartMoveAsyncState = (): SmartMoveAsyncState => ({
@@ -90,6 +96,8 @@ export class SmartMoveWorkerController {
   private readonly liveRequestIntervalMs: number
   private readonly settleDelayMs: number
   private readonly thinkingDelayMs: number
+  private readonly liveSearchBudgetMs: number
+  private readonly lockedSearchBudgetMs: number
   private nextRequestId = 0
   private nextSessionId = 0
   private sessionId: number | null = null
@@ -107,6 +115,7 @@ export class SmartMoveWorkerController {
   private cadenceTimer: ReturnType<typeof setTimeout> | null = null
   private settleTimer: ReturnType<typeof setTimeout> | null = null
   private thinkingTimer: ReturnType<typeof setTimeout> | null = null
+  private solveTimer: ReturnType<typeof setTimeout> | null = null
   private state = initialSmartMoveAsyncState()
   private diagnostics: SmartMoveSchedulingDiagnostics = createDiagnostics()
   private disposed = false
@@ -120,6 +129,7 @@ export class SmartMoveWorkerController {
 
     const completed = this.inFlight
     this.inFlight = null
+    this.clearSolveTimer()
     const roundTripMs = completed.sentAt === null ? 0 : Math.max(0, this.now() - completed.sentAt)
     if (response.type === 'result') {
       appendSample(this.diagnostics.solveTimesMs, response.solveTimeMs)
@@ -134,17 +144,19 @@ export class SmartMoveWorkerController {
           sessionId: response.sessionId,
           stateRevision: response.stateRevision,
           target: { ...response.result.target },
+          kind: response.kind,
         }
         this.clearThinkingTimer()
+        const limited = !response.result.valid && response.result.failureReasons.includes('SEARCH_LIMIT')
         this.updateState({
-          status: response.result.valid ? 'ready-valid' : 'ready-invalid',
+          status: limited ? 'search-limit' : response.result.valid ? 'ready-valid' : 'ready-invalid',
           result: response.result,
           resultTarget: { ...response.result.target },
           currentTarget: { ...response.result.target },
           currentKind: response.kind,
-          canApply: response.result.valid,
+          canApply: response.result.valid && !limited,
           thinkingVisible: false,
-          errorMessage: null,
+          errorMessage: limited ? SMART_MOVE_SEARCH_LIMIT_MESSAGE : null,
         })
       } else {
         this.diagnostics.workerErrors += 1
@@ -152,6 +164,7 @@ export class SmartMoveWorkerController {
         this.updateState({
           ...this.state,
           status: 'error',
+          result: null,
           canApply: false,
           thinkingVisible: false,
           errorMessage: 'Unable to calculate Smart Move',
@@ -169,6 +182,8 @@ export class SmartMoveWorkerController {
     const failedWasCurrent = Boolean(this.inFlight && this.currentIntent
       && this.inFlight.message.requestId === this.currentIntent.message.requestId)
     this.detachWorker()
+    this.clearSolveTimer()
+    this.worker.terminate()
     this.inFlight = null
     if (!this.disposed) {
       this.worker = this.createWorker()
@@ -179,12 +194,33 @@ export class SmartMoveWorkerController {
       this.updateState({
         ...this.state,
         status: 'error',
+        result: null,
         canApply: false,
         thinkingVisible: false,
         errorMessage: 'Unable to calculate Smart Move',
       })
     }
     this.sendPendingIfPossible()
+  }
+
+  private handleSearchTimeout(requestId: number) {
+    if (!this.inFlight || this.inFlight.message.requestId !== requestId) return
+    const timedOutWasCurrent = this.currentIntent?.message.requestId === requestId
+    const pending = this.pending
+    this.replaceWorker()
+    if (timedOutWasCurrent) {
+      this.clearThinkingTimer()
+      this.updateState({
+        ...this.state,
+        status: 'search-limit',
+        result: null,
+        resultTarget: null,
+        canApply: false,
+        thinkingVisible: false,
+        errorMessage: SMART_MOVE_SEARCH_LIMIT_MESSAGE,
+      })
+    }
+    if (pending && this.currentIntent?.message.requestId === pending.message.requestId) this.send(pending)
   }
 
   constructor(options: SmartMoveWorkerControllerOptions) {
@@ -195,6 +231,8 @@ export class SmartMoveWorkerController {
     this.liveRequestIntervalMs = options.liveRequestIntervalMs ?? SMART_MOVE_LIVE_REQUEST_INTERVAL_MS
     this.settleDelayMs = options.settleDelayMs ?? SMART_MOVE_SETTLE_DELAY_MS
     this.thinkingDelayMs = options.thinkingDelayMs ?? SMART_MOVE_THINKING_DELAY_MS
+    this.liveSearchBudgetMs = options.liveSearchBudgetMs ?? SMART_MOVE_LIVE_SEARCH_BUDGET_MS
+    this.lockedSearchBudgetMs = options.lockedSearchBudgetMs ?? SMART_MOVE_LOCKED_SEARCH_BUDGET_MS
     this.worker = this.createWorker()
     this.attachWorker()
   }
@@ -220,11 +258,14 @@ export class SmartMoveWorkerController {
 
   updateSnapshot(stateRevision: number, createRequest: (target: Point) => SmartMoveRequest) {
     if (this.sessionId === null) return
+    const requestChanged = this.createRequest !== createRequest
     this.createRequest = createRequest
-    if (stateRevision === this.stateRevision) return
+    if (stateRevision === this.stateRevision && !requestChanged) return
     this.stateRevision = stateRevision
     this.completedIntent = null
+    this.currentIntent = null
     this.pending = null
+    if (this.inFlight) this.replaceWorker()
     if (this.rawTarget) {
       this.scheduleIntent(this.lockedTarget ? 'locked' : 'state-refresh', this.lockedTarget ?? this.rawTarget)
     } else {
@@ -275,7 +316,9 @@ export class SmartMoveWorkerController {
     this.cadenceTarget = null
     this.pending = null
 
-    if (this.state.result && this.completedIntent
+    if ((this.state.status === 'ready-valid' || this.state.status === 'ready-invalid')
+      && this.state.result && this.completedIntent
+      && this.completedIntent.kind === 'locked'
       && this.completedIntent.sessionId === this.sessionId
       && this.completedIntent.stateRevision === this.stateRevision
       && pointsEqual(this.completedIntent.target, target)) {
@@ -305,7 +348,8 @@ export class SmartMoveWorkerController {
 
     this.diagnostics.lockedExactSolves += 1
     if (this.inFlight
-      && !pointsEqual(this.inFlight.message.request.target, target)) {
+      && (!pointsEqual(this.inFlight.message.request.target, target)
+        || this.inFlight.message.kind !== 'locked')) {
       this.replaceWorker()
     }
     this.scheduleIntent('locked', target)
@@ -329,7 +373,8 @@ export class SmartMoveWorkerController {
   }
 
   getApplicableResult() {
-    return this.state.canApply && this.state.result && this.currentIntent && this.completedIntent
+    return this.state.status === 'ready-valid' && this.state.canApply
+      && this.state.result && this.currentIntent && this.completedIntent
       && this.currentIntent.message.requestId === this.completedIntent.requestId
       && this.currentIntent.message.sessionId === this.completedIntent.sessionId
       && this.currentIntent.message.stateRevision === this.completedIntent.stateRevision
@@ -354,6 +399,7 @@ export class SmartMoveWorkerController {
     this.disposed = true
     this.clearTargetTimers()
     this.clearThinkingTimer()
+    this.clearSolveTimer()
     this.detachWorker()
     this.worker.terminate()
   }
@@ -363,9 +409,13 @@ export class SmartMoveWorkerController {
     if (this.currentIntent
       && this.currentIntent.message.sessionId === this.sessionId
       && this.currentIntent.message.stateRevision === this.stateRevision
+      && this.currentIntent.message.kind === kind
+      && this.state.status !== 'error'
+      && this.state.status !== 'search-limit'
       && pointsEqual(this.currentIntent.message.request.target, target)) return
 
     const wasCalculating = this.state.status === 'calculating'
+    const budgetMs = kind === 'locked' ? this.lockedSearchBudgetMs : this.liveSearchBudgetMs
     const intent: ScheduledIntent = {
       message: {
         type: 'solve',
@@ -373,7 +423,7 @@ export class SmartMoveWorkerController {
         sessionId: this.sessionId,
         stateRevision: this.stateRevision,
         kind,
-        request: this.createRequest({ ...target }),
+        request: { ...this.createRequest({ ...target }), searchBudgetMs: budgetMs },
       },
       sentAt: null,
     }
@@ -402,6 +452,9 @@ export class SmartMoveWorkerController {
     this.diagnostics.workerRequestsSubmitted += 1
     try {
       this.worker.postMessage(intent.message)
+      this.clearSolveTimer()
+      this.solveTimer = setTimeout(() => this.handleSearchTimeout(intent.message.requestId),
+        intent.message.request.searchBudgetMs ?? this.liveSearchBudgetMs)
     } catch {
       this.handleWorkerError()
     }
@@ -466,6 +519,11 @@ export class SmartMoveWorkerController {
     this.thinkingTimer = null
   }
 
+  private clearSolveTimer() {
+    if (this.solveTimer !== null) clearTimeout(this.solveTimer)
+    this.solveTimer = null
+  }
+
   private updateState(state: SmartMoveAsyncState) {
     this.state = state
     this.onStateChange(state)
@@ -483,6 +541,7 @@ export class SmartMoveWorkerController {
 
   private replaceWorker() {
     this.detachWorker()
+    this.clearSolveTimer()
     this.worker.terminate()
     this.inFlight = null
     this.pending = null

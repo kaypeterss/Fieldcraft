@@ -14,6 +14,7 @@ import { createMoveAction } from '../game/moveActions'
 import { advanceTurn } from '../game/turns'
 import { gameReducer } from '../state/reducer'
 import { individualSameUnitHandoffTarget } from '../tools/selection'
+import { poseTrajectoryFromPositions } from './trajectory'
 
 function freshState(): GameState {
   return JSON.parse(JSON.stringify(initialGameState)) as GameState
@@ -46,10 +47,10 @@ describe('players and game context', () => {
     const state = freshState()
     expect(state.players.map((player) => player.displayName)).toEqual(['Player 1', 'Player 2'])
     expect(state.units.map((unit) => getPlayerForUnit(state, unit)?.id)).toEqual([
-      'player-1', 'player-2', 'player-2', 'player-1', 'player-1', 'player-2', 'player-1', 'player-2', 'player-1',
+      'player-1', 'player-2', 'player-1', 'player-2', 'player-2', 'player-2', 'player-1',
     ])
-    expect(state.models.filter((model) => getPlayerForModel(state, model)?.id === 'player-1')).toHaveLength(49)
-    expect(state.models.filter((model) => getPlayerForModel(state, model)?.id === 'player-2')).toHaveLength(43)
+    expect(state.models.filter((model) => getPlayerForModel(state, model)?.id === 'player-1')).toHaveLength(26)
+    expect(state.models.filter((model) => getPlayerForModel(state, model)?.id === 'player-2')).toHaveLength(31)
     const renamed = freshState()
     renamed.players[0].displayName = 'Kay'
     expect(getPlayerForUnit(renamed, renamed.units[0])?.displayName).toBe('Kay')
@@ -191,8 +192,16 @@ describe('confirmed move actions', () => {
       actorPlayerId: state.gameContext.activePlayerId,
       gameContext: state.gameContext,
       affectedModels: [finalModel],
-      startingPositions: { 'mdl-a-001': startingPosition },
-      finalPositions: { 'mdl-a-001': finalPosition },
+      startingPoses: { 'mdl-a-001': { position: startingPosition, rotation: finalModel.rotation } },
+      finalPoses: { 'mdl-a-001': { position: finalPosition, rotation: finalModel.rotation } },
+      trajectories: {
+        'mdl-a-001': poseTrajectoryFromPositions(
+          [startingPosition, finalPosition],
+          finalModel.rotation,
+        ),
+      },
+      translationDistance: { 'mdl-a-001': 0.5 },
+      angularRotation: { 'mdl-a-001': 0 },
       movementUsed: { 'mdl-a-001': 0.5 },
     }))
   })

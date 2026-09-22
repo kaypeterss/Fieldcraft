@@ -4,12 +4,15 @@ import { evaluateUnitCoherency, isCoherencyResultValid } from './coherency'
 import {
   distanceBetweenBases,
   distanceFromBaseToPoint,
+  exclusionOutlineForTargetFootprint,
   exclusionRadiusForTargetBase,
   isTargetCenterWithinExclusionZone,
+  isPointWithinModelRangeArea,
   minimumDistanceBetweenUnits,
   modelsWithinRangeOfModel,
   modelsWithinRangeOfUnit,
   rangeRadiusForBase,
+  rangeOutlineForModel,
 } from './spatial'
 import { measureBetweenTargets } from '../tools/measurement'
 
@@ -54,6 +57,25 @@ describe('spatial base distances', () => {
     expect(measurement?.distanceInches).toBe(distanceBetweenBases(a, b))
   })
 
+  it('uses actual rotated geometry for distance, range, and coherency', () => {
+    const source: TabletopModel = {
+      ...model('oval', 0, 0, 25.4, 'shapes'),
+      rotation: Math.PI / 2,
+      base: { shape: 'ellipse', widthMm: 50.8, heightMm: 25.4 },
+    }
+    const target: TabletopModel = {
+      ...model('rect', 3.5, 0, 25.4, 'shapes'),
+      base: { shape: 'rectangle', widthMm: 50.8, heightMm: 25.4 },
+    }
+    expect(distanceBetweenBases(source, target)).toBeCloseTo(2)
+    expect(modelsWithinRangeOfModel(source, [target], 2)).toEqual([target])
+    expect(evaluateUnitCoherency(
+      unit('shapes', [source.id, target.id]),
+      [source, target],
+      { distance: 2, requiredNeighbors: 1 },
+    ).coherent).toBe(true)
+  })
+
   it('measures from the base edge to outside, edge, and interior points', () => {
     const source = model('a', 5, 5, 50.8)
     expect(distanceFromBaseToPoint(source, { x: 9, y: 5 })).toBe(3)
@@ -62,11 +84,50 @@ describe('spatial base distances', () => {
   })
 })
 
+describe('live spatial overlays', () => {
+  it('re-derives Range, Exclusion, and Coherency from the current translated and rotated poses', () => {
+    const before: TabletopModel = {
+      ...model('oval', 5, 5, 25.4, 'shapes'),
+      base: { shape: 'ellipse', widthMm: 76.2, heightMm: 25.4 },
+    }
+    const after: TabletopModel = {
+      ...before,
+      position: { x: 6, y: 5.5 },
+      rotation: Math.PI / 2,
+    }
+    const neighbor = model('neighbor', 9, 5, 25.4, 'shapes')
+    const shapes = unit('shapes', [before.id, neighbor.id])
+    const target = { shape: 'rectangle' as const, widthMm: 50.8, heightMm: 25.4 }
+
+    expect(rangeOutlineForModel(after, 3)).not.toEqual(rangeOutlineForModel(before, 3))
+    expect(exclusionOutlineForTargetFootprint(after, target, Math.PI / 4, 2))
+      .not.toEqual(exclusionOutlineForTargetFootprint(before, target, Math.PI / 4, 2))
+    expect(evaluateUnitCoherency(shapes, [after, neighbor], {
+      distance: 10, requiredNeighbors: 1,
+    }).links).not.toEqual(evaluateUnitCoherency(shapes, [before, neighbor], {
+      distance: 10, requiredNeighbors: 1,
+    }).links)
+  })
+})
+
 describe('range queries', () => {
   it('derives the effective range radius from base edge plus range', () => {
     expect(rangeRadiusForBase({ shape: 'circle', diameterMm: 25.4 }, 3)).toBe(3.5)
     expect(rangeRadiusForBase({ shape: 'circle', diameterMm: 50.8 }, 3)).toBe(4)
     expect(() => rangeRadiusForBase({ shape: 'circle', diameterMm: 25.4 }, -1)).toThrow(RangeError)
+  })
+
+  it('keeps rotated footprint membership and the rendered range outline aligned', () => {
+    const source: TabletopModel = {
+      ...model('source', 5, 5),
+      rotation: Math.PI / 4,
+      base: { shape: 'rectangle', widthMm: 50.8, heightMm: 25.4 },
+    }
+    const outline = rangeOutlineForModel(source, 2, 128)
+    expect(outline).toHaveLength(128)
+    expect(outline.every((point) => isPointWithinModelRangeArea(source, point, 2))).toBe(true)
+    expect(isPointWithinModelRangeArea(source, { x: 5, y: 5 }, 2)).toBe(true)
+    expect(isPointWithinModelRangeArea(source, { x: 20, y: 5 }, 2)).toBe(false)
   })
 
   it('includes the exact boundary and excludes a point beyond tolerance', () => {
@@ -156,9 +217,63 @@ describe('exclusion geometry', () => {
   it('rejects a negative required separation', () => {
     expect(() => exclusionRadiusForTargetBase(model('source', 0, 0), { shape: 'circle', diameterMm: 25 }, -1)).toThrow(RangeError)
   })
+
+  it('uses both actual footprints and the target orientation', () => {
+    const source: TabletopModel = {
+      ...model('source', 5, 5),
+      rotation: Math.PI / 4,
+      base: { shape: 'rectangle', widthMm: 76.2, heightMm: 25.4 },
+    }
+    const target = { shape: 'ellipse' as const, widthMm: 76.2, heightMm: 25.4 }
+    const horizontal = exclusionOutlineForTargetFootprint(source, target, 0, 1, 128)
+    const vertical = exclusionOutlineForTargetFootprint(source, target, Math.PI / 2, 1, 128)
+    expect(Math.max(...horizontal.map((point) => point.x))).toBeGreaterThan(
+      Math.max(...vertical.map((point) => point.x)),
+    )
+    const horizontalBoundary = horizontal[0]
+    expect(isTargetCenterWithinExclusionZone(source, horizontalBoundary, target, 1, 0)).toBe(false)
+    expect(isTargetCenterWithinExclusionZone(
+      source,
+      { x: horizontalBoundary.x - 0.01, y: horizontalBoundary.y },
+      target,
+      1,
+      0,
+    )).toBe(true)
+  })
+
+  it('retains circular target-center exclusion parity', () => {
+    const source = model('source', 2, 3, 25.4)
+    const target = { shape: 'circle' as const, diameterMm: 50.8 }
+    const radius = exclusionRadiusForTargetBase(source, target, 3)
+    const outline = exclusionOutlineForTargetFootprint(source, target, 0, 3, 64)
+    expect(outline[0]).toEqual({ x: source.position.x + radius, y: source.position.y })
+    expect(isTargetCenterWithinExclusionZone(source, { x: source.position.x + radius, y: 3 }, target, 3)).toBe(false)
+  })
 })
 
 describe('coherency evaluation', () => {
+  it('stores actual rotated footprint-edge anchors for visualization links', () => {
+    const source: TabletopModel = {
+      ...model('oval', 0, 0, 25.4, 'shapes'),
+      rotation: Math.PI / 2,
+      base: { shape: 'ellipse', widthMm: 50.8, heightMm: 25.4 },
+    }
+    const target: TabletopModel = {
+      ...model('rectangle', 3.5, 0, 25.4, 'shapes'),
+      base: { shape: 'rectangle', widthMm: 50.8, heightMm: 25.4 },
+    }
+    const result = evaluateUnitCoherency(
+      unit('shapes', [source.id, target.id]),
+      [source, target],
+      { distance: 2, requiredNeighbors: 1 },
+    )
+    expect(result.links[0].distance).toBeCloseTo(2)
+    expect(result.links[0].startAnchor.x).toBeCloseTo(0.5)
+    expect(result.links[0].startAnchor.y).toBeCloseTo(0)
+    expect(result.links[0].endAnchor.x).toBeCloseTo(2.5)
+    expect(result.links[0].endAnchor.y).toBeCloseTo(0)
+  })
+
   it('accepts two models within policy distance and rejects two outside it', () => {
     const sourceUnit = unit('unit-a', ['a', 'b'])
     expect(evaluateUnitCoherency(sourceUnit, [model('a', 0, 0), model('b', 2, 0)], { distance: 1, requiredNeighbors: 1 }).coherent).toBe(true)

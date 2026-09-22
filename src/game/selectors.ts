@@ -22,12 +22,28 @@ export function getUnitCoherencyPolicy(state: GameState, unit: Unit): CoherencyP
 export function getUnitBaseDiameters(state: GameState, unit: Unit): number[] {
   return [...new Set(state.models
     .filter((model) => unit.modelIds.includes(model.id))
-    .map((model) => model.base.diameterMm))].sort((a, b) => a - b)
+    .flatMap((model) => model.base.shape === 'circle' ? [model.base.diameterMm] : []))].sort((a, b) => a - b)
 }
 
 export function getUnitBaseLabel(state: GameState, unit: Unit): string {
-  const diameters = getUnitBaseDiameters(state, unit)
-  return diameters.length === 1 ? `${diameters[0]} mm` : 'Mixed'
+  const models = state.models.filter((model) => unit.modelIds.includes(model.id))
+  const footprints = [...new Map(models.map((model) => [JSON.stringify(model.base), model.base])).values()]
+  if (footprints.length !== 1) return 'Mixed'
+  const footprint = footprints[0]
+  if (!footprint) return '—'
+  switch (footprint.shape) {
+    case 'circle':
+      return `${footprint.diameterMm} mm circle`
+    case 'ellipse':
+      return `Oval ${footprint.widthMm} × ${footprint.heightMm} mm`
+    case 'rectangle':
+      return `Rectangle ${footprint.widthMm} × ${footprint.heightMm} mm`
+    case 'polygon': {
+      const xs = footprint.verticesMm.map((vertex) => vertex.x)
+      const ys = footprint.verticesMm.map((vertex) => vertex.y)
+      return `Hull ${Math.max(...xs) - Math.min(...xs)} × ${Math.max(...ys) - Math.min(...ys)} mm`
+    }
+  }
 }
 
 export function getPlayerForUnit(state: GameState, unit: Unit): Player | undefined {

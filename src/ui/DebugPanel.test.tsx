@@ -47,12 +47,11 @@ describe('DebugPanel ownership display', () => {
       coherencyValid={isCoherencyResultValid(coherency, policy)}
     />)
 
-    expect(screen.getByText('Heavy 10')).toBeTruthy()
-    expect(screen.getByText('Player 2')).toBeTruthy()
-    expect(screen.getByText('50 mm')).toBeTruthy()
-    expect(screen.getByText('6.00″')).toBeTruthy()
-    expect(screen.getByText('2.00″')).toBeTruthy()
-    expect(screen.getByText('2')).toBeTruthy()
+    expect(screen.getByText('Oval Cavalry')).toBeTruthy()
+    expect(screen.getByText('Player 1')).toBeTruthy()
+    expect(screen.getByText('Oval 75 × 42mm @ 0°')).toBeTruthy()
+    expect(screen.getByText('10.00″')).toBeTruthy()
+    expect(screen.getByText('1.00″')).toBeTruthy()
     expect(screen.getAllByText('Valid')).toHaveLength(2)
     expect(screen.getByText('Yes')).toBeTruthy()
     expect(screen.getByText('Components')).toBeTruthy()
@@ -98,18 +97,18 @@ describe('DebugPanel ownership display', () => {
     expect(screen.getByText('3.60″')).toBeTruthy()
   })
 
-  it('shows mixed unit bases while retaining the selected model diameter', () => {
-    const unit = initialGameState.units.find((candidate) => candidate.id === 'unit-mixed')!
+  it('shows a homogeneous hull unit and the selected model footprint dimensions', () => {
+    const unit = initialGameState.units.find((candidate) => candidate.id === 'unit-vehicles')!
     const model = initialGameState.models.find((candidate) => candidate.id === unit.modelIds[0])!
     render(<DebugPanel
       model={model}
       selectedCount={1}
-      unitName="Mixed 8"
+      unitName="Vehicle / Hull Unit"
       unitModelCount={unit.modelIds.length}
-      unitBaseLabel="Mixed"
+      unitBaseLabel="Hull 105 × 44 mm"
     />)
     expect(screen.getByText('Unit Bases')).toBeTruthy()
-    expect(screen.getByText('Mixed')).toBeTruthy()
-    expect(screen.getByText('32 mm')).toBeTruthy()
+    expect(screen.getByText('Hull 105 × 44 mm')).toBeTruthy()
+    expect(screen.getByText('Hull 105 × 44mm (6-point) @ 0°')).toBeTruthy()
   })
 })

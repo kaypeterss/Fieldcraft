@@ -751,6 +751,7 @@ describe('Smart Move authoritative application', () => {
       startingPositions: Object.fromEntries(solved.assignments.map((entry) => [entry.modelId, entry.start])),
       finalPositions: Object.fromEntries(solved.assignments.map((entry) => [entry.modelId, entry.destination])),
       movementUsed: Object.fromEntries(solved.assignments.map((entry) => [entry.modelId, entry.movementCost])),
+      paths: Object.fromEntries(solved.assignments.map((entry) => [entry.modelId, entry.path])),
     })
     expect(applied.actionHistory).toHaveLength(1)
     expect(applied.actionHistory[0]).toMatchObject({
@@ -761,6 +762,10 @@ describe('Smart Move authoritative application', () => {
       turnId: 'turn-3',
     })
     expect(applied.actionHistory[0].payload.modelIds.sort()).toEqual(['a', 'b'])
+    for (const assignment of solved.assignments) {
+      expect(applied.actionHistory[0].payload.trajectories[assignment.modelId].segments
+        .map((segment) => segment.endPose.position)).toEqual(assignment.path.slice(1))
+    }
     expect(applied.models.find((entry) => entry.id === 'fixed')?.position).toEqual({ x: 4, y: 2 })
     expect(movementUsedByModelInTurn(applied.actionHistory, 'a', applied.gameContext)).toBeGreaterThan(0)
     expect(hasUnitPerformedAction(applied.actionHistory, 'unit-a', 'MOVE', applied.gameContext)).toBe(true)
