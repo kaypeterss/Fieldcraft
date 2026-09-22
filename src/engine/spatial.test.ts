@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TabletopModel, Unit } from '../domain/types'
-import { evaluateUnitCoherency } from './coherency'
+import { evaluateUnitCoherency, isCoherencyResultValid } from './coherency'
 import {
   distanceBetweenBases,
   distanceFromBaseToPoint,
@@ -216,14 +216,96 @@ describe('coherency evaluation', () => {
     expect(unitValue).toEqual(beforeUnit)
   })
 
-  it('keeps connectedness separate from local neighbor validity', () => {
+  it('rejects two disconnected locally valid groups when connectedness is required', () => {
     const models = [
       model('a', 0, 0), model('b', 1.5, 0),
       model('c', 10, 0), model('d', 11.5, 0),
     ]
-    const result = evaluateUnitCoherency(unit('unit-a', models.map((entry) => entry.id)), models, { distance: 1, requiredNeighbors: 1 })
-    expect(result.coherent).toBe(true)
+    const policy = { distance: 1, requiredNeighbors: 1, requireConnected: true }
+    const result = evaluateUnitCoherency(unit('unit-a', models.map((entry) => entry.id)), models, policy)
+    expect(result.neighborRequirementsSatisfied).toBe(true)
     expect(result.connected).toBe(false)
+    expect(result.componentCount).toBe(2)
+    expect(result.coherent).toBe(false)
+    expect(isCoherencyResultValid(result, policy)).toBe(false)
+  })
+
+  it('reports a connected locally valid unit as one coherent component', () => {
+    const models = ['a', 'b', 'c', 'd'].map((id, index) => model(id, index * 1.5, 0))
+    const policy = { distance: 1, requiredNeighbors: 1, requireConnected: true }
+    const result = evaluateUnitCoherency(unit('unit-a', models.map((entry) => entry.id)), models, policy)
+    expect(result.neighborRequirementsSatisfied).toBe(true)
+    expect(result.connected).toBe(true)
+    expect(result.componentCount).toBe(1)
+    expect(result.components).toEqual([['a', 'b', 'c', 'd']])
+    expect(result.coherent).toBe(true)
+  })
+
+  it('rejects the exact four-model plus six-model disconnected split', () => {
+    const group = (prefix: string, originX: number, count: number) => Array.from({ length: count }, (_, index) => (
+      model(`${prefix}-${index}`, originX + (index % 3) * 1.5, Math.floor(index / 3) * 1.5)
+    ))
+    const models = [...group('left', 0, 4), ...group('right', 20, 6)]
+    const policy = { distance: 1, requiredNeighbors: 1, requireConnected: true }
+    const result = evaluateUnitCoherency(unit('unit-a', models.map((entry) => entry.id)), models, policy)
+    expect(result.neighborRequirementsSatisfied).toBe(true)
+    expect(result.connected).toBe(false)
+    expect(result.componentCount).toBe(2)
+    expect(result.components.map((component) => component.length)).toEqual([4, 6])
+    expect(result.coherent).toBe(false)
+  })
+
+  it('rejects three disconnected locally valid components', () => {
+    const models = [0, 10, 20].flatMap((origin, groupIndex) => [
+      model(`${groupIndex}-a`, origin, 0),
+      model(`${groupIndex}-b`, origin + 1.5, 0),
+    ])
+    const result = evaluateUnitCoherency(
+      unit('unit-a', models.map((entry) => entry.id)),
+      models,
+      { distance: 1, requiredNeighbors: 1, requireConnected: true },
+    )
+    expect(result.neighborRequirementsSatisfied).toBe(true)
+    expect(result.componentCount).toBe(3)
+    expect(result.coherent).toBe(false)
+  })
+
+  it('becomes connected after a valid coherency chain reconnects two groups', () => {
+    const models = ['a', 'b', 'bridge-a', 'bridge-b', 'c', 'd'].map((id, index) => model(id, index * 1.5, 0))
+    const result = evaluateUnitCoherency(
+      unit('unit-a', models.map((entry) => entry.id)),
+      models,
+      { distance: 1, requiredNeighbors: 1, requireConnected: true },
+    )
+    expect(result.connected).toBe(true)
+    expect(result.componentCount).toBe(1)
+    expect(result.coherent).toBe(true)
+  })
+
+  it('fails local requirements even when the graph is connected', () => {
+    const models = [model('a', 0, 0), model('b', 1.5, 0), model('c', 3, 0)]
+    const result = evaluateUnitCoherency(
+      unit('unit-a', models.map((entry) => entry.id)),
+      models,
+      { distance: 1, requiredNeighbors: 2, requireConnected: true },
+    )
+    expect(result.connected).toBe(true)
+    expect(result.neighborRequirementsSatisfied).toBe(false)
+    expect(result.coherent).toBe(false)
+  })
+
+  it('allows disconnected components when the policy does not require connectedness', () => {
+    const models = [
+      model('a', 0, 0), model('b', 1.5, 0),
+      model('c', 10, 0), model('d', 11.5, 0),
+    ]
+    const policy = { distance: 1, requiredNeighbors: 1, requireConnected: false }
+    const result = evaluateUnitCoherency(unit('unit-a', models.map((entry) => entry.id)), models, policy)
+    expect(result.neighborRequirementsSatisfied).toBe(true)
+    expect(result.connected).toBe(false)
+    expect(result.componentCount).toBe(2)
+    expect(result.coherent).toBe(true)
+    expect(isCoherencyResultValid(result, policy)).toBe(true)
   })
 
   it('updates from current positions without storing stale results', () => {

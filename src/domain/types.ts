@@ -10,6 +10,13 @@ export interface CircularBase {
   diameterMm: number
 }
 
+export interface CoherencyPolicy {
+  distance: number
+  requiredNeighbors: number
+  /** Connectedness is distinct from the local neighbor requirement. */
+  requireConnected?: boolean
+}
+
 export interface TabletopModel {
   id: string
   unitId: string
@@ -25,6 +32,7 @@ export interface UnitDefinition {
   id: string
   name: string
   movementAllowance: number
+  coherencyPolicy?: CoherencyPolicy
 }
 
 export interface Unit {

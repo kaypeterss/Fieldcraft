@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import type { CoherencyPolicy, CoherencyResult } from '../engine/coherency'
-import type { SpatialMode } from '../tools/spatialOverlay'
+import type { CoherencyAnalysisMode, SpatialMode } from '../tools/spatialOverlay'
 import { formatNumericValue, normalizeNumericDraft } from './numberInput'
 
 const RANGE_PRESETS = [3, 6, 9, 12, 18]
@@ -11,14 +11,18 @@ interface SpatialPanelProps {
   range: number
   requiredSeparation: number
   targetBaseDiameterMm: number
+  coherencyAnalysisMode: CoherencyAnalysisMode
   coherencyPolicy: CoherencyPolicy
+  customCoherencyPolicy: CoherencyPolicy
   coherency: CoherencyResult | null
   sourceCount: number
   coherencyUnitAvailable: boolean
+  unitPolicyAvailable: boolean
   onModeChange: (mode: SpatialMode) => void
   onRangeChange: (range: number) => void
   onRequiredSeparationChange: (distance: number) => void
   onTargetBaseDiameterChange: (diameterMm: number) => void
+  onCoherencyAnalysisModeChange: (mode: CoherencyAnalysisMode) => void
   onCoherencyPolicyChange: (policy: CoherencyPolicy) => void
 }
 
@@ -61,13 +65,45 @@ export function SpatialPanel(props: SpatialPanelProps) {
 
       {props.mode === 'coherency' && (
         <>
-          <div className="panel-section-label">SAMPLE POLICY</div>
-          <NumberField key={`coherency-distance-${props.coherencyPolicy.distance}`} label="Neighbor distance" value={props.coherencyPolicy.distance} min={0} step="any" suffix="in" onChange={(distance) => props.onCoherencyPolicyChange({ ...props.coherencyPolicy, distance })} />
-          <NumberField key={`coherency-neighbors-${props.coherencyPolicy.requiredNeighbors}`} label="Required neighbors" value={props.coherencyPolicy.requiredNeighbors} min={0} step={1} integer suffix="" onChange={(requiredNeighbors) => props.onCoherencyPolicyChange({ ...props.coherencyPolicy, requiredNeighbors })} />
+          <div className="panel-section-label">COHERENCY POLICY</div>
+          <div className="segmented-control" aria-label="Coherency policy source">
+            <button
+              className={props.coherencyAnalysisMode === 'unit-policy' ? 'active' : ''}
+              disabled={!props.unitPolicyAvailable}
+              onClick={() => props.onCoherencyAnalysisModeChange('unit-policy')}
+            >Unit Policy</button>
+            <button
+              className={props.coherencyAnalysisMode === 'custom' ? 'active' : ''}
+              onClick={() => props.onCoherencyAnalysisModeChange('custom')}
+            >Custom Analysis</button>
+          </div>
+          {props.coherencyAnalysisMode === 'unit-policy' ? (
+            <dl className="spatial-policy-summary">
+              <div><dt>Neighbor distance</dt><dd>{props.coherencyPolicy.distance}″</dd></div>
+              <div><dt>Required neighbors</dt><dd>{props.coherencyPolicy.requiredNeighbors}</dd></div>
+              <div><dt>Connected required</dt><dd>{props.coherencyPolicy.requireConnected ? 'Yes' : 'No'}</dd></div>
+            </dl>
+          ) : (
+            <>
+              <NumberField key={`coherency-distance-${props.customCoherencyPolicy.distance}`} label="Neighbor distance" value={props.customCoherencyPolicy.distance} min={0} step="any" suffix="in" onChange={(distance) => props.onCoherencyPolicyChange({ ...props.customCoherencyPolicy, distance })} />
+              <NumberField key={`coherency-neighbors-${props.customCoherencyPolicy.requiredNeighbors}`} label="Required neighbors" value={props.customCoherencyPolicy.requiredNeighbors} min={0} step={1} integer suffix="" onChange={(requiredNeighbors) => props.onCoherencyPolicyChange({ ...props.customCoherencyPolicy, requiredNeighbors })} />
+              <label className="spatial-checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={Boolean(props.customCoherencyPolicy.requireConnected)}
+                  onChange={(event) => props.onCoherencyPolicyChange({ ...props.customCoherencyPolicy, requireConnected: event.target.checked })}
+                />
+                Require connected unit
+              </label>
+            </>
+          )}
           {props.coherency && props.coherencyUnitAvailable ? (
             <div className={props.coherency.coherent ? 'coherency-summary valid' : 'coherency-summary invalid'}>
               <strong>{props.coherency.coherent ? 'COHERENT' : 'COHERENCY WARNING'}</strong>
-              <span>{props.coherency.models.filter((model) => !model.valid).length} violating · {props.coherency.connected ? 'connected' : 'disconnected'}</span>
+              <span>Overall: {props.coherency.coherent ? 'Valid' : 'Invalid'}</span>
+              <span>Neighbor Requirements: {props.coherency.neighborRequirementsSatisfied ? 'Valid' : 'Invalid'}</span>
+              <span>Connected: {props.coherency.connected ? 'Yes' : 'No'}</span>
+              <span>Components: {props.coherency.componentCount}</span>
             </div>
           ) : (
             <p className="spatial-empty">Select one model or a complete unit to evaluate its unit coherency.</p>

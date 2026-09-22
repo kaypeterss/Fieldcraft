@@ -1,4 +1,4 @@
-import type { GameState, Player, TabletopModel, Unit, UnitDefinition } from '../domain/types'
+import type { CoherencyPolicy, GameState, Player, TabletopModel, Unit, UnitDefinition } from '../domain/types'
 
 export function getUnitForModel(state: GameState, modelId: string): Unit | undefined {
   const model = state.models.find((candidate) => candidate.id === modelId)
@@ -13,6 +13,21 @@ export function getMovementAllowance(state: GameState, model: TabletopModel): nu
   const unit = state.units.find((candidate) => candidate.id === model.unitId)
   const definition = unit && getUnitDefinition(state, unit)
   return definition?.movementAllowance ?? 0
+}
+
+export function getUnitCoherencyPolicy(state: GameState, unit: Unit): CoherencyPolicy | undefined {
+  return getUnitDefinition(state, unit)?.coherencyPolicy
+}
+
+export function getUnitBaseDiameters(state: GameState, unit: Unit): number[] {
+  return [...new Set(state.models
+    .filter((model) => unit.modelIds.includes(model.id))
+    .map((model) => model.base.diameterMm))].sort((a, b) => a - b)
+}
+
+export function getUnitBaseLabel(state: GameState, unit: Unit): string {
+  const diameters = getUnitBaseDiameters(state, unit)
+  return diameters.length === 1 ? `${diameters[0]} mm` : 'Mixed'
 }
 
 export function getPlayerForUnit(state: GameState, unit: Unit): Player | undefined {

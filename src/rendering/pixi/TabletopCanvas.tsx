@@ -18,6 +18,7 @@ import type { MeasurementResult, MeasurementTarget } from '../../tools/measureme
 import { hasDragIntent, individualSameUnitHandoffTarget, selectionForModelPointerDown } from '../../tools/selection'
 import type { SpatialOverlayConfig } from '../../tools/spatialOverlay'
 import type { ActiveTool } from '../../ui/Toolbar'
+import type { SmartMoveResult } from '../../engine/smartMove'
 
 interface TabletopCanvasProps {
   gameState: GameState
@@ -27,9 +28,14 @@ interface TabletopCanvasProps {
   measurementTargetA: MeasurementTarget | null
   measurementTargetB: MeasurementTarget | null
   spatialOverlay: SpatialOverlayConfig | null
+  smartMoveResult: SmartMoveResult | null
+  smartMoveRawTarget: Point | null
+  smartMoveTargetLocked: boolean
   resetCameraSignal: number
   onSelectionChange: (ids: Set<string>) => void
   onMeasureTarget: (target: MeasurementTarget) => void
+  onSmartMoveTargetPreview: (target: Point) => void
+  onSmartMoveTargetLock: (target: Point) => void
   dispatch: (action: GameStateAction) => void
 }
 
@@ -60,6 +66,9 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
   const panRef = useRef<{ start: Point; camera: Point } | null>(null)
   const selectionBoxRef = useRef<SelectionBoxState | null>(null)
   const movementSequenceRef = useRef(0)
+  const smartTargetFrameRef = useRef<number | null>(null)
+  const latestSmartTargetRef = useRef<Point | null>(null)
+  const smartTargetMarkerRef = useRef<Graphics | null>(null)
   const propsRef = useRef(props)
 
   useLayoutEffect(() => {
@@ -119,6 +128,21 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
               propsRef.current.onMeasureTarget({ type: 'point', point })
             }
           }
+        } else if (propsRef.current.activeTool === 'smart-move') {
+          if (event.button === 0) {
+            const point = screenToWorld(event.global, cameraRef.current)
+            if (smartTargetFrameRef.current !== null) cancelAnimationFrame(smartTargetFrameRef.current)
+            smartTargetFrameRef.current = null
+            latestSmartTargetRef.current = point
+            updateSmartTargetMarker(world, smartTargetMarkerRef, point)
+            propsRef.current.onSmartMoveTargetLock(point)
+          } else {
+            panRef.current = {
+              start: { x: event.global.x, y: event.global.y },
+              camera: { x: cameraRef.current.x, y: cameraRef.current.y },
+            }
+            app.canvas.classList.add('is-panning')
+          }
         } else {
           if (event.button === 0 && !propsRef.current.gameState.movementSession) {
             const start = screenToWorld(event.global, cameraRef.current)
@@ -141,6 +165,25 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
           cameraRef.current.x = pan.camera.x + event.global.x - pan.start.x
           cameraRef.current.y = pan.camera.y + event.global.y - pan.start.y
           applyCamera(world, cameraRef.current)
+        }
+
+        if (propsRef.current.activeTool === 'smart-move'
+          && !propsRef.current.smartMoveTargetLocked
+          && !pan) {
+          const target = screenToWorld(event.global, cameraRef.current)
+          latestSmartTargetRef.current = target
+          if (smartTargetFrameRef.current === null) {
+            smartTargetFrameRef.current = requestAnimationFrame(() => {
+              smartTargetFrameRef.current = null
+              const latest = latestSmartTargetRef.current
+              if (latest
+                && propsRef.current.activeTool === 'smart-move'
+                && !propsRef.current.smartMoveTargetLocked) {
+                updateSmartTargetMarker(world, smartTargetMarkerRef, latest)
+                propsRef.current.onSmartMoveTargetPreview(latest)
+              }
+            })
+          }
         }
 
         const drag = dragRef.current
@@ -177,7 +220,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
           selectionBox.current = screenToWorld(event.global, cameraRef.current)
           selectionBox.active = selectionBox.active
             || Math.hypot(selectionBox.current.x - selectionBox.start.x, selectionBox.current.y - selectionBox.start.y) > 0.15
-          if (selectionBox.active) drawScene(world, propsRef, dragRef, cameraRef, selectionBoxRef)
+          if (selectionBox.active) drawScene(world, propsRef, dragRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
         }
       })
 
@@ -207,7 +250,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
             propsRef.current.onSelectionChange(new Set())
           }
           selectionBoxRef.current = null
-          drawScene(world, propsRef, dragRef, cameraRef, selectionBoxRef)
+          drawScene(world, propsRef, dragRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
         }
         dragRef.current = null
         panRef.current = null
@@ -233,7 +276,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
       app.canvas.addEventListener('contextmenu', (event) => event.preventDefault())
 
       fitCamera()
-      drawScene(world, propsRef, dragRef, cameraRef, selectionBoxRef)
+      drawScene(world, propsRef, dragRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
     })
 
     return () => {
@@ -241,13 +284,14 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
       appRef.current = null
       worldRef.current = null
       if (initialized) app.destroy(true, { children: true })
+      if (smartTargetFrameRef.current !== null) cancelAnimationFrame(smartTargetFrameRef.current)
     }
   }, [])
 
   useEffect(() => {
     const world = worldRef.current
-    if (world) drawScene(world, propsRef, dragRef, cameraRef, selectionBoxRef)
-  }, [props.gameState, props.selectedIds, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay])
+    if (world) drawScene(world, propsRef, dragRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
+  }, [props.gameState, props.selectedIds, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult])
 
   useEffect(() => {
     if (props.resetCameraSignal > 0) fitCamera()
@@ -265,6 +309,10 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
               : 'Click model or point · Ctrl/Cmd-click model for unit'
           : props.activeTool === 'spatial'
             ? 'Select a model or Ctrl/Cmd-click a whole unit · overlays do not restrict movement'
+            : props.activeTool === 'smart-move'
+              ? props.smartMoveTargetLocked
+                ? 'Target locked · click battlefield to reposition · Enter or Apply Move'
+                : 'Move pointer to preview · click battlefield or press Enter to lock'
           : 'Click model · Shift multi-select · Ctrl/Cmd unit · Drag empty space to box select · Ctrl/Cmd+Z undo'}
       </div>
     </div>
@@ -286,7 +334,9 @@ function drawScene(
   dragRef: React.MutableRefObject<DragState | null>,
   cameraRef: React.MutableRefObject<CameraState>,
   selectionBoxRef: React.MutableRefObject<SelectionBoxState | null>,
+  smartTargetMarkerRef: React.MutableRefObject<Graphics | null>,
 ) {
+  smartTargetMarkerRef.current = null
   world.removeChildren().forEach((child) => child.destroy({ children: true }))
   const props = propsRef.current
   const { battlefield, models } = props.gameState
@@ -334,7 +384,7 @@ function drawScene(
     const token = new Container()
     token.position.set(model.position.x, model.position.y)
     token.eventMode = 'static'
-    token.cursor = props.activeTool === 'measure' ? 'crosshair' : 'grab'
+    token.cursor = props.activeTool === 'measure' || props.activeTool === 'smart-move' ? 'crosshair' : 'grab'
     token.hitArea = new Rectangle(-radius, -radius, radius * 2, radius * 2)
 
     if (selected || measuringA || measuringB) {
@@ -367,6 +417,16 @@ function drawScene(
           currentProps.onMeasureTarget(event.ctrlKey || event.metaKey
             ? { type: 'unit', unitId: unit?.id ?? model.unitId }
             : { type: 'model', modelId: model.id })
+        }
+        return
+      }
+      if (currentProps.activeTool === 'smart-move') {
+        if (event.button === 0) {
+          const point = screenToWorld(event.global, cameraRef.current)
+          if (isPointInsideBattlefield(point, currentProps.gameState.battlefield)) {
+            updateSmartTargetMarker(world, smartTargetMarkerRef, point)
+            currentProps.onSmartMoveTargetLock(point)
+          }
         }
         return
       }
@@ -458,9 +518,68 @@ function drawScene(
     props.measurement.endAnchor,
     props.measurement.distanceInches,
   )
+  if (props.activeTool === 'smart-move' && props.smartMoveResult) {
+    drawSmartMovePreview(world, props.smartMoveResult, models)
+  }
+  if (props.activeTool === 'smart-move' && props.smartMoveRawTarget) {
+    updateSmartTargetMarker(world, smartTargetMarkerRef, props.smartMoveRawTarget)
+  }
 
   const selectionBox = selectionBoxRef.current
   if (selectionBox?.active) drawSelectionBox(world, selectionBox.start, selectionBox.current)
+}
+
+function drawSmartMovePreview(
+  world: Container,
+  result: SmartMoveResult,
+  models: GameState['models'],
+) {
+  const byId = new Map(models.map((model) => [model.id, model]))
+  const color = result.valid ? 0x72d6a1 : 0xff7d6d
+  const pathGraphic = new Graphics()
+  for (const assignment of result.assignments) {
+    if (assignment.path.length > 1) {
+      pathGraphic.moveTo(assignment.path[0].x, assignment.path[0].y)
+      for (const point of assignment.path.slice(1)) pathGraphic.lineTo(point.x, point.y)
+    }
+  }
+  pathGraphic.stroke({ color, width: 0.07, alpha: 0.3 })
+  pathGraphic.eventMode = 'none'
+  world.addChild(pathGraphic)
+
+  for (const assignment of result.assignments) {
+    const model = byId.get(assignment.modelId)
+    if (!model) continue
+    const radius = baseRadiusInches(model.base)
+    const ghost = new Graphics()
+      .circle(assignment.destination.x, assignment.destination.y, radius)
+      .fill({ color, alpha: 0.16 })
+      .stroke({ color, width: 0.13, alpha: 0.95 })
+      .circle(assignment.destination.x, assignment.destination.y, Math.max(0, radius - 0.16))
+      .stroke({ color, width: 0.05, alpha: 0.55 })
+    ghost.eventMode = 'none'
+    world.addChild(ghost)
+  }
+
+}
+
+function updateSmartTargetMarker(
+  world: Container,
+  markerRef: React.MutableRefObject<Graphics | null>,
+  target: Point,
+) {
+  if (markerRef.current) {
+    markerRef.current.parent?.removeChild(markerRef.current)
+    markerRef.current.destroy()
+  }
+  const marker = new Graphics()
+    .moveTo(target.x - 0.3, target.y).lineTo(target.x + 0.3, target.y)
+    .moveTo(target.x, target.y - 0.3).lineTo(target.x, target.y + 0.3)
+    .circle(target.x, target.y, 0.16)
+    .stroke({ color: 0xf1c969, width: 0.08, alpha: 0.95 })
+  marker.eventMode = 'none'
+  markerRef.current = marker
+  world.addChild(marker)
 }
 
 function drawRangeArea(world: Container, models: GameState['models'], range: number) {

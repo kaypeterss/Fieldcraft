@@ -38,3 +38,14 @@ export function hasUnitPerformedAction(
 export function mostRecentAction(actions: readonly GameAction[]): GameAction | undefined {
   return actions.at(-1)
 }
+
+/** Total confirmed movement cost recorded for one model in the current turn. */
+export function movementUsedByModelInTurn(
+  actions: readonly GameAction[],
+  modelId: string,
+  context: Pick<GameContext, 'turnId'>,
+): number {
+  return actionsInTurn(actions, context).reduce((total, action) => (
+    action.type === 'MOVE' ? total + (action.payload.movementUsed[modelId] ?? 0) : total
+  ), 0)
+}

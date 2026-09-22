@@ -15,6 +15,12 @@ export interface RequestRigidMovementAction {
 export interface ConfirmMovementAction { type: 'movement/confirmed' }
 export interface CancelMovementAction { type: 'movement/cancelled' }
 export interface UndoConfirmedMovementAction { type: 'movement/undoLastConfirmed' }
+export interface ApplyValidatedCandidateMovementAction {
+  type: 'movement/validatedCandidateApplied'
+  startingPositions: Record<string, Point>
+  finalPositions: Record<string, Point>
+  movementUsed: Record<string, number>
+}
 export interface EndTurnAction { type: 'game/turnEnded' }
 
 export type GameStateAction =
@@ -23,4 +29,5 @@ export type GameStateAction =
   | ConfirmMovementAction
   | CancelMovementAction
   | UndoConfirmedMovementAction
+  | ApplyValidatedCandidateMovementAction
   | EndTurnAction

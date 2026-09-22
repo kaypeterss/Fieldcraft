@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CoherencyPolicy } from '../engine/coherency'
 import { normalizeNumericDraft } from './numberInput'
 import { SpatialPanel } from './SpatialPanel'
+import { resolveSpatialCoherencyPolicy, resolveSpatialCoherencyUnit } from '../tools/spatialOverlay'
 
 afterEach(() => cleanup())
 
@@ -14,14 +15,18 @@ function renderPanel(overrides: Partial<Parameters<typeof SpatialPanel>[0]> = {}
     range: 3,
     requiredSeparation: 3,
     targetBaseDiameterMm: 32,
+    coherencyAnalysisMode: 'unit-policy',
     coherencyPolicy: policy,
+    customCoherencyPolicy: policy,
     coherency: null,
     sourceCount: 1,
     coherencyUnitAvailable: false,
+    unitPolicyAvailable: false,
     onModeChange: vi.fn(),
     onRangeChange: vi.fn(),
     onRequiredSeparationChange: vi.fn(),
     onTargetBaseDiameterChange: vi.fn(),
+    onCoherencyAnalysisModeChange: vi.fn(),
     onCoherencyPolicyChange: vi.fn(),
     ...overrides,
   }
@@ -30,6 +35,39 @@ function renderPanel(overrides: Partial<Parameters<typeof SpatialPanel>[0]> = {}
 }
 
 describe('spatial numeric input editing', () => {
+  it('keeps unit policy and custom analysis as explicit independent sources', () => {
+    const unitPolicy = { distance: 2, requiredNeighbors: 3, requireConnected: true }
+    const customPolicy = { distance: 4, requiredNeighbors: 1, requireConnected: false }
+    expect(resolveSpatialCoherencyPolicy('unit-policy', unitPolicy, customPolicy)).toBe(unitPolicy)
+    expect(resolveSpatialCoherencyPolicy('custom', unitPolicy, customPolicy)).toBe(customPolicy)
+
+    const onModeChange = vi.fn()
+    renderPanel({
+      mode: 'coherency',
+      coherencyAnalysisMode: 'unit-policy',
+      coherencyPolicy: unitPolicy,
+      customCoherencyPolicy: customPolicy,
+      unitPolicyAvailable: true,
+      coherencyUnitAvailable: true,
+      onCoherencyAnalysisModeChange: onModeChange,
+    })
+    expect(screen.getByText('Connected required')).toBeTruthy()
+    expect(screen.getByText('Yes')).toBeTruthy()
+    expect(screen.queryByLabelText('Neighbor distance')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Custom Analysis' }))
+    expect(onModeChange).toHaveBeenCalledWith('custom')
+  })
+
+  it('resolves a complete unit from any same-unit partial selection', () => {
+    const units = [
+      { id: 'unit-a', ownerId: 'player-a', definitionId: 'def-a', modelIds: ['a', 'b', 'c'] },
+      { id: 'unit-b', ownerId: 'player-b', definitionId: 'def-b', modelIds: ['x'] },
+    ]
+    expect(resolveSpatialCoherencyUnit(units, new Set(['a', 'b']))?.id).toBe('unit-a')
+    expect(resolveSpatialCoherencyUnit(units, new Set(['a', 'x']))).toBeUndefined()
+    expect(resolveSpatialCoherencyUnit(units, new Set())).toBeUndefined()
+  })
+
   it('allows a draft to be empty and replaces 3 with 12 without a leading zero', () => {
     const props = renderPanel()
     const input = screen.getByLabelText('Custom range')
@@ -82,14 +120,18 @@ describe('spatial numeric input editing', () => {
           range={3}
           requiredSeparation={3}
           targetBaseDiameterMm={32}
+          coherencyAnalysisMode="unit-policy"
           coherencyPolicy={policy}
+          customCoherencyPolicy={policy}
           coherency={null}
           sourceCount={1}
           coherencyUnitAvailable={false}
+          unitPolicyAvailable={false}
           onModeChange={vi.fn()}
           onRangeChange={vi.fn()}
           onRequiredSeparationChange={vi.fn()}
           onTargetBaseDiameterChange={vi.fn()}
+          onCoherencyAnalysisModeChange={vi.fn()}
           onCoherencyPolicyChange={vi.fn()}
         />
       </div>,
@@ -109,7 +151,7 @@ describe('spatial numeric input editing', () => {
 
     const coherency = vi.fn()
     cleanup()
-    renderPanel({ mode: 'coherency', onCoherencyPolicyChange: coherency })
+    renderPanel({ mode: 'coherency', coherencyAnalysisMode: 'custom', onCoherencyPolicyChange: coherency })
     const neighborInput = screen.getByLabelText('Required neighbors')
     fireEvent.change(neighborInput, { target: { value: '' } })
     fireEvent.change(neighborInput, { target: { value: '2' } })

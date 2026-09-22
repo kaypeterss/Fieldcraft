@@ -1,7 +1,12 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { initialGameState } from '../game/initialState'
-import { getPlayerForModel } from '../game/selectors'
+import { evaluateUnitCoherency, isCoherencyResultValid } from '../engine/coherency'
+import {
+  getPlayerForModel,
+  getUnitCoherencyPolicy,
+  getUnitDefinition,
+} from '../game/selectors'
 import { DebugPanel } from './DebugPanel'
 
 afterEach(cleanup)
@@ -21,5 +26,90 @@ describe('DebugPanel ownership display', () => {
     render(<DebugPanel model={model} selectedCount={1} ownerDisplayName={getPlayerForModel(state, model)?.displayName} />)
     expect(screen.getByText('Kay')).toBeTruthy()
     expect(model.ownerId).toBe('player-1')
+  })
+
+  it('renders authoritative unit policy and live coherency data', () => {
+    const unit = initialGameState.units[2]
+    const model = initialGameState.models.find((candidate) => candidate.id === unit.modelIds[0])!
+    const definition = getUnitDefinition(initialGameState, unit)!
+    const policy = getUnitCoherencyPolicy(initialGameState, unit)!
+    const coherency = evaluateUnitCoherency(unit, initialGameState.models, policy)
+
+    render(<DebugPanel
+      model={model}
+      selectedCount={1}
+      ownerDisplayName={getPlayerForModel(initialGameState, model)?.displayName}
+      unitName={definition.name}
+      unitModelCount={unit.modelIds.length}
+      movementAllowance={definition.movementAllowance}
+      coherencyPolicy={policy}
+      coherency={coherency}
+      coherencyValid={isCoherencyResultValid(coherency, policy)}
+    />)
+
+    expect(screen.getByText('Heavy 10')).toBeTruthy()
+    expect(screen.getByText('Player 2')).toBeTruthy()
+    expect(screen.getByText('50 mm')).toBeTruthy()
+    expect(screen.getByText('6.00″')).toBeTruthy()
+    expect(screen.getByText('2.00″')).toBeTruthy()
+    expect(screen.getByText('2')).toBeTruthy()
+    expect(screen.getAllByText('Valid')).toHaveLength(2)
+    expect(screen.getByText('Yes')).toBeTruthy()
+    expect(screen.getByText('Components')).toBeTruthy()
+  })
+
+  it('derives Invalid from current model positions instead of cached UI text', () => {
+    const state = structuredClone(initialGameState)
+    const unit = state.units[0]
+    const model = state.models.find((candidate) => candidate.id === unit.modelIds[0])!
+    model.position = { x: 55, y: 40 }
+    const definition = getUnitDefinition(state, unit)!
+    const policy = getUnitCoherencyPolicy(state, unit)!
+    const coherency = evaluateUnitCoherency(unit, state.models, policy)
+
+    render(<DebugPanel
+      model={model}
+      selectedCount={1}
+      unitName={definition.name}
+      unitModelCount={unit.modelIds.length}
+      movementAllowance={definition.movementAllowance}
+      coherencyPolicy={policy}
+      coherency={coherency}
+      coherencyValid={isCoherencyResultValid(coherency, policy)}
+    />)
+
+    expect(screen.getAllByText('Invalid')).toHaveLength(2)
+    expect(screen.getByText('No')).toBeTruthy()
+    expect(screen.getByText(`0 / ${policy.requiredNeighbors}`)).toBeTruthy()
+  })
+
+  it('shows movement used and remaining for the current operation', () => {
+    const model = initialGameState.models[0]
+    render(<DebugPanel
+      model={model}
+      selectedCount={1}
+      movementAllowance={6}
+      movementUsed={2.4}
+      movementRemaining={3.6}
+    />)
+    expect(screen.getByText('Movement Used')).toBeTruthy()
+    expect(screen.getByText('2.40″')).toBeTruthy()
+    expect(screen.getByText('Movement Remaining')).toBeTruthy()
+    expect(screen.getByText('3.60″')).toBeTruthy()
+  })
+
+  it('shows mixed unit bases while retaining the selected model diameter', () => {
+    const unit = initialGameState.units.find((candidate) => candidate.id === 'unit-mixed')!
+    const model = initialGameState.models.find((candidate) => candidate.id === unit.modelIds[0])!
+    render(<DebugPanel
+      model={model}
+      selectedCount={1}
+      unitName="Mixed 8"
+      unitModelCount={unit.modelIds.length}
+      unitBaseLabel="Mixed"
+    />)
+    expect(screen.getByText('Unit Bases')).toBeTruthy()
+    expect(screen.getByText('Mixed')).toBeTruthy()
+    expect(screen.getByText('32 mm')).toBeTruthy()
   })
 })

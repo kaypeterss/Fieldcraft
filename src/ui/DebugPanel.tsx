@@ -1,4 +1,5 @@
-import type { TabletopModel } from '../domain/types'
+import type { CoherencyPolicy, TabletopModel } from '../domain/types'
+import type { CoherencyResult } from '../engine/coherency'
 import { formatInches, millimetersToInches } from '../engine/units'
 
 interface DebugPanelProps {
@@ -6,9 +7,20 @@ interface DebugPanelProps {
   selectedCount: number
   wholeUnitName?: string
   ownerDisplayName?: string
+  unitName?: string
+  unitModelCount?: number
+  unitBaseLabel?: string
+  movementAllowance?: number
+  movementUsed?: number
+  movementRemaining?: number
+  coherencyPolicy?: CoherencyPolicy
+  coherency?: CoherencyResult | null
+  coherencyValid?: boolean
 }
 
-export function DebugPanel({ model, selectedCount, wholeUnitName, ownerDisplayName }: DebugPanelProps) {
+export function DebugPanel(props: DebugPanelProps) {
+  const { model, selectedCount, wholeUnitName, ownerDisplayName } = props
+  const modelCoherency = props.coherency?.models.find((entry) => entry.modelId === model?.id)
   return (
     <aside className={model ? 'debug-panel visible' : 'debug-panel'} aria-live="polite">
       {model ? (
@@ -23,8 +35,10 @@ export function DebugPanel({ model, selectedCount, wholeUnitName, ownerDisplayNa
           {wholeUnitName && <div className="whole-unit-badge">FULL UNIT · {wholeUnitName}</div>}
           <dl>
             <div><dt>Model ID</dt><dd>{model.id}</dd></div>
-            <div><dt>Unit ID</dt><dd>{model.unitId}</dd></div>
+            <div><dt>Unit</dt><dd>{props.unitName ?? model.unitId}</dd></div>
             <div><dt>Owner</dt><dd>{ownerDisplayName ?? model.ownerId}</dd></div>
+            {props.unitModelCount !== undefined && <div><dt>Models</dt><dd>{props.unitModelCount}</dd></div>}
+            {props.unitBaseLabel && <div><dt>Unit Bases</dt><dd>{props.unitBaseLabel}</dd></div>}
           </dl>
           <div className="panel-section-label">POSITION</div>
           <div className="coordinate-grid">
@@ -36,6 +50,26 @@ export function DebugPanel({ model, selectedCount, wholeUnitName, ownerDisplayNa
             <div><dt>Shape</dt><dd>{model.base.shape}</dd></div>
             <div><dt>Diameter</dt><dd>{model.base.diameterMm} mm</dd></div>
             <div><dt>Converted</dt><dd>{formatInches(millimetersToInches(model.base.diameterMm))}</dd></div>
+            {props.movementAllowance !== undefined
+              && <div><dt>Move</dt><dd>{formatInches(props.movementAllowance)}</dd></div>}
+            {props.movementUsed !== undefined
+              && <div><dt>Movement Used</dt><dd>{formatInches(props.movementUsed)}</dd></div>}
+            {props.movementRemaining !== undefined
+              && <div><dt>Movement Remaining</dt><dd>{formatInches(props.movementRemaining)}</dd></div>}
+            {props.coherencyPolicy && <>
+              <div><dt>Coherency Distance</dt><dd>{formatInches(props.coherencyPolicy.distance)}</dd></div>
+              <div><dt>Required Neighbors</dt><dd>{props.coherencyPolicy.requiredNeighbors}</dd></div>
+              <div><dt>Current Coherency</dt><dd>{props.coherencyValid ? 'Valid' : 'Invalid'}</dd></div>
+              {props.coherency && <>
+                <div><dt>Neighbor Requirements</dt><dd>{props.coherency.neighborRequirementsSatisfied ? 'Valid' : 'Invalid'}</dd></div>
+                <div><dt>Connected</dt><dd>{props.coherency.connected ? 'Yes' : 'No'}</dd></div>
+                <div><dt>Components</dt><dd>{props.coherency.componentCount}</dd></div>
+              </>}
+            </>}
+            {modelCoherency && <div>
+              <dt>Model Neighbors</dt>
+              <dd>{modelCoherency.neighborCount} / {props.coherencyPolicy?.requiredNeighbors ?? 0}</dd>
+            </div>}
           </dl>
         </>
       ) : (

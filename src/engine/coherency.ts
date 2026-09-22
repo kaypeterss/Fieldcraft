@@ -1,10 +1,7 @@
-import type { TabletopModel, Unit } from '../domain/types'
+import type { CoherencyPolicy, TabletopModel, Unit } from '../domain/types'
 import { distanceBetweenBases, isDistanceWithinRange } from './spatial'
 
-export interface CoherencyPolicy {
-  distance: number
-  requiredNeighbors: number
-}
+export type { CoherencyPolicy } from '../domain/types'
 
 export interface CoherencyModelResult {
   modelId: string
@@ -21,7 +18,10 @@ export interface CoherencyLink {
 
 export interface CoherencyResult {
   coherent: boolean
+  neighborRequirementsSatisfied: boolean
   connected: boolean
+  componentCount: number
+  components: string[][]
   models: CoherencyModelResult[]
   links: CoherencyLink[]
 }
@@ -62,25 +62,41 @@ export function evaluateUnitCoherency(
     }
   })
 
+  const neighborRequirementsSatisfied = modelResults.every((model) => model.valid)
+  const components = connectedComponents(models.map((model) => model.id), neighbors)
+  const connected = components.length <= 1
+
   return {
-    coherent: modelResults.every((model) => model.valid),
-    connected: isConnected(models.map((model) => model.id), neighbors),
+    coherent: neighborRequirementsSatisfied && (!policy.requireConnected || connected),
+    neighborRequirementsSatisfied,
+    connected,
+    componentCount: components.length,
+    components,
     models: modelResults,
     links,
   }
 }
 
-function isConnected(modelIds: string[], neighbors: ReadonlyMap<string, string[]>): boolean {
-  if (modelIds.length <= 1) return true
-  const visited = new Set<string>()
-  const pending = [modelIds[0]]
-  while (pending.length > 0) {
-    const current = pending.pop()
-    if (!current || visited.has(current)) continue
-    visited.add(current)
-    for (const neighbor of neighbors.get(current) ?? []) {
-      if (!visited.has(neighbor)) pending.push(neighbor)
+export function isCoherencyResultValid(result: CoherencyResult, policy: CoherencyPolicy): boolean {
+  return result.neighborRequirementsSatisfied && (!policy.requireConnected || result.connected)
+}
+
+function connectedComponents(modelIds: string[], neighbors: ReadonlyMap<string, string[]>): string[][] {
+  const unvisited = new Set(modelIds)
+  const components: string[][] = []
+  for (const modelId of modelIds) {
+    if (!unvisited.has(modelId)) continue
+    const component: string[] = []
+    const pending = [modelId]
+    while (pending.length > 0) {
+      const current = pending.pop()
+      if (!current || !unvisited.delete(current)) continue
+      component.push(current)
+      for (const neighbor of neighbors.get(current) ?? []) {
+        if (unvisited.has(neighbor)) pending.push(neighbor)
+      }
     }
+    components.push(component.sort((left, right) => left.localeCompare(right)))
   }
-  return visited.size === modelIds.length
+  return components
 }

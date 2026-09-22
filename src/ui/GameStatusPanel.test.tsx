@@ -29,11 +29,13 @@ describe('game status turn display', () => {
       type: 'movement/sessionStarted', sessionId: 'round-three-move', modelIds: ['mdl-a-001'],
     })
     state = gameReducer(state, {
-      type: 'movement/requested', positions: { 'mdl-a-001': { x: 8.5, y: 9 } },
+      type: 'movement/requested', positions: { 'mdl-a-001': { x: 6.5, y: 7 } },
     })
     state = gameReducer(state, { type: 'movement/confirmed' })
     render(<GameStatusPanel gameState={state} blockedMessage={null} onEndTurn={vi.fn()} />)
     expect(screen.getByText('R3/T1')).toBeTruthy()
-    expect(screen.getByText(/Line Infantry · Player 1 · R3\/T1/)).toBeTruthy()
+    expect(screen.getByText(/Line 10 · Player 1 · R3\/T1/)).toBeTruthy()
+    expect(screen.getByText('10 models · 25 mm')).toBeTruthy()
+    expect(screen.getByText('8 models · Mixed')).toBeTruthy()
   })
 })

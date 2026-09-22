@@ -1,6 +1,6 @@
 import type { Battlefield, TabletopModel, Unit } from '../domain/types'
 import type { CoherencyPolicy } from './coherency'
-import { evaluateUnitCoherency } from './coherency'
+import { evaluateUnitCoherency, isCoherencyResultValid } from './coherency'
 import { isModelPositionInsideBattlefield } from './geometry/battlefield'
 import { circlesOverlap } from './geometry/circles'
 import type { Point } from './geometry/point'
@@ -111,7 +111,10 @@ export function validateCandidateFormation(request: CandidateFormationRequest): 
   if (request.coherency) {
     const projectedModels = projectCandidateModels(request.allModels, request.positions)
     const result = evaluateUnitCoherency(request.coherency.unit, projectedModels, request.coherency.policy)
-    const coherent = result.coherent && (!request.coherency.requireConnected || result.connected)
+    const coherent = isCoherencyResultValid(result, {
+      ...request.coherency.policy,
+      requireConnected: request.coherency.requireConnected ?? request.coherency.policy.requireConnected,
+    })
     if (!coherent) {
       const violatingIds = result.models.filter((model) => !model.valid).map((model) => model.modelId)
       violations.push({

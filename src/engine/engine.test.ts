@@ -337,9 +337,10 @@ describe('units and movement sessions', () => {
   }
 
   it('keeps normalized Unit and UnitDefinition relationships independent', () => {
-    expect(initialGameState.units).toHaveLength(3)
+    expect(initialGameState.units).toHaveLength(9)
     expect(initialGameState.units[0].modelIds).toHaveLength(10)
-    expect(initialGameState.units[1].modelIds).toHaveLength(5)
+    expect(initialGameState.units[1].modelIds).toHaveLength(10)
+    expect(initialGameState.units[2].modelIds).toHaveLength(10)
     expect(initialGameState.units[0].ownerId).toBe('player-1')
     expect(initialGameState.unitDefinitions.find((definition) => definition.id === initialGameState.units[0].definitionId)?.movementAllowance).toBe(6)
   })

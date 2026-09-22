@@ -1,6 +1,6 @@
 import type { GameState } from '../domain/types'
 import { hasUnitPerformedAction } from '../game/actionQueries'
-import { getUnitDefinition } from '../game/selectors'
+import { getUnitBaseLabel, getUnitDefinition } from '../game/selectors'
 
 interface GameStatusPanelProps {
   gameState: GameState
@@ -26,7 +26,10 @@ export function GameStatusPanel({ gameState, blockedMessage, onEndTurn }: GameSt
           <span className="popover-title">MOVEMENT · THIS TURN</span>
           {gameState.units.map((unit) => (
             <div className="unit-status-row" key={unit.id}>
-              <span>{getUnitDefinition(gameState, unit)?.name ?? unit.id}</span>
+              <span>
+                {getUnitDefinition(gameState, unit)?.name ?? unit.id}
+                <small>{unit.modelIds.length} models · {getUnitBaseLabel(gameState, unit)}</small>
+              </span>
               <strong className={hasUnitPerformedAction(gameState.actionHistory, unit.id, 'MOVE', gameContext) ? 'moved' : ''}>
                 {hasUnitPerformedAction(gameState.actionHistory, unit.id, 'MOVE', gameContext) ? 'Moved' : '—'}
               </strong>

@@ -135,6 +135,63 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       }
     }
 
+    case 'movement/validatedCandidateApplied': {
+      if (state.movementSession) return state
+      const modelIds = Object.keys(action.finalPositions).sort((a, b) => a.localeCompare(b))
+      if (modelIds.length === 0
+        || !sameIdSet(modelIds, Object.keys(action.startingPositions))
+        || !sameIdSet(modelIds, Object.keys(action.movementUsed))) return state
+      const affectedModels = modelIds.flatMap((modelId) => {
+        const model = state.models.find((candidate) => candidate.id === modelId)
+        return model ? [model] : []
+      })
+      if (affectedModels.length !== modelIds.length) return state
+      const inputValid = affectedModels.every((model) => {
+        const start = action.startingPositions[model.id]
+        const final = action.finalPositions[model.id]
+        const used = action.movementUsed[model.id]
+        return start && final
+          && Number.isFinite(start.x) && Number.isFinite(start.y)
+          && Number.isFinite(final.x) && Number.isFinite(final.y)
+          && Number.isFinite(used) && used >= 0
+          && Math.abs(model.position.x - start.x) <= GEOMETRY_EPSILON
+          && Math.abs(model.position.y - start.y) <= GEOMETRY_EPSILON
+      })
+      if (!inputValid) return state
+      const changedModels = affectedModels.filter((model) => {
+        const final = action.finalPositions[model.id]
+        return Math.abs(model.position.x - final.x) > GEOMETRY_EPSILON
+          || Math.abs(model.position.y - final.y) > GEOMETRY_EPSILON
+      })
+      if (changedModels.length === 0) return state
+
+      const beforeModels = state.models.map((model) => ({ ...model, position: { ...model.position } }))
+      const sequence = state.nextActionSequence
+      const moveAction = createMoveAction({
+        sequence,
+        actorPlayerId: state.gameContext.activePlayerId,
+        gameContext: state.gameContext,
+        affectedModels: changedModels,
+        startingPositions: action.startingPositions,
+        finalPositions: action.finalPositions,
+        movementUsed: action.movementUsed,
+      })
+      return {
+        ...state,
+        models: state.models.map((model) => {
+          const final = action.finalPositions[model.id]
+          return final ? { ...model, position: { ...final } } : model
+        }),
+        actionHistory: [...state.actionHistory, moveAction],
+        nextActionSequence: sequence + 1,
+        lastConfirmedMovementUndo: {
+          models: beforeModels,
+          actionId: moveAction.id,
+          turnId: moveAction.turnId,
+        },
+      }
+    }
+
     case 'movement/undoLastConfirmed': {
       const undo = state.lastConfirmedMovementUndo
       if (state.movementSession || !undo || undo.turnId !== state.gameContext.turnId) return state

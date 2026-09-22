@@ -32,16 +32,24 @@ function confirmTranslation(state: GameState, modelIds: string[], dx: number, dy
   return gameReducer(gameReducer(started, { type: 'movement/requested', positions }), { type: 'movement/confirmed' })
 }
 
+function positionOf(state: GameState, modelId: string) {
+  return state.models.find((model) => model.id === modelId)!.position
+}
+
+function translatedPosition(state: GameState, modelId: string, dx: number, dy: number) {
+  const position = positionOf(state, modelId)
+  return { x: position.x + dx, y: position.y + dy }
+}
+
 describe('players and game context', () => {
   it('resolves both prototype players and unit ownership', () => {
     const state = freshState()
     expect(state.players.map((player) => player.displayName)).toEqual(['Player 1', 'Player 2'])
     expect(state.units.map((unit) => getPlayerForUnit(state, unit)?.id)).toEqual([
-      'player-1', 'player-2', 'player-2',
+      'player-1', 'player-2', 'player-2', 'player-1', 'player-1', 'player-2', 'player-1', 'player-2', 'player-1',
     ])
-    expect(state.models.map((model) => getPlayerForModel(state, model)?.displayName)).toEqual([
-      ...Array(10).fill('Player 1'), ...Array(8).fill('Player 2'),
-    ])
+    expect(state.models.filter((model) => getPlayerForModel(state, model)?.id === 'player-1')).toHaveLength(49)
+    expect(state.models.filter((model) => getPlayerForModel(state, model)?.id === 'player-2')).toHaveLength(43)
     const renamed = freshState()
     renamed.players[0].displayName = 'Kay'
     expect(getPlayerForUnit(renamed, renamed.units[0])?.displayName).toBe('Kay')
@@ -113,8 +121,8 @@ describe('players and game context', () => {
 
   it('keeps ownership separate from movement permission', () => {
     const state = freshState()
-    const moved = confirmTranslation(state, ['mdl-b-001'], -0.5, 0)
-    expect(moved.models.find((model) => model.id === 'mdl-b-001')?.position.x).toBe(40.5)
+    const moved = confirmTranslation(state, ['mdl-c-001'], -0.5, 0)
+    expect(positionOf(moved, 'mdl-c-001')).toEqual(translatedPosition(state, 'mdl-c-001', -0.5, 0))
     expect(moved.actionHistory[0].playerId).toBe('player-1')
     expect(moved.actionHistory[0].payload.ownerIds).toEqual(['player-2'])
   })
@@ -127,20 +135,22 @@ describe('players and game context', () => {
     })
     expect(gameReducer(started, {
       type: 'movement/requested',
-      positions: { 'mdl-a-001': { x: 8.5, y: 9 } },
+      positions: { 'mdl-a-001': translatedPosition(started, 'mdl-a-001', -0.5, 0) },
     })).toBe(started)
-    expect(gameReducer(started, {
+    const accepted = gameReducer(started, {
       type: 'movement/requested',
       positions: {
-        'mdl-a-002': { x: 10.5, y: 9 },
-        'mdl-a-001': { x: 8.5, y: 9 },
+        'mdl-a-002': translatedPosition(started, 'mdl-a-002', -0.5, 0),
+        'mdl-a-001': translatedPosition(started, 'mdl-a-001', -0.5, 0),
       },
-    }).models.filter((model) => ['mdl-a-001', 'mdl-a-002'].includes(model.id)).map((model) => model.position.x)).toEqual([8.5, 10.5])
+    })
+    expect(positionOf(accepted, 'mdl-a-001')).toEqual(translatedPosition(started, 'mdl-a-001', -0.5, 0))
+    expect(positionOf(accepted, 'mdl-a-002')).toEqual(translatedPosition(started, 'mdl-a-002', -0.5, 0))
     expect(gameReducer(started, {
       type: 'movement/requested',
       positions: {
-        'mdl-a-001': { x: 8.5, y: 9 },
-        'mdl-a-002': { x: 10.25, y: 9 },
+        'mdl-a-001': translatedPosition(started, 'mdl-a-001', -0.5, 0),
+        'mdl-a-002': translatedPosition(started, 'mdl-a-002', -0.25, 0),
       },
     })).toBe(started)
   })
@@ -149,8 +159,10 @@ describe('players and game context', () => {
 describe('confirmed move actions', () => {
   it('records one complete action for an individual confirmation, not its pointer requests', () => {
     const state = freshState()
+    const startingPosition = { ...positionOf(state, 'mdl-a-001') }
+    const finalPosition = translatedPosition(state, 'mdl-a-001', -0.5, 0)
     const started = gameReducer(state, { type: 'movement/sessionStarted', sessionId: 'individual', modelIds: ['mdl-a-001'] })
-    const requested = gameReducer(started, { type: 'movement/requested', positions: { 'mdl-a-001': { x: 8.5, y: 9 } } })
+    const requested = gameReducer(started, { type: 'movement/requested', positions: { 'mdl-a-001': finalPosition } })
     expect(requested.actionHistory).toHaveLength(0)
     const confirmed = gameReducer(requested, { type: 'movement/confirmed' })
     expect(confirmed.actionHistory).toHaveLength(1)
@@ -167,8 +179,8 @@ describe('confirmed move actions', () => {
         modelIds: ['mdl-a-001'],
         unitIds: ['unit-a'],
         ownerIds: ['player-1'],
-        startingPositions: { 'mdl-a-001': { x: 9, y: 9 } },
-        finalPositions: { 'mdl-a-001': { x: 8.5, y: 9 } },
+        startingPositions: { 'mdl-a-001': startingPosition },
+        finalPositions: { 'mdl-a-001': finalPosition },
       },
     })
     expect(confirmed.actionHistory[0].payload.movementUsed['mdl-a-001']).toBeCloseTo(0.5)
@@ -179,8 +191,8 @@ describe('confirmed move actions', () => {
       actorPlayerId: state.gameContext.activePlayerId,
       gameContext: state.gameContext,
       affectedModels: [finalModel],
-      startingPositions: { 'mdl-a-001': { x: 9, y: 9 } },
-      finalPositions: { 'mdl-a-001': { x: 8.5, y: 9 } },
+      startingPositions: { 'mdl-a-001': startingPosition },
+      finalPositions: { 'mdl-a-001': finalPosition },
       movementUsed: { 'mdl-a-001': 0.5 },
     }))
   })
@@ -207,18 +219,23 @@ describe('confirmed move actions', () => {
 
   it('does not record cancelled or no-op movement', () => {
     const started = gameReducer(freshState(), { type: 'movement/sessionStarted', sessionId: 'cancel', modelIds: ['mdl-a-001'] })
-    const requested = gameReducer(started, { type: 'movement/requested', positions: { 'mdl-a-001': { x: 8.5, y: 9 } } })
+    const requested = gameReducer(started, { type: 'movement/requested', positions: {
+      'mdl-a-001': translatedPosition(started, 'mdl-a-001', -0.5, 0),
+    } })
     expect(gameReducer(requested, { type: 'movement/cancelled' }).actionHistory).toHaveLength(0)
     expect(gameReducer(started, { type: 'movement/confirmed' }).actionHistory).toHaveLength(0)
   })
 
   it('increments sequence deterministically and snapshots immutable historical positions', () => {
-    const first = confirmTranslation(freshState(), ['mdl-a-001'], -0.5, 0)
+    const initial = freshState()
+    const first = confirmTranslation(initial, ['mdl-a-001'], -0.5, 0)
     const firstSnapshot = JSON.parse(JSON.stringify(first.actionHistory[0]))
     const second = confirmTranslation(first, ['mdl-a-001'], -0.5, 0)
     expect(second.actionHistory.map((action) => action.sequence)).toEqual([1, 2])
     expect(second.actionHistory[0]).toEqual(firstSnapshot)
-    expect(second.actionHistory[1].payload.startingPositions['mdl-a-001']).toEqual({ x: 8.5, y: 9 })
+    expect(second.actionHistory[1].payload.startingPositions['mdl-a-001']).toEqual(
+      translatedPosition(initial, 'mdl-a-001', -0.5, 0),
+    )
     expect(JSON.parse(JSON.stringify(second.actionHistory))).toEqual(second.actionHistory)
     expect(JSON.parse(JSON.stringify(second))).toEqual(second)
   })
@@ -250,11 +267,12 @@ describe('action queries, movement status, and undo', () => {
   })
 
   it('derives movement status and clears it when the corresponding action is undone', () => {
-    const moved = confirmTranslation(freshState(), ['mdl-a-001'], -0.5, 0)
+    const initial = freshState()
+    const moved = confirmTranslation(initial, ['mdl-a-001'], -0.5, 0)
     expect(hasUnitPerformedAction(moved.actionHistory, 'unit-a', 'MOVE', moved.gameContext)).toBe(true)
     expect(hasUnitPerformedAction(moved.actionHistory, 'unit-b', 'MOVE', moved.gameContext)).toBe(false)
     const undone = gameReducer(moved, { type: 'movement/undoLastConfirmed' })
-    expect(undone.models.find((model) => model.id === 'mdl-a-001')?.position).toEqual({ x: 9, y: 9 })
+    expect(positionOf(undone, 'mdl-a-001')).toEqual(positionOf(initial, 'mdl-a-001'))
     expect(undone.actionHistory).toHaveLength(0)
     expect(hasUnitPerformedAction(undone.actionHistory, 'unit-a', 'MOVE', undone.gameContext)).toBe(false)
     const movedAgain = confirmTranslation(undone, ['mdl-a-001'], -0.25, 0)
@@ -285,7 +303,9 @@ describe('individual same-unit movement handoff', () => {
       type: 'movement/sessionStarted', sessionId: 'move-a', modelIds: ['mdl-a-001'],
     })
     state = gameReducer(state, {
-      type: 'movement/requested', positions: { 'mdl-a-001': { x: 8.5, y: 9 } },
+      type: 'movement/requested', positions: {
+        'mdl-a-001': translatedPosition(state, 'mdl-a-001', -0.5, 0),
+      },
     })
     const selectedB = individualSameUnitHandoffTarget(state.movementSession, state.models, 'mdl-a-002')
     expect(selectedB).toBe('mdl-a-002')
@@ -300,7 +320,9 @@ describe('individual same-unit movement handoff', () => {
     })
     expect(state.movementSession?.models['mdl-a-002'].movementUsed).toBe(0)
     state = gameReducer(state, {
-      type: 'movement/requested', positions: { 'mdl-a-002': { x: 10.5, y: 9 } },
+      type: 'movement/requested', positions: {
+        'mdl-a-002': translatedPosition(state, 'mdl-a-002', -0.5, 0),
+      },
     })
     const selectedC = individualSameUnitHandoffTarget(state.movementSession, state.models, 'mdl-a-003')
     expect(selectedC).toBe('mdl-a-003')
@@ -327,7 +349,9 @@ describe('individual same-unit movement handoff', () => {
       type: 'movement/sessionStarted', sessionId: 'different-unit', modelIds: ['mdl-a-001'],
     })
     individual = gameReducer(individual, {
-      type: 'movement/requested', positions: { 'mdl-a-001': { x: 8.5, y: 9 } },
+      type: 'movement/requested', positions: {
+        'mdl-a-001': translatedPosition(individual, 'mdl-a-001', -0.5, 0),
+      },
     })
     expect(individualSameUnitHandoffTarget(individual.movementSession, individual.models, 'mdl-b-001')).toBeNull()
     expect(individual.actionHistory).toHaveLength(0)
@@ -342,21 +366,24 @@ describe('individual same-unit movement handoff', () => {
   })
 
   it('keeps normal undo and cancel semantics after handoffs', () => {
-    const movedA = confirmTranslation(freshState(), ['mdl-a-001'], -0.5, 0)
+    const initial = freshState()
+    const movedA = confirmTranslation(initial, ['mdl-a-001'], -0.5, 0)
     const movedB = confirmTranslation(movedA, ['mdl-a-002'], -0.5, 0)
     const undoneB = gameReducer(movedB, { type: 'movement/undoLastConfirmed' })
     expect(undoneB.actionHistory.map((action) => action.payload.modelIds)).toEqual([['mdl-a-001']])
-    expect(undoneB.models.find((model) => model.id === 'mdl-a-002')?.position).toEqual({ x: 11, y: 9 })
-    expect(undoneB.models.find((model) => model.id === 'mdl-a-001')?.position).toEqual({ x: 8.5, y: 9 })
+    expect(positionOf(undoneB, 'mdl-a-002')).toEqual(positionOf(initial, 'mdl-a-002'))
+    expect(positionOf(undoneB, 'mdl-a-001')).toEqual(translatedPosition(initial, 'mdl-a-001', -0.5, 0))
 
     let movingB = gameReducer(movedA, {
       type: 'movement/sessionStarted', sessionId: 'cancel-b', modelIds: ['mdl-a-002'],
     })
     movingB = gameReducer(movingB, {
-      type: 'movement/requested', positions: { 'mdl-a-002': { x: 10.5, y: 9 } },
+      type: 'movement/requested', positions: {
+        'mdl-a-002': translatedPosition(movingB, 'mdl-a-002', -0.5, 0),
+      },
     })
     const cancelledB = gameReducer(movingB, { type: 'movement/cancelled' })
     expect(cancelledB.actionHistory.map((action) => action.payload.modelIds)).toEqual([['mdl-a-001']])
-    expect(cancelledB.models.find((model) => model.id === 'mdl-a-002')?.position).toEqual({ x: 11, y: 9 })
+    expect(positionOf(cancelledB, 'mdl-a-002')).toEqual(positionOf(initial, 'mdl-a-002'))
   })
 })

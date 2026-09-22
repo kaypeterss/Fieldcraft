@@ -1,4 +1,4 @@
-export type ActiveTool = 'select' | 'measure' | 'spatial'
+export type ActiveTool = 'select' | 'measure' | 'spatial' | 'smart-move'
 
 interface ToolbarProps {
   activeTool: ActiveTool
@@ -41,6 +41,16 @@ function SpatialIcon() {
   )
 }
 
+function SmartMoveIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="7" cy="8" r="2.2" />
+      <circle cx="7" cy="16" r="2.2" />
+      <path d="M11 12h8M16 9l3 3-3 3" />
+    </svg>
+  )
+}
+
 export function Toolbar({ activeTool, onToolChange, onResetCamera }: ToolbarProps) {
   return (
     <nav className="toolbar" aria-label="Tabletop tools">
@@ -66,6 +76,13 @@ export function Toolbar({ activeTool, onToolChange, onResetCamera }: ToolbarProp
           aria-pressed={activeTool === 'spatial'}
         >
           <SpatialIcon /><span>Spatial</span><kbd>S</kbd>
+        </button>
+        <button
+          className={activeTool === 'smart-move' ? 'tool-button active' : 'tool-button'}
+          onClick={() => onToolChange('smart-move')}
+          aria-pressed={activeTool === 'smart-move'}
+        >
+          <SmartMoveIcon /><span>Smart Move</span><kbd>G</kbd>
         </button>
       </div>
       <div className="toolbar-spacer" />
