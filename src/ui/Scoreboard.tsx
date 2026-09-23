@@ -7,9 +7,10 @@ interface ScoreboardProps {
   events: readonly ScoreEvent[]
   onRecord: (playerId: string, pointsDelta: number, reason: string) => void
   onUndoLast: () => void
+  canUndo?: boolean
 }
 
-export function Scoreboard({ players, events, onRecord, onUndoLast }: ScoreboardProps) {
+export function Scoreboard({ players, events, onRecord, onUndoLast, canUndo = events.length > 0 }: ScoreboardProps) {
   const [playerId, setPlayerId] = useState(players[0]?.id ?? '')
   const [pointsDraft, setPointsDraft] = useState('1')
   const [reason, setReason] = useState('Manual adjustment')
@@ -40,7 +41,7 @@ export function Scoreboard({ players, events, onRecord, onUndoLast }: Scoreboard
           <button type="button" disabled={!valid} onClick={() => {
             if (valid) onRecord(playerId, pointsDelta, reason)
           }}>Record</button>
-          <button type="button" disabled={events.length === 0} onClick={onUndoLast}>Undo last</button>
+          <button type="button" disabled={!canUndo} onClick={onUndoLast}>Undo last operation</button>
         </div>
         <div className="score-event-list">
           {[...events].reverse().slice(0, 8).map((event) => {

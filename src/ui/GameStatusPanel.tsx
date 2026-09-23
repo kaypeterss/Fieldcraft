@@ -24,7 +24,8 @@ export function GameStatusPanel({ gameState, blockedMessage, onEndTurn, onRecord
       </div>
       <button type="button" className="end-turn" onClick={onEndTurn}>End Turn</button>
       <Scoreboard players={gameState.players} events={gameState.scoreHistory ?? []}
-        onRecord={onRecordScore ?? (() => undefined)} onUndoLast={onUndoLastScore ?? (() => undefined)} />
+        onRecord={onRecordScore ?? (() => undefined)} onUndoLast={onUndoLastScore ?? (() => undefined)}
+        canUndo={Boolean(gameState.lastCommittedOperationUndo)} />
       <details className="unit-status-menu">
         <summary>Units</summary>
         <div className="status-popover">
@@ -33,7 +34,7 @@ export function GameStatusPanel({ gameState, blockedMessage, onEndTurn, onRecord
             <div className="unit-status-row" key={unit.id}>
               <span>
                 {getUnitDefinition(gameState, unit)?.name ?? unit.id}
-                <small>{unit.modelIds.length} models · {getUnitBaseLabel(gameState, unit)}</small>
+                <small>{gameState.models.filter((model) => unit.modelIds.includes(model.id)).length} models · {getUnitBaseLabel(gameState, unit)}</small>
               </span>
               <strong className={hasUnitPerformedAction(gameState.actionHistory, unit.id, 'MOVE', gameContext) ? 'moved' : ''}>
                 {hasUnitPerformedAction(gameState.actionHistory, unit.id, 'MOVE', gameContext) ? 'Moved' : '—'}

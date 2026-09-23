@@ -24,4 +24,10 @@ export const developmentGameSystem: GameSystem = {
     control: { type: 'model-or-unit-value', defaultValue: 0 },
   },
   turns: { phases: [] },
+  matchState: {
+    schemaId: 'fieldcraft.development-match-state',
+    schemaVersion: 1,
+    createInitialData: () => ({}),
+    validate: (data) => typeof data === 'object' && data !== null && !Array.isArray(data),
+  },
 }

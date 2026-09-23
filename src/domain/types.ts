@@ -3,6 +3,45 @@ import type { Point } from '../engine/geometry/point'
 /** Passive, JSON-safe rule vocabulary interpreted only by a loaded game system. */
 export type Keyword = string
 
+/** Values stored by a loaded game system must remain portable save data. */
+export type JsonPrimitive = string | number | boolean | null
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
+
+export interface VersionedContentReference {
+  id: string
+  version: string
+}
+
+/** Persisted identity of the rules and content used to create this match. */
+export interface MatchIdentity {
+  gameSystem: VersionedContentReference
+  format?: VersionedContentReference
+  mission?: VersionedContentReference
+}
+
+export interface DeploymentZoneDefinition {
+  id: string
+  name: string
+  areaReference?: string
+}
+
+/** Minimal resolved match data; interpretation remains with the loaded GameSystem. */
+export interface ResolvedMatchConfiguration {
+  id: string
+  version: string
+  roundLimit?: number
+  objectiveFeatureIds: string[]
+  deploymentZones: DeploymentZoneDefinition[]
+  policyReferences: Record<string, string>
+}
+
+/** Versioned and validated by the loaded GameSystem, never interpreted by generic engines. */
+export interface GameSystemOwnedState {
+  schemaId: string
+  schemaVersion: number
+  data: JsonValue
+}
+
 export interface Battlefield {
   width: number
   height: number
@@ -137,7 +176,11 @@ export interface TabletopModel {
   objectiveControl?: number
   keywords?: Keyword[]
   label?: string
+  /** Missing is treated as ON_BATTLEFIELD only when reading legacy schema-v3 data. */
+  presence?: ModelPresence
 }
+
+export type ModelPresence = 'ON_BATTLEFIELD' | 'OFF_BOARD' | 'DESTROYED'
 
 export interface UnitDefinition {
   id: string
@@ -200,16 +243,12 @@ export interface ModelMovementState {
 export interface MovementSession {
   id: string
   movementPolicy: MovementPolicyConfig
+  /** Authoritative remaining allowance resolved once by the loaded runtime at session start. */
+  movementAllowanceByModel?: Record<string, number>
   modelIds: string[]
   models: Record<string, ModelMovementState>
   referenceStart: Point
   referencePath: Point[]
-}
-
-export interface MovementUndoSnapshot {
-  models: TabletopModel[]
-  actionId: string
-  turnId: string
 }
 
 export interface MoveAction {
@@ -349,11 +388,31 @@ export interface DiceSequenceRecord extends DiceSequenceResolution {
 
 export type DiceHistoryEntry = DiceRollRecord | DiceSequenceRecord
 
+export type CommittedOperationType = 'MOVE' | 'SCORE' | 'MODEL_PRESENCE' | 'MODEL_PLACED'
+
+/** Ordered facts about committed mutations; current state remains authoritative. */
+export interface CommittedOperation {
+  id: string
+  sequence: number
+  type: CommittedOperationType
+  actorPlayerId: string
+  round: number
+  turn: number
+  turnSequence: number
+  turnId: string
+  phase?: string
+  entityIds: string[]
+}
+
 /** Existing movement-action contract retained for compatibility. */
 export type GameAction = MoveAction
 
 export interface GameState {
-  schemaVersion: 3
+  schemaVersion: 3 | 4
+  /** Required in schema v4; optional only while deterministically migrating v3 saves. */
+  matchIdentity?: MatchIdentity
+  resolvedMatchConfiguration?: ResolvedMatchConfiguration
+  gameSystemState?: GameSystemOwnedState
   battlefield: Battlefield
   players: Player[]
   models: TabletopModel[]
@@ -370,7 +429,25 @@ export interface GameState {
   scoreHistory?: ScoreEvent[]
   /** Optional for compatibility with pre-M8.2 schema-version-3 snapshots. */
   diceHistory?: DiceHistoryEntry[]
+  /** Unified ordered facts for reversible authoritative operations. */
+  committedOperations?: CommittedOperation[]
   nextActionSequence: number
   movementSession: MovementSession | null
-  lastConfirmedMovementUndo?: MovementUndoSnapshot | null
+  /** Legacy schema-v3 movement-only snapshot. Never written by M9 code. */
+  lastConfirmedMovementUndo?: { models: TabletopModel[]; actionId: string; turnId: string } | null
+  lastCommittedOperationUndo?: CommittedOperationUndo | null
+}
+
+/**
+ * One-level atomic Undo snapshot for every M9-authoritative mutable domain.
+ * Dice history and the monotonic sequence are intentionally not reversible.
+ */
+export interface CommittedOperationUndo {
+  operationId: string
+  turnId: string
+  models: TabletopModel[]
+  actionHistory: GameAction[]
+  scoreHistory?: ScoreEvent[]
+  gameSystemState: GameSystemOwnedState
+  committedOperations: CommittedOperation[]
 }

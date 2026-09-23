@@ -76,8 +76,11 @@ export function movementPermissionForUnit(request: {
     : movementActions.filter((action) => scoped(action, actionScope)).length
   const movementUsed = allowanceScope === null ? 0 : movementActions
     .filter((action) => scoped(action, allowanceScope))
-    .reduce((total, action) => total + request.modelIds.reduce(
-      (sum, modelId) => sum + (action.payload.movementUsed[modelId] ?? 0), 0,
+    // One rigid/unit movement spends the greatest per-model cost, not the sum
+    // of every participant's parallel travel.
+    .reduce((total, action) => total + Math.max(
+      0,
+      ...request.modelIds.map((modelId) => action.payload.movementUsed[modelId] ?? 0),
     ), 0)
   return evaluateMovementPermission(request.policy, {
     baseAllowance: request.baseAllowance,

@@ -1,5 +1,5 @@
 import type { Point } from '../engine/geometry/point'
-import type { DicePoolResult, DiceSequenceResolution, MovementPolicyConfig, PoseTrajectory } from '../domain/types'
+import type { DicePoolResult, DiceSequenceResolution, ModelPresence, MovementPolicyConfig, Pose, PoseTrajectory } from '../domain/types'
 
 export interface StartMovementSessionAction {
   type: 'movement/sessionStarted'
@@ -7,6 +7,8 @@ export interface StartMovementSessionAction {
   modelIds: string[]
   /** Captured for the whole session so a debug setting cannot change policy mid-move. */
   movementPolicy?: MovementPolicyConfig
+  /** Supplied only by the authoritative runtime command boundary. */
+  movementAllowanceByModel?: Record<string, number>
 }
 
 export interface RequestRigidMovementAction {
@@ -45,6 +47,28 @@ export interface RecordScoreEventAction {
   source?: { type: string; referenceId?: string }
 }
 export interface UndoLastScoreEventAction { type: 'score/lastEventUndone' }
+export interface UndoLastCommittedOperationAction { type: 'history/undoLastCommitted' }
+export interface SetModelPresenceAction {
+  type: 'lifecycle/modelPresenceSet'
+  modelId: string
+  presence: Exclude<ModelPresence, 'ON_BATTLEFIELD'>
+}
+export interface SetModelsPresenceAction {
+  type: 'lifecycle/modelsPresenceSet'
+  modelIds: string[]
+  presence: Exclude<ModelPresence, 'ON_BATTLEFIELD'>
+}
+export interface PlaceExistingModelAction {
+  type: 'lifecycle/modelPlaced'
+  modelId: string
+  pose: Pose
+  requireCoherency?: boolean
+}
+export interface PlaceExistingModelsAction {
+  type: 'lifecycle/modelsPlaced'
+  placements: Record<string, Pose>
+  requireCoherency?: boolean
+}
 export interface RecordDiceRollAction {
   type: 'dice/rollRecorded'
   playerId: string
@@ -71,6 +95,11 @@ export type GameStateAction =
   | ApplyValidatedCandidateMovementAction
   | RecordScoreEventAction
   | UndoLastScoreEventAction
+  | UndoLastCommittedOperationAction
+  | SetModelPresenceAction
+  | SetModelsPresenceAction
+  | PlaceExistingModelAction
+  | PlaceExistingModelsAction
   | RecordDiceRollAction
   | UpdateDiceRollAction
   | RecordDiceSequenceAction

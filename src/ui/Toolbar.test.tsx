@@ -10,9 +10,11 @@ describe('Toolbar interaction layers', () => {
       activeTool="select"
       spatialEnabled
       diceOpen={false}
+      lifecycleOpen={false}
       onToolChange={vi.fn()}
       onSpatialToggle={vi.fn()}
       onDiceToggle={vi.fn()}
+      onLifecycleToggle={vi.fn()}
       onResetCamera={vi.fn()}
     />)
 
@@ -27,9 +29,11 @@ describe('Toolbar interaction layers', () => {
       activeTool="select"
       spatialEnabled={false}
       diceOpen={false}
+      lifecycleOpen={false}
       onToolChange={onToolChange}
       onSpatialToggle={onSpatialToggle}
       onDiceToggle={vi.fn()}
+      onLifecycleToggle={vi.fn()}
       onResetCamera={vi.fn()}
     />)
 
@@ -41,12 +45,24 @@ describe('Toolbar interaction layers', () => {
   it('opens Dice without replacing the primary pointer tool', () => {
     const onToolChange = vi.fn()
     const onDiceToggle = vi.fn()
-    render(<Toolbar activeTool="select" spatialEnabled={false} diceOpen={false}
+    render(<Toolbar activeTool="select" spatialEnabled={false} diceOpen={false} lifecycleOpen={false}
       onToolChange={onToolChange} onSpatialToggle={vi.fn()} onDiceToggle={onDiceToggle}
+      onLifecycleToggle={vi.fn()}
       onResetCamera={vi.fn()} />)
 
     fireEvent.click(screen.getByRole('button', { name: /Dice/ }))
     expect(onDiceToggle).toHaveBeenCalledOnce()
+    expect(onToolChange).not.toHaveBeenCalled()
+  })
+
+  it('opens Lifecycle without replacing the primary pointer tool', () => {
+    const onToolChange = vi.fn()
+    const onLifecycleToggle = vi.fn()
+    render(<Toolbar activeTool="select" spatialEnabled={false} diceOpen={false} lifecycleOpen={false}
+      onToolChange={onToolChange} onSpatialToggle={vi.fn()} onDiceToggle={vi.fn()}
+      onLifecycleToggle={onLifecycleToggle} onResetCamera={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Lifecycle/ }))
+    expect(onLifecycleToggle).toHaveBeenCalledOnce()
     expect(onToolChange).not.toHaveBeenCalled()
   })
 })

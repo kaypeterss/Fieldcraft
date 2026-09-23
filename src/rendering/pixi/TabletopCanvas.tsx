@@ -8,7 +8,7 @@ import {
   TextStyle,
   type FederatedPointerEvent,
 } from 'pixi.js'
-import type { BattlefieldFeature, Footprint, GameState, MovementPolicyConfig } from '../../domain/types'
+import type { BattlefieldFeature, Footprint, GameState, MovementPolicyConfig, Pose, TabletopModel } from '../../domain/types'
 import { isPointInsideBattlefield } from '../../engine/geometry/battlefield'
 import type { Point } from '../../engine/geometry/point'
 import {
@@ -29,6 +29,7 @@ import type { SpatialOverlayConfig } from '../../tools/spatialOverlay'
 import { exclusionTargetForModel } from '../../tools/spatialOverlay'
 import type { ActiveTool } from '../../ui/Toolbar'
 import type { SmartMoveResult } from '../../engine/smartMove'
+import type { CoherencyResult } from '../../engine/coherency'
 import type { ModelPickerTarget } from '../../tools/modelPicker'
 import { shortestSignedAngularDelta } from '../../engine/rotation'
 import { resolveModelPointerDown, resolveTabletopPointerDown } from '../../tools/pointerInput'
@@ -50,6 +51,9 @@ interface TabletopCanvasProps {
   smartMoveRawTarget: Point | null
   smartMoveTargetLocked: boolean
   visibilityPickTarget: ModelPickerTarget | null
+  lifecyclePlacementActive: boolean
+  lifecyclePlacementPreviews: Array<{ model: TabletopModel; pose: Pose; valid: boolean }>
+  lifecyclePlacementCoherency: Array<{ models: TabletopModel[]; result: CoherencyResult }>
   resetCameraSignal: number
   movementPolicy: MovementPolicyConfig
   onSelectionChange: (ids: Set<string>) => void
@@ -59,6 +63,8 @@ interface TabletopCanvasProps {
   onSmartMoveTargetLock: (target: Point) => void
   onVisibilityPickModel: (modelId: string) => void
   onVisibilityPickHover: (modelId: string | null) => void
+  onLifecyclePlacementPreview: (point: Point) => void
+  onLifecyclePlacementCommit: (point: Point) => void
   dispatch: (action: GameStateAction) => void
 }
 
@@ -168,6 +174,10 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
           beginCameraPan(event)
           return
         }
+        if (propsRef.current.lifecyclePlacementActive && event.button === 0) {
+          propsRef.current.onLifecyclePlacementCommit(screenToWorld(event.global, cameraRef.current))
+          return
+        }
         if (propsRef.current.visibilityPickTarget) return
         if (propsRef.current.activeTool === 'measure') {
           const point = screenToWorld(event.global, cameraRef.current)
@@ -197,6 +207,10 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
           cameraRef.current.x = pan.camera.x + event.global.x - pan.start.x
           cameraRef.current.y = pan.camera.y + event.global.y - pan.start.y
           applyCamera(world, cameraRef.current)
+        }
+
+        if (propsRef.current.lifecyclePlacementActive && !pan) {
+          propsRef.current.onLifecyclePlacementPreview(screenToWorld(event.global, cameraRef.current))
         }
 
         if (propsRef.current.activeTool === 'smart-move'
@@ -352,7 +366,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
   useEffect(() => {
     const world = worldRef.current
     if (world) drawScene(world, propsRef, dragRef, rotationDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
-  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult])
+  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult, props.lifecyclePlacementActive, props.lifecyclePlacementPreviews, props.lifecyclePlacementCoherency])
 
   useEffect(() => {
     if (props.resetCameraSignal > 0) fitCamera()
@@ -362,7 +376,9 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
     <div className="canvas-host" ref={hostRef}>
       <div className="board-size-badge"><strong>{props.gameState.battlefield.width}</strong> × <strong>{props.gameState.battlefield.height}</strong> IN</div>
       <div className="interaction-hint">
-        {props.activeTool === 'measure'
+        {props.lifecyclePlacementActive
+          ? 'Placement mode · click a legal position · middle-drag pans · Esc cancels'
+          : props.activeTool === 'measure'
           ? props.measurementTargetB
             ? 'Measurement complete · choose any target to start another'
             : props.measurementTargetA
@@ -523,6 +539,10 @@ function drawScene(
           start: { x: event.global.x, y: event.global.y },
           camera: { x: cameraRef.current.x, y: cameraRef.current.y },
         }
+        return
+      }
+      if (currentProps.lifecyclePlacementActive) {
+        currentProps.onLifecyclePlacementCommit(screenToWorld(event.global, cameraRef.current))
         return
       }
       if (currentProps.visibilityPickTarget) {
@@ -719,6 +739,21 @@ function drawScene(
   if (props.activeTool === 'smart-move' && props.smartMoveRawTarget) {
     updateSmartTargetMarker(world, smartTargetMarkerRef, props.smartMoveRawTarget)
   }
+  for (const placement of props.lifecyclePlacementPreviews) {
+    const preview = new Container()
+    preview.position.set(placement.pose.position.x, placement.pose.position.y)
+    preview.rotation = placement.pose.rotation
+    const color = placement.valid ? 0x72d6a1 : 0xff7d6d
+    preview.addChild(drawLocalFootprint(new Graphics(), placement.model.base)
+      .fill({ color, alpha: 0.18 })
+      .stroke({ color, width: 0.18, alpha: 1 }))
+    preview.eventMode = 'none'
+    world.addChild(preview)
+  }
+  for (const preview of props.lifecyclePlacementCoherency) {
+    drawCoherencyLinks(world, preview.models, preview.result.links)
+    drawCoherencyStatus(world, preview.models, preview.result.models)
+  }
 
   const selectionBox = selectionBoxRef.current
   if (selectionBox?.active) drawSelectionBox(world, selectionBox.start, selectionBox.current)
@@ -780,6 +815,10 @@ function drawBattlefieldFeature(
         start: { x: event.global.x, y: event.global.y },
         camera: { x: cameraRef.current.x, y: cameraRef.current.y },
       }
+      return
+    }
+    if (propsRef.current.lifecyclePlacementActive) {
+      propsRef.current.onLifecyclePlacementCommit(screenToWorld(event.global, cameraRef.current))
       return
     }
     propsRef.current.onFeatureSelectionChange(feature.id)

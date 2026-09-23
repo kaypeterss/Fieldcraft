@@ -1,5 +1,8 @@
 import type {
   CoherencyPolicy,
+  GameState,
+  GameSystemOwnedState,
+  JsonValue,
   MovementPolicyConfig,
   TerrainPolicyConfig,
 } from '../domain/types'
@@ -40,6 +43,18 @@ export interface MovementPermissionResult {
   actionsRemaining: number | null
 }
 
+export interface MovementGrantResult {
+  additionalActions?: number
+  additionalAllowance?: number
+}
+
+export interface MovementGrantRequest {
+  state: GameState
+  gameSystemState: GameSystemOwnedState
+  unitId: string
+  modelIds: readonly string[]
+}
+
 export type CoherencyConfiguration =
   | { type: 'unit-definition' }
   | { type: 'game-system-default'; policy: CoherencyPolicy }
@@ -74,6 +89,24 @@ export interface TurnStructureConfiguration {
   phases: GamePhaseDefinition[]
 }
 
+export type AuthoritativeCommandKind = 'MOVE' | 'SCORE' | 'MODEL_PRESENCE' | 'MODEL_PLACEMENT'
+
+export interface GameSystemCommandPermissionRequest {
+  kind: AuthoritativeCommandKind
+  actorPlayerId: string
+  entityIds: readonly string[]
+  state: GameState
+  gameSystemState: GameSystemOwnedState
+}
+
+/** Runtime-only schema boundary for the JSON stored in authoritative GameState. */
+export interface GameSystemStateAdapter {
+  schemaId: string
+  schemaVersion: number
+  createInitialData: () => JsonValue
+  validate: (data: JsonValue) => boolean
+}
+
 /**
  * Runtime rules/configuration boundary. The definition is plain data and is
  * not embedded in authoritative GameState; saves can later retain an ID/version.
@@ -85,10 +118,15 @@ export interface GameSystem {
   movement: {
     permissions: MovementPermissionPolicy
     cost: MovementPolicyConfig
+    /** Optional game-specific grants; both manual and assisted movement consume this same result. */
+    resolveGrants?: (request: MovementGrantRequest) => MovementGrantResult
   }
   coherency: CoherencyConfiguration
   terrain: TerrainPolicyConfig
   visibility: VisibilityConfiguration
   objectives: ObjectiveConfiguration
   turns: TurnStructureConfiguration
+  matchState: GameSystemStateAdapter
+  /** Optional ruleset veto. Generic geometry and movement validation still run afterwards. */
+  authorizeCommand?: (request: GameSystemCommandPermissionRequest) => boolean
 }

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { footprintDemoGameState, initialGameState, orientationGapGameState } from './game/initialState'
 import { battlefieldFeatureDemoGameState } from './game/battlefieldFeatureDemo'
-import type { DicePoolResult, GameState, MovementPolicyConfig } from './domain/types'
+import { lifecycleDemoGameState } from './game/lifecycleDemo'
+import type { DicePoolResult, GameState, MovementPolicyConfig, Pose } from './domain/types'
 import {
   canUndoLastMovement,
   getMovementAllowance,
@@ -12,7 +13,6 @@ import {
   getUnitForModel,
 } from './game/selectors'
 import { TabletopCanvas } from './rendering/pixi/TabletopCanvas'
-import { gameReducer } from './state/reducer'
 import type { GameStateAction } from './state/actions'
 import {
   measureBetweenTargets,
@@ -64,29 +64,43 @@ import {
   type VisibilityPolicy,
 } from './engine/visibility'
 import { developmentGameSystem } from './gameSystem/developmentGameSystem'
-import { movementPermissionForUnit } from './gameSystem/policies'
 import { evaluateObjectiveControl } from './engine/objectiveControl'
 import { DicePanel } from './ui/DicePanel'
+import { activeBattlefieldModels, modelPresence } from './game/modelPresence'
+import { authorizeMovement, loadMatchRuntime } from './gameSystem/runtime'
+import { reduceGameCommand } from './state/commandBoundary'
+import { validateModelPlacements } from './engine/placement'
+import { LifecyclePanel, type LifecyclePanelEntry } from './ui/LifecyclePanel'
+import { derivePlacementCoherency, formationPlacements, nextUnplacedModelId } from './tools/lifecyclePlacement'
 
 interface SmartMoveSessionState {
   modelIds: string[]
   unitId: string
 }
 
+interface LifecyclePlacementSession {
+  mode: 'individual' | 'formation'
+  modelIds: string[]
+  stagedPoses: Record<string, Pose>
+}
+
 export default function App() {
   const footprintDemoEnabled = new URLSearchParams(window.location.search).has('footprints')
   const orientationGapEnabled = new URLSearchParams(window.location.search).has('orientationGap')
   const battlefieldFeatureDemoEnabled = new URLSearchParams(window.location.search).has('battlefieldFeatures')
-  const startupGameState = battlefieldFeatureDemoEnabled ? battlefieldFeatureDemoGameState
+  const lifecycleDemoEnabled = new URLSearchParams(window.location.search).has('lifecycle')
+  const startupGameState = lifecycleDemoEnabled ? lifecycleDemoGameState
+    : battlefieldFeatureDemoEnabled ? battlefieldFeatureDemoGameState
     : orientationGapEnabled ? orientationGapGameState
     : footprintDemoEnabled ? footprintDemoGameState : initialGameState
-  const [{ gameState, revision: gameStateRevision }, dispatch] = useReducer(
+  const [{ gameState, revision: gameStateRevision }, rawDispatch] = useReducer(
     versionedGameReducer,
     { gameState: startupGameState, revision: 0 },
   )
   const [activeTool, setActiveTool] = useState<ActiveTool>('select')
   const [spatialEnabled, setSpatialEnabled] = useState(false)
   const [diceOpen, setDiceOpen] = useState(false)
+  const [lifecycleOpen, setLifecycleOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null)
   const [selectedObjectiveId, setSelectedObjectiveId] = useState<string | null>(
@@ -108,18 +122,53 @@ export default function App() {
   const [analysisCoherencyPolicy, setAnalysisCoherencyPolicy] = useState<CoherencyPolicy>({ distance: 1, requiredNeighbors: 1, requireConnected: false })
   const [blockedMovementSessionId, setBlockedMovementSessionId] = useState<string | null>(null)
   const [movementPolicy, setMovementPolicy] = useState<MovementPolicyConfig>(developmentGameSystem.movement.cost)
+  const dispatch = useCallback((action: GameStateAction) => rawDispatch({ action, movementPolicy }), [movementPolicy])
+  const loadedRuntime = useMemo(
+    () => loadMatchRuntime(gameState, developmentGameSystem, { movementPolicy }),
+    [gameState, movementPolicy],
+  )
+  const activeModels = useMemo(() => activeBattlefieldModels(gameState), [gameState])
+  const battlefieldGameState = useMemo(() => ({ ...gameState, models: activeModels }), [activeModels, gameState])
+  const lifecycleEntries = useMemo<LifecyclePanelEntry[]>(() => gameState.models.map((model) => {
+    const unit = gameState.units.find((candidate) => candidate.id === model.unitId)
+    const definition = unit ? getUnitDefinition(gameState, unit) : undefined
+    const owner = getPlayerForModel(gameState, model)
+    return {
+      modelId: model.id,
+      label: model.label ?? model.id,
+      unitId: model.unitId,
+      unitName: definition?.name ?? model.unitId,
+      ownerId: model.ownerId,
+      ownerName: owner?.displayName ?? model.ownerId,
+      presence: modelPresence(model),
+    }
+  }), [gameState])
   const [smartMoveSession, setSmartMoveSession] = useState<SmartMoveSessionState | null>(null)
   const [smartMoveTargeting, setSmartMoveTargeting] = useState(initialSmartMoveTargetState)
   const [smartMoveAsync, setSmartMoveAsync] = useState(initialSmartMoveAsyncState)
   const [smartMoveDiagnostics, setSmartMoveDiagnostics] = useState<SmartMoveSchedulingDiagnostics | null>(null)
   const [smartMoveMessage, setSmartMoveMessage] = useState<string | null>(null)
+  const [lifecycleMessage, setLifecycleMessage] = useState<string | null>(null)
+  const [lifecycleSelectedIds, setLifecycleSelectedIds] = useState<Set<string>>(new Set())
+  const [lifecycleRequireCoherency, setLifecycleRequireCoherency] = useState(false)
+  const [lifecyclePlacement, setLifecyclePlacement] = useState<LifecyclePlacementSession | null>(null)
+  const [lifecyclePlacementPreviews, setLifecyclePlacementPreviews] = useState<Array<{
+    model: GameState['models'][number]
+    pose: Pose
+    valid: boolean
+  }>>([])
+  const lifecyclePlacementCoherency = useMemo(() => {
+    if (!lifecyclePlacement || !lifecycleRequireCoherency || lifecyclePlacementPreviews.length === 0) return []
+    const placements = Object.fromEntries(lifecyclePlacementPreviews.map((preview) => [preview.model.id, preview.pose]))
+    return derivePlacementCoherency(gameState, lifecyclePlacement.modelIds, placements, true)
+  }, [gameState, lifecyclePlacement, lifecyclePlacementPreviews, lifecycleRequireCoherency])
   const restartSmartMoveAfterApplyRef = useRef(false)
   const smartMoveControllerRef = useRef<SmartMoveWorkerController | null>(null)
   const smartMoveResult = smartMoveAsync.result
   const spatialPreviewResult = displayedSmartMovePreview(smartMoveResult)
   const spatialModels = useMemo(
-    () => projectModelsForSmartMove(gameState.models, spatialPreviewResult),
-    [gameState.models, spatialPreviewResult],
+    () => projectModelsForSmartMove(activeModels, spatialPreviewResult),
+    [activeModels, spatialPreviewResult],
   )
   const visibilityModelOptions = useMemo(() => spatialModels.map((model) => ({
     id: model.id,
@@ -166,21 +215,23 @@ export default function App() {
     () => gameState.models.find((model) => selectedIds.has(model.id)),
     [gameState.models, selectedIds],
   )
+  const selectedActiveModel = selectedModel && modelPresence(selectedModel) === 'ON_BATTLEFIELD'
+    ? selectedModel : undefined
 
   const selectedFeature = gameState.battlefieldFeatures?.find((feature) => feature.id === selectedFeatureId)
-  const selectedTerrainRelationships = selectedModel
-    ? terrainRelationships(selectedModel, gameState.battlefieldFeatures, gameState.terrainPolicy)
+  const selectedTerrainRelationships = selectedActiveModel
+    ? terrainRelationships(selectedActiveModel, gameState.battlefieldFeatures, gameState.terrainPolicy)
     : []
-  const selectedTerrainMovement = selectedModel && gameState.movementSession?.models[selectedModel.id]
+  const selectedTerrainMovement = selectedActiveModel && gameState.movementSession?.models[selectedActiveModel.id]
     ? movementTerrainInteractions(
-      selectedModel,
-      gameState.movementSession.models[selectedModel.id].trajectory,
+      selectedActiveModel,
+      gameState.movementSession.models[selectedActiveModel.id].trajectory,
       gameState.battlefieldFeatures,
       gameState.terrainPolicy,
     ) : undefined
-  const selectedEffectiveTerrainPermissions = selectedModel
+  const selectedEffectiveTerrainPermissions = selectedActiveModel
     ? effectiveTerrainPermissions(
-      selectedModel.id,
+      selectedActiveModel.id,
       gameState.battlefieldFeatures,
       gameState.terrainPolicy,
       new Set([
@@ -190,8 +241,10 @@ export default function App() {
       ]),
     ) : []
 
-  const selectedWholeUnit = useMemo(() => gameState.units.find((unit) =>
-    unit.modelIds.length === selectedIds.size && unit.modelIds.every((id) => selectedIds.has(id))), [gameState.units, selectedIds])
+  const selectedWholeUnit = useMemo(() => gameState.units.find((unit) => {
+    const activeIds = unit.modelIds.filter((id) => activeModels.some((model) => model.id === id))
+    return activeIds.length > 0 && activeIds.length === selectedIds.size && activeIds.every((id) => selectedIds.has(id))
+  }), [activeModels, gameState.units, selectedIds])
   const selectedWholeUnitName = selectedWholeUnit
     ? getUnitDefinition(gameState, selectedWholeUnit)?.name
     : undefined
@@ -199,7 +252,7 @@ export default function App() {
   const selectedUnitDefinition = selectedUnit ? getUnitDefinition(gameState, selectedUnit) : undefined
   const selectedObjective = gameState.battlefieldFeatures?.find((feature) => feature.id === selectedObjectiveId && feature.capabilities.objective)
   const selectedObjectiveArea = selectedObjective ? objectiveArea(selectedObjective) : null
-  const spatialSelectedModel = selectedModel ? spatialModels.find((model) => model.id === selectedModel.id) : undefined
+  const spatialSelectedModel = selectedActiveModel ? spatialModels.find((model) => model.id === selectedActiveModel.id) : undefined
   const selectedObjectiveAnalysis = selectedObjective && selectedObjectiveArea ? {
     featureName: selectedObjective.name,
     areaType: selectedObjective.capabilities.objective?.area.type ?? 'feature-base',
@@ -220,30 +273,30 @@ export default function App() {
       units: gameState.units,
       unitDefinitions: gameState.unitDefinitions,
       gameContext: gameState.gameContext,
-      objective: developmentGameSystem.objectives,
+      objective: loadedRuntime.gameSystem.objectives,
     }),
     controlPreview: Boolean(spatialPreviewResult),
   } : null
-  const selectedTerrainAreaAnalysis = selectedModel ? (gameState.battlefieldFeatures ?? [])
+  const selectedTerrainAreaAnalysis = selectedActiveModel ? (gameState.battlefieldFeatures ?? [])
     .filter((feature) => feature.capabilities.terrain && (feature.id === selectedFeatureId
       || selectedTerrainRelationships.some((relation) => relation.featureId === feature.id)))
     .map((feature) => ({
       featureId: feature.id, featureName: feature.name,
-      modelRelationship: modelAreaRelationship(selectedModel, featureBaseArea(feature)),
-      unitSummary: selectedUnit ? unitAreaSummary(selectedUnit, gameState.models, featureBaseArea(feature)) : null,
+       modelRelationship: modelAreaRelationship(selectedActiveModel, featureBaseArea(feature)),
+       unitSummary: selectedUnit ? unitAreaSummary(selectedUnit, activeModels, featureBaseArea(feature)) : null,
     })) : []
   const selectedUnitPolicy = selectedUnit ? getUnitCoherencyPolicy(gameState, selectedUnit) : undefined
   const selectedUnitCoherency = useMemo(
     () => selectedUnit && selectedUnitPolicy
-      ? evaluateUnitCoherency(selectedUnit, gameState.models, selectedUnitPolicy)
+      ? evaluateUnitCoherency(selectedUnit, activeModels, selectedUnitPolicy)
       : null,
-    [gameState.models, selectedUnit, selectedUnitPolicy],
+    [activeModels, selectedUnit, selectedUnitPolicy],
   )
 
   const spatialSourceIds = useMemo(() => {
     if (selectedWholeUnit) return selectedWholeUnit.modelIds
-    return selectedModel ? [selectedModel.id] : []
-  }, [selectedModel, selectedWholeUnit])
+    return selectedActiveModel ? [selectedActiveModel.id] : []
+  }, [selectedActiveModel, selectedWholeUnit])
 
   const coherencyUnit = useMemo(
     () => selectedWholeUnit ?? resolveSpatialCoherencyUnit(gameState.units, selectedIds),
@@ -291,8 +344,9 @@ export default function App() {
   const movementSummary = useMemo<MovementSummary | null>(() => {
     const session = gameState.movementSession
     if (!session) return null
-    const participants = gameState.models.filter((model) => session.modelIds.includes(model.id))
-    const allowances = participants.map((model) => getMovementAllowance(gameState, model))
+    const participants = activeModels.filter((model) => session.modelIds.includes(model.id))
+    const allowances = participants.map((model) => session.movementAllowanceByModel?.[model.id]
+      ?? getMovementAllowance(gameState, model))
     const used = participants.map((model) => session.models[model.id]?.movementUsed ?? 0)
     const translationDistance = participants.map((model) => session.models[model.id]?.translationDistance ?? 0)
     const angularRotation = participants.map((model) => session.models[model.id]?.angularRotation ?? 0)
@@ -317,19 +371,20 @@ export default function App() {
       maximumRotationDegrees: Math.max(0, ...angularRotation) * 180 / Math.PI,
       policyLabel: movementPolicyLabel(session.movementPolicy),
     }
-  }, [gameState])
+  }, [activeModels, gameState])
 
   const selectedModelMovement = useMemo(() => {
-    if (!selectedModel) return null
-    const allowance = getMovementAllowance(gameState, selectedModel)
-    const liveUsed = gameState.movementSession?.models[selectedModel.id]?.movementUsed ?? 0
+    if (!selectedActiveModel) return null
+    const allowance = gameState.movementSession?.movementAllowanceByModel?.[selectedActiveModel.id]
+      ?? getMovementAllowance(gameState, selectedActiveModel)
+    const liveUsed = gameState.movementSession?.models[selectedActiveModel.id]?.movementUsed ?? 0
     return { used: liveUsed, remaining: Math.max(0, allowance - liveUsed) }
-  }, [gameState, selectedModel])
+  }, [gameState, selectedActiveModel])
 
   const measurement = useMemo(() => {
     if (!measurementPair) return null
-    return measureBetweenTargets(gameState, measurementPair.targetA, measurementPair.targetB)
-  }, [gameState, measurementPair])
+    return measureBetweenTargets(battlefieldGameState, measurementPair.targetA, measurementPair.targetB)
+  }, [battlefieldGameState, measurementPair])
 
   const smartMoveUnit = useMemo(
     () => smartMoveSession
@@ -340,11 +395,20 @@ export default function App() {
   const smartMoveDefinition = smartMoveUnit ? getUnitDefinition(gameState, smartMoveUnit) : undefined
   const smartMovePolicy = smartMoveUnit ? getUnitCoherencyPolicy(gameState, smartMoveUnit) : undefined
 
+  const smartMoveAuthorization = useMemo(() => smartMoveSession
+    ? authorizeMovement(loadedRuntime, gameState, smartMoveSession.modelIds)
+    : null, [gameState, loadedRuntime, smartMoveSession])
   const smartMoveRequestFactory = useMemo(() => (
-    smartMoveSession && smartMovePolicy
-      ? createSmartMoveRequestFactory(gameState, smartMoveSession.modelIds, smartMovePolicy, movementPolicy)
+    smartMoveSession && smartMovePolicy && smartMoveAuthorization?.allowed
+      ? createSmartMoveRequestFactory(
+          battlefieldGameState,
+          smartMoveSession.modelIds,
+          smartMovePolicy,
+          smartMoveAuthorization.movementPolicy,
+          smartMoveAuthorization.remainingByModel,
+        )
       : null
-  ), [gameState, movementPolicy, smartMovePolicy, smartMoveSession])
+  ), [battlefieldGameState, smartMoveAuthorization, smartMovePolicy, smartMoveSession])
 
   useEffect(() => {
     if (!smartMoveRequestFactory || !smartMoveSession) return
@@ -386,23 +450,16 @@ export default function App() {
     }
     const unit = state.units.find((candidate) => candidate.id === unitIds[0])
     const policy = unit ? getUnitCoherencyPolicy(state, unit) : undefined
-    const allowance = sortedModels[0] ? getMovementAllowance(state, sortedModels[0]) : 0
-    const permission = unit ? movementPermissionForUnit({
-      policy: developmentGameSystem.movement.permissions,
-      actions: state.actionHistory,
-      gameContext: state.gameContext,
-      unitId: unit.id,
-      modelIds: unit.modelIds,
-      baseAllowance: allowance,
-    }) : null
+    const runtime = loadMatchRuntime(state, developmentGameSystem, { movementPolicy })
+    const permission = authorizeMovement(runtime, state, sortedModels.map((model) => model.id))
     if (!unit || !policy) {
       setSmartMoveSession(null)
       setSmartMoveMessage('This unit has no configured coherency policy.')
       return
     }
-    if (!permission?.canStartAction) {
+    if (!permission.allowed) {
       setSmartMoveSession(null)
-      setSmartMoveMessage('This unit has no movement actions remaining under the active GameSystem.')
+      setSmartMoveMessage(permission.reason ?? 'Movement is not permitted by the active GameSystem.')
       return
     }
     const session = { modelIds: sortedModels.map((model) => model.id), unitId: unit.id }
@@ -410,7 +467,13 @@ export default function App() {
     setSmartMoveMessage(null)
     smartMoveControllerRef.current?.beginSession(
       revision,
-      createSmartMoveRequestFactory(state, session.modelIds, policy, movementPolicy),
+      createSmartMoveRequestFactory(
+        { ...state, models: activeBattlefieldModels(state) },
+        session.modelIds,
+        policy,
+        permission.movementPolicy,
+        permission.remainingByModel,
+      ),
     )
   }, [movementPolicy])
 
@@ -418,11 +481,11 @@ export default function App() {
     if (!restartSmartMoveAfterApplyRef.current || activeTool !== 'smart-move' || gameState.movementSession) return
     restartSmartMoveAfterApplyRef.current = false
     beginSmartMoveForSelection(
-      gameState.models.filter((model) => selectedIds.has(model.id)),
+      activeModels.filter((model) => selectedIds.has(model.id)),
       gameState,
       gameStateRevision,
     )
-  }, [activeTool, beginSmartMoveForSelection, gameState, gameStateRevision, selectedIds])
+  }, [activeModels, activeTool, beginSmartMoveForSelection, gameState, gameStateRevision, selectedIds])
 
   const handleSelectionChange = useCallback((nextSelectedIds: Set<string>) => {
     setSelectedIds(nextSelectedIds)
@@ -433,7 +496,7 @@ export default function App() {
       else if (selectedId !== visibilityViewerId) setVisibilityTargetId(selectedId)
     }
     if (!selectedObjectiveId && nextSelectedIds.size > 0) {
-      const selectedModels = gameState.models.filter((model) => nextSelectedIds.has(model.id))
+      const selectedModels = activeModels.filter((model) => nextSelectedIds.has(model.id))
       const relevantObjective = (gameState.battlefieldFeatures ?? []).find((feature) => {
         const area = feature.capabilities.objective ? objectiveArea(feature) : null
         return area && selectedModels.some((model) => modelAreaRelationship(model, area).intersects)
@@ -444,9 +507,9 @@ export default function App() {
     smartMoveControllerRef.current?.cancelSession()
     setSmartMoveSession(null)
     setSmartMoveTargeting(initialSmartMoveTargetState())
-    const models = gameState.models.filter((model) => nextSelectedIds.has(model.id))
+    const models = activeModels.filter((model) => nextSelectedIds.has(model.id))
     beginSmartMoveForSelection(models, gameState, gameStateRevision)
-  }, [activeTool, beginSmartMoveForSelection, gameState, gameStateRevision, selectedObjectiveId, spatialMode, visibilityViewerId])
+  }, [activeModels, activeTool, beginSmartMoveForSelection, gameState, gameStateRevision, selectedObjectiveId, spatialMode, visibilityViewerId])
 
   const handleFeatureSelectionChange = useCallback((featureId: string) => {
     setSelectedFeatureId(featureId)
@@ -468,7 +531,7 @@ export default function App() {
     const result = smartMoveControllerRef.current?.getApplicableResult()
     if (!result?.valid || !smartMoveSession || !smartMovePolicy || !smartMoveUnit) return
     const startsCurrent = result.assignments.every((assignment) => {
-      const model = gameState.models.find((candidate) => candidate.id === assignment.modelId)
+      const model = activeModels.find((candidate) => candidate.id === assignment.modelId)
       return model
         && Math.abs(model.position.x - assignment.start.x) <= GEOMETRY_EPSILON
         && Math.abs(model.position.y - assignment.start.y) <= GEOMETRY_EPSILON
@@ -476,13 +539,13 @@ export default function App() {
           || Math.abs(model.rotation - assignment.trajectory.startPose.rotation) <= GEOMETRY_EPSILON)
     })
     const authoritativeValidation = validateCandidateFormation({
-      allModels: gameState.models,
+      allModels: activeModels,
       battlefield: gameState.battlefield,
       terrainFeatures: gameState.battlefieldFeatures,
       terrainPolicy: gameState.terrainPolicy,
       positions: result.positions,
       rotations: Object.fromEntries(result.assignments.map((assignment) => {
-        const model = gameState.models.find((candidate) => candidate.id === assignment.modelId)
+        const model = activeModels.find((candidate) => candidate.id === assignment.modelId)
         return [assignment.modelId, assignment.finalRotation ?? model?.rotation ?? 0]
       })),
       reachability: {
@@ -491,8 +554,7 @@ export default function App() {
           assignment.movementCost,
         ])),
         movementAllowances: Object.fromEntries(smartMoveSession.modelIds.map((modelId) => {
-          const model = gameState.models.find((candidate) => candidate.id === modelId)
-          return [modelId, model ? getMovementAllowance(gameState, model) : 0]
+          return [modelId, smartMoveAuthorization?.remainingByModel[modelId] ?? 0]
         })),
       },
       coherency: { unit: smartMoveUnit, policy: smartMovePolicy },
@@ -512,11 +574,11 @@ export default function App() {
         assignment.destination,
       ])),
       startingRotations: Object.fromEntries(result.assignments.map((assignment) => {
-        const model = gameState.models.find((candidate) => candidate.id === assignment.modelId)
+        const model = activeModels.find((candidate) => candidate.id === assignment.modelId)
         return [assignment.modelId, model?.rotation ?? 0]
       })),
       finalRotations: Object.fromEntries(result.assignments.map((assignment) => {
-        const model = gameState.models.find((candidate) => candidate.id === assignment.modelId)
+        const model = activeModels.find((candidate) => candidate.id === assignment.modelId)
         return [assignment.modelId, assignment.finalRotation ?? model?.rotation ?? 0]
       })),
       trajectories: Object.fromEntries(result.assignments.flatMap((assignment) =>
@@ -532,9 +594,14 @@ export default function App() {
     })
     cancelSmartMove()
     restartSmartMoveAfterApplyRef.current = true
-  }, [cancelSmartMove, gameState, smartMovePolicy, smartMoveSession, smartMoveUnit])
+  }, [activeModels, cancelSmartMove, dispatch, gameState, smartMoveAuthorization, smartMovePolicy, smartMoveSession, smartMoveUnit])
 
   const changeTool = useCallback((tool: ActiveTool) => {
+    if (lifecyclePlacement) {
+      setLifecyclePlacement(null)
+      setLifecyclePlacementPreviews([])
+      setLifecycleMessage('Placement cancelled because the active tool changed.')
+    }
     setVisibilityPickTarget(null)
     setVisibilityPickHoverModelId(null)
     if (tool === 'smart-move') {
@@ -542,7 +609,7 @@ export default function App() {
         setBlockedMovementSessionId(gameState.movementSession.id)
         return
       }
-      const models = gameState.models
+      const models = activeModels
         .filter((model) => selectedIds.has(model.id))
       const sortedModels = models.sort((a, b) => a.id.localeCompare(b.id))
       setActiveTool('smart-move')
@@ -554,9 +621,14 @@ export default function App() {
     cancelSmartMove()
     setActiveTool(tool)
     if (tool !== 'measure') setMeasurementStartTarget(null)
-  }, [beginSmartMoveForSelection, cancelSmartMove, gameState, gameStateRevision, selectedIds])
+  }, [activeModels, beginSmartMoveForSelection, cancelSmartMove, gameState, gameStateRevision, lifecyclePlacement, selectedIds])
 
   const toggleSpatialOverlay = useCallback(() => {
+    if (lifecyclePlacement) {
+      setLifecyclePlacement(null)
+      setLifecyclePlacementPreviews([])
+      setLifecycleMessage('Placement cancelled because the active tool changed.')
+    }
     setVisibilityPickTarget(null)
     setVisibilityPickHoverModelId(null)
     if (!spatialEnabled) {
@@ -566,7 +638,7 @@ export default function App() {
       setMeasurementStartTarget(null)
     }
     setSpatialEnabled((enabled) => !enabled)
-  }, [cancelSmartMove, spatialEnabled])
+  }, [cancelSmartMove, lifecyclePlacement, spatialEnabled])
 
   const handleMeasureTarget = useCallback((target: MeasurementTarget) => {
     if (!measurementStartTarget || measurementPair) {
@@ -583,7 +655,12 @@ export default function App() {
       if (isEditableKeyboardTarget(event.target)) return
       if (isUndoMovementShortcut(event)) {
         event.preventDefault()
-        if (canUndoLastMovement(gameState)) dispatch({ type: 'movement/undoLastConfirmed' })
+        if (canUndoLastMovement(gameState)) {
+          dispatch({ type: 'movement/undoLastConfirmed' })
+          setLifecyclePlacement(null)
+          setLifecyclePlacementPreviews([])
+          setLifecycleMessage('Last committed operation undone.')
+        }
         return
       }
       if (event.key === 'Enter' && gameState.movementSession && !event.isComposing) {
@@ -610,6 +687,12 @@ export default function App() {
       if (event.key.toLowerCase() === 'g') changeTool('smart-move')
       if (event.key.toLowerCase() === 'f') setResetCameraSignal((value) => value + 1)
       if (event.key === 'Escape') {
+        if (lifecyclePlacement) {
+          setLifecyclePlacement(null)
+          setLifecyclePlacementPreviews([])
+          setLifecycleMessage('Placement cancelled.')
+          return
+        }
         if (visibilityPickTarget) {
           setVisibilityPickTarget(null)
           setVisibilityPickHoverModelId(null)
@@ -634,7 +717,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, gameState, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
+  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, dispatch, gameState, lifecyclePlacement, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
 
   const handleEndTurn = useCallback(() => {
     if (gameState.movementSession) {
@@ -647,7 +730,145 @@ export default function App() {
     }
     setBlockedMovementSessionId(null)
     dispatch({ type: 'game/turnEnded' })
-  }, [activeTool, cancelSmartMove, gameState.movementSession])
+  }, [activeTool, cancelSmartMove, dispatch, gameState.movementSession])
+
+  const lifecycleRejectionReason = useCallback(() => gameState.movementSession
+    ? 'Lifecycle command rejected: finish or cancel the active movement first.'
+    : 'Lifecycle command rejected by the current match state or GameSystem.', [gameState.movementSession])
+
+  const dispatchLifecycleAction = useCallback((action: GameStateAction, successMessage: string) => {
+    const preview = reduceGameCommand(loadedRuntime, gameState, action)
+    if (preview === gameState) {
+      setLifecycleMessage(lifecycleRejectionReason())
+      return false
+    }
+    dispatch(action)
+    setLifecycleMessage(successMessage)
+    return true
+  }, [dispatch, gameState, lifecycleRejectionReason, loadedRuntime])
+
+  const selectedLifecycleModels = useMemo(() => gameState.models
+    .filter((model) => lifecycleSelectedIds.has(model.id)), [gameState.models, lifecycleSelectedIds])
+
+  const setDevelopmentPresence = useCallback((presence: 'OFF_BOARD' | 'DESTROYED') => {
+    const models = gameState.models.filter((model) => lifecycleSelectedIds.has(model.id))
+    if (models.length === 0 || models.some((model) => modelPresence(model) !== 'ON_BATTLEFIELD')) {
+      setLifecycleMessage('Lifecycle command rejected: select only models currently on the battlefield.')
+      return
+    }
+    const modelIds = models.map((model) => model.id).sort()
+    const accepted = dispatchLifecycleAction(
+      { type: 'lifecycle/modelsPresenceSet', modelIds, presence },
+      `${modelIds.length} model${modelIds.length === 1 ? '' : 's'} moved to ${presence === 'DESTROYED' ? 'Destroyed' : 'Off Board / Reserve'}.`,
+    )
+    if (!accepted) return
+    setSelectedIds(new Set())
+    setSelectedFeatureId(null)
+    setLifecyclePlacement(null)
+    setLifecyclePlacementPreviews([])
+    if (visibilityViewerId && modelIds.includes(visibilityViewerId)) setVisibilityViewerId(null)
+    if (visibilityTargetId && modelIds.includes(visibilityTargetId)) setVisibilityTargetId(null)
+    if (smartMoveSession?.modelIds.some((modelId) => modelIds.includes(modelId))) cancelSmartMove()
+  }, [cancelSmartMove, dispatchLifecycleAction, gameState.models, lifecycleSelectedIds, smartMoveSession, visibilityTargetId, visibilityViewerId])
+
+  const cancelLifecyclePlacement = useCallback((message = 'Placement cancelled.') => {
+    setLifecyclePlacement(null)
+    setLifecyclePlacementPreviews([])
+    setLifecycleMessage(message)
+  }, [])
+
+  const beginLifecyclePlacement = useCallback((mode: LifecyclePlacementSession['mode']) => {
+    if (selectedLifecycleModels.length === 0
+      || selectedLifecycleModels.some((model) => modelPresence(model) === 'ON_BATTLEFIELD')) {
+      setLifecycleMessage('Placement cannot start: select only Off Board or Destroyed models.')
+      return
+    }
+    if (gameState.movementSession) {
+      setLifecycleMessage('Placement cannot start during an active movement.')
+      return
+    }
+    cancelSmartMove()
+    setActiveTool('select')
+    setSelectedIds(new Set())
+    setSelectedFeatureId(null)
+    setLifecyclePlacement({ mode, modelIds: selectedLifecycleModels.map((model) => model.id).sort(), stagedPoses: {} })
+    setLifecyclePlacementPreviews([])
+    setLifecycleMessage(mode === 'formation'
+      ? `Move the ${selectedLifecycleModels.length}-model formation, then click a legal position.`
+      : `Place ${selectedLifecycleModels.length} model${selectedLifecycleModels.length === 1 ? '' : 's'} one at a time; nothing commits until the last model.`)
+  }, [cancelSmartMove, gameState.movementSession, selectedLifecycleModels])
+
+  const placementsAtPoint = useCallback((position: { x: number; y: number }) => {
+    if (!lifecyclePlacement) return null
+    const models = lifecyclePlacement.modelIds.flatMap((modelId) => {
+      const model = gameState.models.find((candidate) => candidate.id === modelId)
+      return model ? [model] : []
+    })
+    if (models.length !== lifecyclePlacement.modelIds.length) return null
+    if (lifecyclePlacement.mode === 'formation') return formationPlacements(models, position)
+    const currentId = nextUnplacedModelId(lifecyclePlacement.modelIds, lifecyclePlacement.stagedPoses)
+    const current = models.find((model) => model.id === currentId)
+    if (!current) return null
+    return { ...lifecyclePlacement.stagedPoses, [current.id]: { position, rotation: current.rotation } }
+  }, [gameState.models, lifecyclePlacement])
+
+  const validateLifecyclePlacements = useCallback((placements: Record<string, Pose>, final: boolean) =>
+    validateModelPlacements({
+      state: gameState,
+      placements,
+      constraints: { requireCoherency: final && lifecycleRequireCoherency },
+    }), [gameState, lifecycleRequireCoherency])
+
+  const previewLifecyclePlacement = useCallback((position: { x: number; y: number }) => {
+    if (!lifecyclePlacement) return
+    const placements = placementsAtPoint(position)
+    if (!placements) return
+    const final = lifecyclePlacement.mode === 'formation'
+      || Object.keys(placements).length === lifecyclePlacement.modelIds.length
+    const validation = validateLifecyclePlacements(placements, final)
+    setLifecyclePlacementPreviews(Object.entries(placements).flatMap(([modelId, pose]) => {
+      const model = gameState.models.find((candidate) => candidate.id === modelId)
+      return model ? [{ model, pose, valid: validation.valid }] : []
+    }))
+  }, [gameState.models, lifecyclePlacement, placementsAtPoint, validateLifecyclePlacements])
+
+  const commitLifecyclePlacement = useCallback((position: { x: number; y: number }) => {
+    if (!lifecyclePlacement) return
+    const placements = placementsAtPoint(position)
+    if (!placements) return
+    const final = lifecyclePlacement.mode === 'formation'
+      || Object.keys(placements).length === lifecyclePlacement.modelIds.length
+    const validation = validateLifecyclePlacements(placements, final)
+    if (!validation.valid) {
+      setLifecycleMessage(`Placement rejected: ${validation.violations.map((entry) => entry.type).join(', ')}`)
+      previewLifecyclePlacement(position)
+      return
+    }
+    if (!final) {
+      setLifecyclePlacement({ ...lifecyclePlacement, stagedPoses: placements })
+      setLifecycleMessage(`${Object.keys(placements).length} of ${lifecyclePlacement.modelIds.length} staged. Place the next model.`)
+      return
+    }
+    const accepted = dispatchLifecycleAction(
+      { type: 'lifecycle/modelsPlaced', placements, requireCoherency: lifecycleRequireCoherency },
+      `${lifecyclePlacement.modelIds.length} model${lifecyclePlacement.modelIds.length === 1 ? '' : 's'} restored to the battlefield.`,
+    )
+    if (!accepted) return
+    setLifecyclePlacement(null)
+    setLifecyclePlacementPreviews([])
+    setSelectedIds(new Set(lifecyclePlacement.modelIds))
+  }, [dispatchLifecycleAction, lifecyclePlacement, lifecycleRequireCoherency, placementsAtPoint, previewLifecyclePlacement, validateLifecyclePlacements])
+
+  const toggleLifecyclePanel = useCallback(() => {
+    if (lifecycleOpen) {
+      cancelLifecyclePlacement('Lifecycle panel closed.')
+      setLifecycleOpen(false)
+      return
+    }
+    setLifecycleOpen(true)
+    setLifecycleSelectedIds(new Set(selectedIds))
+    setLifecycleMessage(null)
+  }, [cancelLifecyclePlacement, lifecycleOpen, selectedIds])
 
   return (
     <main className="app-shell">
@@ -657,7 +878,7 @@ export default function App() {
           <div className="brand-subtitle">COMPETITIVE TABLETOP LAB</div>
         </div>
         <GameStatusPanel
-          gameState={gameState}
+          gameState={battlefieldGameState}
           blockedMessage={gameState.movementSession?.id === blockedMovementSessionId
             ? 'Finish or cancel the current movement first.'
             : null}
@@ -666,7 +887,12 @@ export default function App() {
             type: 'score/eventRecorded', playerId, pointsDelta, reason,
             source: { type: 'manual' },
           })}
-          onUndoLastScore={() => dispatch({ type: 'score/lastEventUndone' })}
+          onUndoLastScore={() => {
+            dispatch({ type: 'history/undoLastCommitted' })
+            setLifecyclePlacement(null)
+            setLifecyclePlacementPreviews([])
+            setLifecycleMessage('Last committed operation undone.')
+          }}
         />
         <div className="session-info">
           <span className="status-dot" /> LOCAL SANDBOX
@@ -678,14 +904,16 @@ export default function App() {
         activeTool={activeTool}
         spatialEnabled={spatialEnabled}
         diceOpen={diceOpen}
+        lifecycleOpen={lifecycleOpen}
         onToolChange={changeTool}
         onSpatialToggle={toggleSpatialOverlay}
         onDiceToggle={() => setDiceOpen((open) => !open)}
+        onLifecycleToggle={toggleLifecyclePanel}
         onResetCamera={() => setResetCameraSignal((value) => value + 1)}
       />
       <section className="workspace">
         <TabletopCanvas
-          gameState={gameState}
+          gameState={battlefieldGameState}
           spatialModels={spatialModels}
           activeTool={activeTool}
           selectedIds={selectedIds}
@@ -699,6 +927,9 @@ export default function App() {
           smartMoveRawTarget={smartMoveTargeting.target}
           smartMoveTargetLocked={smartMoveTargeting.mode === 'locked'}
           visibilityPickTarget={visibilityPickTarget}
+          lifecyclePlacementActive={Boolean(lifecyclePlacement)}
+          lifecyclePlacementPreviews={lifecyclePlacementPreviews}
+          lifecyclePlacementCoherency={lifecyclePlacementCoherency}
           resetCameraSignal={resetCameraSignal}
           movementPolicy={movementPolicy}
           onSelectionChange={handleSelectionChange}
@@ -708,6 +939,8 @@ export default function App() {
           onSmartMoveTargetLock={lockSmartMoveTarget}
           onVisibilityPickModel={handleVisibilityPickModel}
           onVisibilityPickHover={setVisibilityPickHoverModelId}
+          onLifecyclePlacementPreview={previewLifecyclePlacement}
+          onLifecyclePlacementCommit={commitLifecyclePlacement}
           dispatch={dispatch}
         />
         {(footprintDemoEnabled || orientationGapEnabled) && (
@@ -729,7 +962,9 @@ export default function App() {
           wholeUnitName={selectedWholeUnitName}
           ownerDisplayName={selectedModel ? getPlayerForModel(gameState, selectedModel)?.displayName : undefined}
           unitName={selectedUnitDefinition?.name}
-          unitModelCount={selectedUnit?.modelIds.length}
+          unitModelCount={selectedUnit
+            ? activeModels.filter((model) => selectedUnit.modelIds.includes(model.id)).length
+            : undefined}
           unitBaseLabel={selectedUnit ? getUnitBaseLabel(gameState, selectedUnit) : undefined}
           movementAllowance={selectedUnitDefinition?.movementAllowance}
           movementUsed={selectedModelMovement?.used}
@@ -738,8 +973,44 @@ export default function App() {
           coherency={selectedUnitCoherency}
           coherencyValid={selectedUnitPolicy && selectedUnitCoherency
             ? isCoherencyResultValid(selectedUnitCoherency, selectedUnitPolicy)
-            : undefined}
+              : undefined}
         />
+        {lifecycleOpen && (
+          <LifecyclePanel
+            entries={lifecycleEntries}
+            selectedIds={lifecycleSelectedIds}
+            placement={lifecyclePlacement ? {
+              mode: lifecyclePlacement.mode,
+              placedCount: Object.keys(lifecyclePlacement.stagedPoses).length,
+              totalCount: lifecyclePlacement.modelIds.length,
+              coherency: lifecyclePlacementCoherency.map((preview) => ({
+                coherent: preview.result.coherent,
+                componentCount: preview.result.componentCount,
+              })),
+            } : null}
+            requireCoherency={lifecycleRequireCoherency}
+            message={lifecycleMessage ?? undefined}
+            onClose={toggleLifecyclePanel}
+            onInspect={(modelId) => {
+              setSelectedIds(new Set([modelId]))
+              setSelectedFeatureId(null)
+            }}
+            onToggleModel={(modelId) => setLifecycleSelectedIds((current) => {
+              const next = new Set(current)
+              if (next.has(modelId)) next.delete(modelId)
+              else next.add(modelId)
+              return next
+            })}
+            onSelectModels={(modelIds) => setLifecycleSelectedIds(new Set(modelIds))}
+            onClearSelection={() => setLifecycleSelectedIds(new Set())}
+            onMoveOffBoard={() => setDevelopmentPresence('OFF_BOARD')}
+            onDestroy={() => setDevelopmentPresence('DESTROYED')}
+            onPlaceIndividually={() => beginLifecyclePlacement('individual')}
+            onPlaceFormation={() => beginLifecyclePlacement('formation')}
+            onCancelPlacement={cancelLifecyclePlacement}
+            onRequireCoherencyChange={setLifecycleRequireCoherency}
+          />
+        )}
         {spatialEnabled && (
           <SpatialPanel
             mode={spatialMode}
@@ -848,11 +1119,8 @@ function createSmartMoveRequestFactory(
   modelIds: string[],
   coherencyPolicy: CoherencyPolicy,
   movementPolicy: MovementPolicyConfig,
+  movementRemaining: Record<string, number>,
 ): (target: SmartMoveRequest['target']) => SmartMoveRequest {
-  const movementRemaining = Object.fromEntries(modelIds.map((modelId) => {
-    const model = gameState.models.find((candidate) => candidate.id === modelId)
-    return [modelId, model ? getMovementAllowance(gameState, model) : 0]
-  }))
   return (target) => ({
     allModels: gameState.models,
     units: gameState.units,
@@ -869,9 +1137,12 @@ function createSmartMoveRequestFactory(
 
 function versionedGameReducer(
   current: { gameState: GameState; revision: number },
-  action: GameStateAction,
+  envelope: { action: GameStateAction; movementPolicy: MovementPolicyConfig },
 ) {
-  const nextGameState = gameReducer(current.gameState, action)
+  const runtime = loadMatchRuntime(current.gameState, developmentGameSystem, {
+    movementPolicy: envelope.movementPolicy,
+  })
+  const nextGameState = reduceGameCommand(runtime, current.gameState, envelope.action)
   return nextGameState === current.gameState
     ? current
     : { gameState: nextGameState, revision: current.revision + 1 }

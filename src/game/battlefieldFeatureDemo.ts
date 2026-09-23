@@ -149,7 +149,15 @@ export const battlefieldFeatureDemoGameState: GameState = {
   models: footprintDemoGameState.models.map((model) => ({
     ...model,
     position: { x: model.position.x, y: model.position.y + 20 },
-  })).concat(terrainTestModels, objectiveInfantry, objectiveControlModels),
+  })).concat(terrainTestModels, objectiveInfantry, objectiveControlModels)
+    .map((model) => ({ ...model, presence: 'ON_BATTLEFIELD' })),
+  resolvedMatchConfiguration: {
+    ...footprintDemoGameState.resolvedMatchConfiguration!,
+    id: 'development-battlefield-features-match',
+    objectiveFeatureIds: battlefieldFeatureDemoFeatures
+      .filter((feature) => feature.capabilities.objective)
+      .map((feature) => feature.id),
+  },
   units: [...footprintDemoGameState.units, ...terrainTestModels.map((model) => ({
     id: model.unitId, ownerId: model.ownerId, definitionId: 'qa-terrain-mover', modelIds: [model.id],
   })), { id: 'qa-objective-unit', ownerId: 'player-2', definitionId: 'qa-objective-infantry',

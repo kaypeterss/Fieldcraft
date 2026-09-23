@@ -1,6 +1,7 @@
-import type { Footprint, GameState, TabletopModel, Unit } from '../domain/types'
+import type { Footprint, GameState, MatchIdentity, ResolvedMatchConfiguration, TabletopModel, Unit } from '../domain/types'
 import { developmentGameSystem } from '../gameSystem/developmentGameSystem'
 import { turnConfigurationFor } from '../gameSystem/policies'
+import { initialGameSystemOwnedState } from '../gameSystem/runtime'
 
 const model = (
   id: string,
@@ -19,6 +20,7 @@ const model = (
   rotation,
   base,
   canPassOverModels: false,
+  presence: 'ON_BATTLEFIELD',
   label,
 })
 
@@ -85,8 +87,29 @@ const units: Unit[] = [
   unit('unit-strong', 'player-1', 'def-strong-coherency', models),
 ]
 
+export const developmentMatchIdentity: MatchIdentity = {
+  gameSystem: { id: developmentGameSystem.id, version: developmentGameSystem.version },
+  format: { id: 'development-open-play', version: '1' },
+  mission: { id: 'development-sandbox-board', version: '1' },
+}
+
+export const developmentMatchConfiguration: ResolvedMatchConfiguration = {
+  id: 'development-sandbox-match',
+  version: '1',
+  objectiveFeatureIds: [],
+  deploymentZones: [],
+  policyReferences: {
+    movement: 'development-default',
+    terrain: 'development-default',
+    objectives: 'development-default',
+  },
+}
+
 export const initialGameState: GameState = {
-  schemaVersion: 3,
+  schemaVersion: 4,
+  matchIdentity: developmentMatchIdentity,
+  resolvedMatchConfiguration: developmentMatchConfiguration,
+  gameSystemState: initialGameSystemOwnedState(developmentGameSystem),
   battlefield: { width: 60, height: 44 },
   players: [
     { id: 'player-1', displayName: 'Player 1' },
@@ -113,8 +136,10 @@ export const initialGameState: GameState = {
   },
   turnConfiguration: turnConfigurationFor(developmentGameSystem, ['player-1', 'player-2']),
   actionHistory: [],
+  committedOperations: [],
   nextActionSequence: 1,
   movementSession: null,
+  lastCommittedOperationUndo: null,
   lastConfirmedMovementUndo: null,
 }
 
@@ -129,17 +154,17 @@ export const footprintDemoGameState: GameState = {
     {
       id: 'demo-circle', unitId: 'demo-unit-shapes', ownerId: 'player-1',
       position: { x: 10, y: 14 }, rotation: 0,
-      base: { shape: 'circle', diameterMm: 50 }, canPassOverModels: false, label: 'CIRCLE 0°',
+      base: { shape: 'circle', diameterMm: 50 }, canPassOverModels: false, presence: 'ON_BATTLEFIELD', label: 'CIRCLE 0°',
     },
     {
       id: 'demo-ellipse', unitId: 'demo-unit-shapes', ownerId: 'player-1',
       position: { x: 22, y: 14 }, rotation: Math.PI / 6,
-      base: { shape: 'ellipse', widthMm: 80, heightMm: 40 }, canPassOverModels: false, label: 'OVAL 30°',
+      base: { shape: 'ellipse', widthMm: 80, heightMm: 40 }, canPassOverModels: false, presence: 'ON_BATTLEFIELD', label: 'OVAL 30°',
     },
     {
       id: 'demo-rectangle', unitId: 'demo-unit-shapes', ownerId: 'player-1',
       position: { x: 34, y: 14 }, rotation: Math.PI / 4,
-      base: { shape: 'rectangle', widthMm: 80, heightMm: 45 }, canPassOverModels: false, label: 'RECT 45°',
+      base: { shape: 'rectangle', widthMm: 80, heightMm: 45 }, canPassOverModels: false, presence: 'ON_BATTLEFIELD', label: 'RECT 45°',
     },
     {
       id: 'demo-polygon', unitId: 'demo-unit-shapes', ownerId: 'player-1',
@@ -152,6 +177,7 @@ export const footprintDemoGameState: GameState = {
         ],
       },
       canPassOverModels: false,
+      presence: 'ON_BATTLEFIELD',
       label: 'HULL 90°',
     },
   ],

@@ -26,6 +26,7 @@ const permissiveSystem: GameSystem = {
   visibility: { mode: 'any-to-any', terrainPolicy: 'objects-block' },
   objectives: { qualification: 'intersects' },
   turns: { phases: [] },
+  matchState: { schemaId: 'mock', schemaVersion: 1, createInitialData: () => ({}), validate: () => true },
 }
 
 const constrainedSystem: GameSystem = {
@@ -48,6 +49,7 @@ const constrainedSystem: GameSystem = {
     { id: 'move', name: 'Movement', allowsMovement: true },
     { id: 'resolve', name: 'Resolution', allowsMovement: false },
   ] },
+  matchState: { schemaId: 'mock', schemaVersion: 1, createInitialData: () => ({}), validate: () => true },
 }
 
 describe('GameSystem policy boundary', () => {

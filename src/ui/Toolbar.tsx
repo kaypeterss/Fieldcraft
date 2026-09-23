@@ -5,9 +5,11 @@ interface ToolbarProps {
   activeTool: ActiveTool
   spatialEnabled: boolean
   diceOpen: boolean
+  lifecycleOpen: boolean
   onToolChange: (tool: ActiveTool) => void
   onSpatialToggle: () => void
   onDiceToggle: () => void
+  onLifecycleToggle: () => void
   onResetCamera: () => void
 }
 
@@ -69,7 +71,14 @@ function DiceIcon() {
   )
 }
 
-export function Toolbar({ activeTool, spatialEnabled, diceOpen, onToolChange, onSpatialToggle, onDiceToggle, onResetCamera }: ToolbarProps) {
+function LifecycleIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M5 6h14M5 12h14M5 18h14" />
+    <circle cx="8" cy="6" r="1.5" /><circle cx="16" cy="12" r="1.5" /><circle cx="10" cy="18" r="1.5" />
+  </svg>
+}
+
+export function Toolbar({ activeTool, spatialEnabled, diceOpen, lifecycleOpen, onToolChange, onSpatialToggle, onDiceToggle, onLifecycleToggle, onResetCamera }: ToolbarProps) {
   return (
     <nav className="toolbar" aria-label="Tabletop tools">
       <div className="brand-mark" aria-hidden="true"><span /></div>
@@ -108,6 +117,13 @@ export function Toolbar({ activeTool, spatialEnabled, diceOpen, onToolChange, on
           aria-pressed={diceOpen}
         >
           <DiceIcon /><span>Dice</span>
+        </button>
+        <button
+          className={lifecycleOpen ? 'tool-button active' : 'tool-button'}
+          onClick={onLifecycleToggle}
+          aria-pressed={lifecycleOpen}
+        >
+          <LifecycleIcon /><span>Lifecycle</span>
         </button>
       </div>
       <div className="toolbar-spacer" />

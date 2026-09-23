@@ -5,6 +5,7 @@ import { formatInches, millimetersToInches } from '../engine/units'
 import { describeFootprint } from '../tools/spatialOverlay'
 import type { ModelAreaRelationship, PlayerAreaSummary, UnitAreaSummary } from '../engine/areaRelationships'
 import type { ObjectiveControlResult } from '../engine/objectiveControl'
+import { modelPresence } from '../game/modelPresence'
 
 export interface ObjectiveDisplayAnalysis {
   featureName: string
@@ -42,6 +43,7 @@ interface DebugPanelProps {
 export function DebugPanel(props: DebugPanelProps) {
   const { model, feature, selectedCount, wholeUnitName, ownerDisplayName } = props
   const modelCoherency = props.coherency?.models.find((entry) => entry.modelId === model?.id)
+  const presence = model ? modelPresence(model) : null
   return (
     <aside className={model || feature ? 'debug-panel visible' : 'debug-panel'} aria-live="polite">
       {model ? (
@@ -58,6 +60,8 @@ export function DebugPanel(props: DebugPanelProps) {
             <div><dt>Model ID</dt><dd>{model.id}</dd></div>
             <div><dt>Unit</dt><dd>{props.unitName ?? model.unitId}</dd></div>
             <div><dt>Owner</dt><dd>{ownerDisplayName ?? model.ownerId}</dd></div>
+            <div><dt>Presence</dt><dd>{presence === 'ON_BATTLEFIELD' ? 'On Battlefield'
+              : presence === 'OFF_BOARD' ? 'Off Board / Reserve' : 'Destroyed'}</dd></div>
             {props.unitModelCount !== undefined && <div><dt>Models</dt><dd>{props.unitModelCount}</dd></div>}
             {props.unitBaseLabel && <div><dt>Unit Bases</dt><dd>{props.unitBaseLabel}</dd></div>}
           </dl>

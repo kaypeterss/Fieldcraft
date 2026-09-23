@@ -24,13 +24,16 @@ import { getMovementAllowance } from '../game/selectors'
 import { advanceTurn } from '../game/turns'
 import { createScoreEvent } from '../game/scoring'
 import { createDiceRollRecord, createDiceSequenceRecord, updateDiceRollRecord } from '../game/diceHistory'
+import { activeBattlefieldModels, modelPresence } from '../game/modelPresence'
+import { commitOperation, createCommittedOperation, undoLastCommittedOperation } from '../game/committedOperations'
+import { validateModelPlacements } from '../engine/placement'
 import type { GameStateAction } from './actions'
 
 export function gameReducer(state: GameState, action: GameStateAction): GameState {
   switch (action.type) {
     case 'movement/sessionStarted': {
       if (state.movementSession) return state
-      const models = state.models.filter((model) => action.modelIds.includes(model.id))
+      const models = activeBattlefieldModels(state).filter((model) => action.modelIds.includes(model.id))
       if (models.length === 0) return state
       if (models.some((model) => getMovementAllowance(state, model) <= GEOMETRY_EPSILON)) return state
       const referenceStart = {
@@ -40,6 +43,7 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       const session: MovementSession = {
         id: action.sessionId,
         movementPolicy: normalizeMovementPolicy(action.movementPolicy),
+        movementAllowanceByModel: action.movementAllowanceByModel,
         modelIds: models.map((model) => model.id),
         referenceStart,
         referencePath: [{ ...referenceStart }],
@@ -82,7 +86,7 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
             translationDistance: movement.translationDistance,
             angularDistance: movement.angularRotation,
           },
-          getMovementAllowance(state, model),
+          movementAllowanceForSession(session, state, model),
         ) : 0]
       })) : undefined
       const movementEnvelopes = session.movementPolicy.type === 'movement-envelope'
@@ -91,12 +95,12 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
             const movement = session.models[modelId]
             return [modelId, {
               startPose: movement.startPose,
-              allowance: model ? getMovementAllowance(state, model) : 0,
+              allowance: model ? movementAllowanceForSession(session, state, model) : 0,
             }]
           }))
         : undefined
       const resolution = resolveRigidTranslation({
-        allModels: state.models,
+        allModels: activeBattlefieldModels(state),
         modelIds: session.modelIds,
         translation,
         battlefield: state.battlefield,
@@ -166,7 +170,7 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
               translationDistance: movement.translationDistance,
               angularDistance: movement.angularRotation,
             },
-            getMovementAllowance(state, model),
+            movementAllowanceForSession(session, state, model),
           )
         : Number.POSITIVE_INFINITY
       const angularDelta = Math.sign(requestedAngularDelta) * Math.min(
@@ -174,7 +178,7 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         maximumAngularDistance,
       )
       const resolution = resolveModelRotation({
-        allModels: state.models,
+        allModels: activeBattlefieldModels(state),
         modelId: model.id,
         angularDelta,
         battlefield: state.battlefield,
@@ -306,16 +310,23 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
           session.models[model.id].movementUsed,
         ])),
       })
-      return {
+      const before = { ...state, models: beforeModels, movementSession: null }
+      const after = {
         ...state,
         movementSession: null,
         actionHistory: [...state.actionHistory, moveAction],
         nextActionSequence: sequence + 1,
-        lastConfirmedMovementUndo: {
-          models: beforeModels,
-          actionId: moveAction.id,
-          turnId: moveAction.turnId,
-        },
+      }
+      const committed = commitOperation(before, after, createCommittedOperation({
+        sequence,
+        type: 'MOVE',
+        actorPlayerId: state.gameContext.activePlayerId,
+        state,
+        entityIds: [...participatingModels.map((model) => model.id), ...moveAction.payload.unitIds],
+      }))
+      return {
+        ...committed,
+        lastConfirmedMovementUndo: { models: beforeModels, actionId: moveAction.id, turnId: moveAction.turnId },
       }
     }
 
@@ -329,8 +340,9 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         || (action.finalRotations && !sameIdSet(modelIds, Object.keys(action.finalRotations)))
         || (action.trajectories && Object.keys(action.trajectories).some((id) => !modelIds.includes(id)))
         || (action.paths && !sameIdSet(modelIds, Object.keys(action.paths)))) return state
+      const activeModels = activeBattlefieldModels(state)
       const affectedModels = modelIds.flatMap((modelId) => {
-        const model = state.models.find((candidate) => candidate.id === modelId)
+        const model = activeModels.find((candidate) => candidate.id === modelId)
         return model ? [model] : []
       })
       if (affectedModels.length !== modelIds.length) return state
@@ -407,7 +419,7 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         ])),
         movementUsed: action.movementUsed,
       })
-      return {
+      const after = {
         ...state,
         models: state.models.map((model) => {
           const final = action.finalPositions[model.id]
@@ -416,27 +428,22 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         }),
         actionHistory: [...state.actionHistory, moveAction],
         nextActionSequence: sequence + 1,
-        lastConfirmedMovementUndo: {
-          models: beforeModels,
-          actionId: moveAction.id,
-          turnId: moveAction.turnId,
-        },
+      }
+      const committed = commitOperation({ ...state, models: beforeModels }, after, createCommittedOperation({
+        sequence,
+        type: 'MOVE',
+        actorPlayerId: state.gameContext.activePlayerId,
+        state,
+        entityIds: [...changedModels.map((model) => model.id), ...moveAction.payload.unitIds],
+      }))
+      return {
+        ...committed,
+        lastConfirmedMovementUndo: { models: beforeModels, actionId: moveAction.id, turnId: moveAction.turnId },
       }
     }
 
     case 'movement/undoLastConfirmed': {
-      const undo = state.lastConfirmedMovementUndo
-      if (state.movementSession || !undo || undo.turnId !== state.gameContext.turnId) return state
-      return {
-        ...state,
-        models: undo.models.map((model) => ({
-          ...model,
-          position: { ...model.position },
-        })),
-        actionHistory: state.actionHistory.filter((confirmedAction) => confirmedAction.id !== undo.actionId),
-        movementSession: null,
-        lastConfirmedMovementUndo: null,
-      }
+      return undoLastCommittedOperation(state)
     }
 
     case 'movement/cancelled': {
@@ -467,24 +474,95 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
           gameContext: state.gameContext,
           source: action.source,
         })
-        return {
+        const sequence = state.nextActionSequence
+        const after = {
           ...state,
           scoreHistory: [...(state.scoreHistory ?? []), scoreEvent],
-          nextActionSequence: state.nextActionSequence + 1,
+          nextActionSequence: sequence + 1,
         }
+        return commitOperation(state, after, createCommittedOperation({
+          sequence,
+          type: 'SCORE',
+          actorPlayerId: state.gameContext.activePlayerId,
+          state,
+          entityIds: [action.playerId, ...(action.source?.referenceId ? [action.source.referenceId] : [])],
+        }))
       } catch {
         return state
       }
     }
 
     case 'score/lastEventUndone': {
-      const scoreHistory = state.scoreHistory ?? []
-      const lastScoreEvent = scoreHistory[scoreHistory.length - 1]
-      if (!lastScoreEvent) return state
-      return {
+      return undoLastCommittedOperation(state)
+    }
+
+    case 'history/undoLastCommitted':
+      return undoLastCommittedOperation(state)
+
+    case 'lifecycle/modelPresenceSet':
+    case 'lifecycle/modelsPresenceSet': {
+      if (state.movementSession) return state
+      const modelIds = [...new Set(action.type === 'lifecycle/modelPresenceSet'
+        ? [action.modelId]
+        : action.modelIds)].sort((left, right) => left.localeCompare(right))
+      if (modelIds.length === 0) return state
+      const models = modelIds.map((modelId) => state.models.find((candidate) => candidate.id === modelId))
+      if (models.some((model) => !model || modelPresence(model) !== 'ON_BATTLEFIELD')) return state
+      const idSet = new Set(modelIds)
+      const sequence = state.nextActionSequence
+      const after = {
         ...state,
-        scoreHistory: scoreHistory.filter((scoreEvent) => scoreEvent.id !== lastScoreEvent.id),
+        models: state.models.map((candidate) => idSet.has(candidate.id)
+          ? { ...candidate, presence: action.presence }
+          : candidate),
+        nextActionSequence: sequence + 1,
       }
+      return commitOperation(state, after, createCommittedOperation({
+        sequence,
+        type: 'MODEL_PRESENCE',
+        actorPlayerId: state.gameContext.activePlayerId,
+        state,
+        entityIds: [...modelIds, ...models.flatMap((model) => model ? [model.unitId] : [])],
+      }))
+    }
+
+    case 'lifecycle/modelPlaced':
+    case 'lifecycle/modelsPlaced': {
+      if (state.movementSession) return state
+      const placements = action.type === 'lifecycle/modelPlaced'
+        ? { [action.modelId]: action.pose }
+        : action.placements
+      const modelIds = Object.keys(placements).sort((left, right) => left.localeCompare(right))
+      if (modelIds.length === 0) return state
+      const models = modelIds.map((modelId) => state.models.find((candidate) => candidate.id === modelId))
+      if (models.some((model) => !model || modelPresence(model) === 'ON_BATTLEFIELD')) return state
+      const validation = validateModelPlacements({
+        state,
+        placements,
+        constraints: { requireCoherency: action.requireCoherency },
+      })
+      if (!validation.valid) return state
+      const idSet = new Set(modelIds)
+      const sequence = state.nextActionSequence
+      const after = {
+        ...state,
+        models: state.models.map((candidate) => idSet.has(candidate.id)
+          ? {
+              ...candidate,
+              presence: 'ON_BATTLEFIELD' as const,
+              position: { ...placements[candidate.id].position },
+              rotation: normalizeRotation(placements[candidate.id].rotation),
+            }
+          : candidate),
+        nextActionSequence: sequence + 1,
+      }
+      return commitOperation(state, after, createCommittedOperation({
+        sequence,
+        type: 'MODEL_PLACED',
+        actorPlayerId: state.gameContext.activePlayerId,
+        state,
+        entityIds: [...modelIds, ...models.flatMap((model) => model ? [model.unitId] : [])],
+      }))
     }
 
     case 'dice/rollRecorded': {
@@ -545,6 +623,7 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       return {
         ...state,
         gameContext: advanceTurn(state.gameContext, state.turnConfiguration),
+        lastCommittedOperationUndo: null,
       }
     }
   }
@@ -571,6 +650,14 @@ function movementUsedForPose(
     translationDistance: metrics.centerPathLength,
     angularDistance: metrics.totalAbsoluteAngularTravel,
   }).totalCost
+}
+
+function movementAllowanceForSession(
+  session: MovementSession,
+  state: GameState,
+  model: GameState['models'][number],
+): number {
+  return session.movementAllowanceByModel?.[model.id] ?? getMovementAllowance(state, model)
 }
 
 function validCenterPath(
