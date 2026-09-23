@@ -14,11 +14,7 @@ function renderPanel(overrides: Partial<Parameters<typeof SpatialPanel>[0]> = {}
     mode: 'range',
     range: 3,
     requiredSeparation: 3,
-    targetBaseDiameterMm: 32,
-    targetModelId: null,
-    targetModelOptions: [],
     sourceGeometryLabel: 'Circle 25mm',
-    targetGeometryLabel: 'Circle 32mm',
     coherencyAnalysisMode: 'unit-policy',
     coherencyPolicy: policy,
     customCoherencyPolicy: policy,
@@ -29,8 +25,6 @@ function renderPanel(overrides: Partial<Parameters<typeof SpatialPanel>[0]> = {}
     onModeChange: vi.fn(),
     onRangeChange: vi.fn(),
     onRequiredSeparationChange: vi.fn(),
-    onTargetBaseDiameterChange: vi.fn(),
-    onTargetModelChange: vi.fn(),
     onCoherencyAnalysisModeChange: vi.fn(),
     onCoherencyPolicyChange: vi.fn(),
     ...overrides,
@@ -38,6 +32,75 @@ function renderPanel(overrides: Partial<Parameters<typeof SpatialPanel>[0]> = {}
   render(<SpatialPanel {...props} />)
   return props
 }
+
+describe('objective analysis overlay', () => {
+  it('shows independent area counts and offers a generic objective selector', () => {
+    const onObjectiveChange = vi.fn()
+    renderPanel({
+      mode: 'objectives',
+      objectiveOptions: [{ id: 'signal', name: 'Signal Ruin' }, { id: 'beacon', name: 'Signal Beacon' }],
+      selectedObjectiveId: 'signal', onObjectiveChange,
+      objectiveAnalysis: {
+        featureName: 'Signal Ruin', areaType: 'feature-base', unitName: 'Infantry 10',
+        modelRelationship: { placement: 'intersecting', intersects: true, whollyWithin: false,
+          centerWithin: true, distanceInches: 0 },
+        unitSummary: { modelCount: 10, intersectingCount: 7, whollyWithinCount: 4,
+          centerWithinCount: 6, distanceInches: 0, closestModelId: 'one' },
+      },
+    })
+    expect(screen.getByText('Infantry 10')).toBeTruthy()
+    expect(screen.getByText('7 / 10')).toBeTruthy()
+    expect(screen.getByText('4 / 10')).toBeTruthy()
+    expect(screen.getByText('6 / 10')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Analyze objective'), { target: { value: 'beacon' } })
+    expect(onObjectiveChange).toHaveBeenCalledWith('beacon')
+  })
+})
+
+describe('visibility analysis overlay', () => {
+  it('offers viewer, target, policy, and separate crossing facts', () => {
+    const onPolicyChange = vi.fn()
+    const onModeChange = vi.fn()
+    renderPanel({
+      mode: 'visibility',
+      modelOptions: [{ id: 'viewer', label: 'Viewer Oval' }, { id: 'target', label: 'Target Hull' }],
+      visibilityViewerId: 'viewer',
+      visibilityTargetId: 'target',
+      visibilityMode: 'any-to-any',
+      visibilityPolicy: 'objects-block',
+      visibilityAnalysis: {
+        viewerId: 'viewer', targetId: 'target', distance: 8,
+        mode: 'any-to-any',
+        basesCrossed: [{ featureId: 'ruin', featureName: 'Irregular Ruin' }],
+        objectsCrossed: [], policy: 'objects-block', visible: true,
+        segments: [{ startAnchor: { x: 1, y: 2 }, endAnchor: { x: 9, y: 2 }, blocked: false }],
+      },
+      onVisibilityModeChange: onModeChange,
+      onVisibilityPolicyChange: onPolicyChange,
+    })
+    expect(screen.getByRole('combobox', { name: 'Viewer' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Target' })).toBeTruthy()
+    expect(screen.getByText('Irregular Ruin')).toBeTruthy()
+    expect(screen.getByText('VISIBLE')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Any → All' }))
+    expect(onModeChange).toHaveBeenCalledWith('any-to-all')
+    fireEvent.click(screen.getByRole('button', { name: 'Base Blocks' }))
+    expect(onPolicyChange).toHaveBeenCalledWith('base-blocks')
+  })
+
+  it('offers direct viewer and target battlefield pick buttons', () => {
+    const onPick = vi.fn()
+    renderPanel({
+      mode: 'visibility',
+      modelOptions: [{ id: 'viewer', label: 'Viewer' }, { id: 'target', label: 'Target' }],
+      visibilityPickTarget: 'viewer',
+      onVisibilityPick: onPick,
+    })
+    expect(screen.getByRole('button', { name: 'Pick Viewer' }).textContent).toContain('Picking')
+    fireEvent.click(screen.getByRole('button', { name: 'Pick Target' }))
+    expect(onPick).toHaveBeenCalledWith('target')
+  })
+})
 
 describe('spatial numeric input editing', () => {
   it('keeps unit policy and custom analysis as explicit independent sources', () => {
@@ -124,11 +187,7 @@ describe('spatial numeric input editing', () => {
           mode="range"
           range={3}
           requiredSeparation={3}
-          targetBaseDiameterMm={32}
-          targetModelId={null}
-          targetModelOptions={[]}
           sourceGeometryLabel="Circle 25mm"
-          targetGeometryLabel="Circle 32mm"
           coherencyAnalysisMode="unit-policy"
           coherencyPolicy={policy}
           customCoherencyPolicy={policy}
@@ -139,8 +198,6 @@ describe('spatial numeric input editing', () => {
           onModeChange={vi.fn()}
           onRangeChange={vi.fn()}
           onRequiredSeparationChange={vi.fn()}
-          onTargetBaseDiameterChange={vi.fn()}
-          onTargetModelChange={vi.fn()}
           onCoherencyAnalysisModeChange={vi.fn()}
           onCoherencyPolicyChange={vi.fn()}
         />
@@ -172,18 +229,19 @@ describe('spatial numeric input editing', () => {
     expect(coherency).toHaveBeenLastCalledWith({ distance: 1, requiredNeighbors: 0 })
   })
 
-  it('shows explicit source/target geometry and selects an actual target model', () => {
-    const onTargetModelChange = vi.fn()
+  it('shows automatic actual-footprint guidance without manual target controls', () => {
     renderPanel({
       mode: 'exclusion',
       sourceGeometryLabel: 'Rectangle 80×45mm @ 45°',
-      targetGeometryLabel: 'Oval 80 × 40mm @ 30°',
-      targetModelOptions: [{ id: 'oval', label: 'OVAL 30° · Oval 80 × 40mm @ 30°' }],
-      onTargetModelChange,
     })
     expect(screen.getByText('Rectangle 80×45mm @ 45°')).toBeTruthy()
-    expect(screen.getByText('Oval 80 × 40mm @ 30°')).toBeTruthy()
-    fireEvent.change(screen.getByLabelText('Target footprint'), { target: { value: 'oval' } })
-    expect(onTargetModelChange).toHaveBeenCalledWith('oval')
+    expect(screen.getByText('Each selected model uses its actual footprint and current orientation.')).toBeTruthy()
+    expect(screen.queryByLabelText('Target footprint')).toBeNull()
+    expect(screen.queryByText('Manual circle presets')).toBeNull()
+  })
+
+  it('asks for a model instead of falling back to a generic exclusion target', () => {
+    renderPanel({ mode: 'exclusion', sourceCount: 0 })
+    expect(screen.getByText('Select one model or a complete unit to visualize this overlay.')).toBeTruthy()
   })
 })

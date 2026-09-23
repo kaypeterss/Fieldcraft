@@ -8,7 +8,7 @@ import {
   TextStyle,
   type FederatedPointerEvent,
 } from 'pixi.js'
-import type { Footprint, GameState, MovementPolicyConfig } from '../../domain/types'
+import type { BattlefieldFeature, Footprint, GameState, MovementPolicyConfig } from '../../domain/types'
 import { isPointInsideBattlefield } from '../../engine/geometry/battlefield'
 import type { Point } from '../../engine/geometry/point'
 import {
@@ -26,16 +26,22 @@ import type { GameStateAction } from '../../state/actions'
 import type { MeasurementResult, MeasurementTarget } from '../../tools/measurement'
 import { hasDragIntent, individualSameUnitHandoffTarget, selectionForModelPointerDown } from '../../tools/selection'
 import type { SpatialOverlayConfig } from '../../tools/spatialOverlay'
+import { exclusionTargetForModel } from '../../tools/spatialOverlay'
 import type { ActiveTool } from '../../ui/Toolbar'
 import type { SmartMoveResult } from '../../engine/smartMove'
+import type { ModelPickerTarget } from '../../tools/modelPicker'
 import { shortestSignedAngularDelta } from '../../engine/rotation'
 import { resolveModelPointerDown, resolveTabletopPointerDown } from '../../tools/pointerInput'
 import { deriveSmartMoveGhosts } from '../../tools/smartMoveGhosts'
+import { featureObjectiveArea } from '../../engine/battlefieldFeatures'
 
 interface TabletopCanvasProps {
   gameState: GameState
+  spatialModels: GameState['models']
   activeTool: ActiveTool
   selectedIds: ReadonlySet<string>
+  selectedFeatureId: string | null
+  selectedObjectiveId: string | null
   measurement: MeasurementResult | null
   measurementTargetA: MeasurementTarget | null
   measurementTargetB: MeasurementTarget | null
@@ -43,12 +49,16 @@ interface TabletopCanvasProps {
   smartMoveResult: SmartMoveResult | null
   smartMoveRawTarget: Point | null
   smartMoveTargetLocked: boolean
+  visibilityPickTarget: ModelPickerTarget | null
   resetCameraSignal: number
   movementPolicy: MovementPolicyConfig
   onSelectionChange: (ids: Set<string>) => void
+  onFeatureSelectionChange: (featureId: string) => void
   onMeasureTarget: (target: MeasurementTarget) => void
   onSmartMoveTargetPreview: (target: Point) => void
   onSmartMoveTargetLock: (target: Point) => void
+  onVisibilityPickModel: (modelId: string) => void
+  onVisibilityPickHover: (modelId: string | null) => void
   dispatch: (action: GameStateAction) => void
 }
 
@@ -158,6 +168,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
           beginCameraPan(event)
           return
         }
+        if (propsRef.current.visibilityPickTarget) return
         if (propsRef.current.activeTool === 'measure') {
           const point = screenToWorld(event.global, cameraRef.current)
           if (isPointInsideBattlefield(point, propsRef.current.gameState.battlefield)) {
@@ -341,7 +352,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
   useEffect(() => {
     const world = worldRef.current
     if (world) drawScene(world, propsRef, dragRef, rotationDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
-  }, [props.gameState, props.selectedIds, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult])
+  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult])
 
   useEffect(() => {
     if (props.resetCameraSignal > 0) fitCamera()
@@ -406,8 +417,12 @@ function drawScene(
   grid.eventMode = 'none'
   world.addChild(grid)
 
+  for (const feature of props.gameState.battlefieldFeatures ?? []) {
+    drawBattlefieldFeature(world, feature, props, propsRef, panRef, cameraRef)
+  }
+
   const spatialSources = props.spatialOverlay
-    ? models.filter((model) => props.spatialOverlay?.sourceModelIds.includes(model.id))
+    ? props.spatialModels.filter((model) => props.spatialOverlay?.sourceModelIds.includes(model.id))
     : []
   if (props.spatialOverlay?.mode === 'range' && spatialSources.length > 0) {
     drawRangeArea(world, spatialSources, props.spatialOverlay.range)
@@ -417,12 +432,13 @@ function drawScene(
       world,
       spatialSources,
       props.spatialOverlay.requiredSeparation,
-      props.spatialOverlay.targetFootprint,
-      props.spatialOverlay.targetRotation,
     )
   }
   if (props.spatialOverlay?.mode === 'coherency' && props.spatialOverlay.coherency) {
-    drawCoherencyLinks(world, models, props.spatialOverlay.coherency.links)
+    drawCoherencyLinks(world, props.spatialModels, props.spatialOverlay.coherency.links)
+  }
+  if (props.spatialOverlay?.mode === 'visibility' && props.spatialOverlay.visibility) {
+    drawVisibility(world, props.spatialOverlay.visibility)
   }
 
   for (const model of models) {
@@ -436,7 +452,7 @@ function drawScene(
     const token = new Container()
     token.position.set(model.position.x, model.position.y)
     token.eventMode = 'static'
-    token.cursor = props.activeTool === 'measure' ? 'crosshair'
+    token.cursor = props.activeTool === 'measure' || props.visibilityPickTarget ? 'crosshair'
       : props.activeTool === 'smart-move' ? 'pointer' : 'grab'
     const localPose = { position: { x: 0, y: 0 }, rotation: model.rotation }
     const localBounds = footprintBounds(model.base, localPose)
@@ -472,6 +488,16 @@ function drawScene(
       selectionOutline.eventMode = 'none'
       shapeLayer.addChild(selectionKeyline, selectionOutline)
     }
+    const visibilityRole = props.spatialOverlay?.mode === 'visibility'
+      ? props.spatialOverlay.visibilityViewerId === model.id ? 'viewer'
+        : props.spatialOverlay.visibilityTargetId === model.id ? 'target' : null
+      : null
+    const pickHover = props.visibilityPickTarget && props.spatialOverlay?.visibilityPickHoverModelId === model.id
+    if (visibilityRole || pickHover) {
+      const roleColor = pickHover ? 0xffffff : visibilityRole === 'viewer' ? 0x65d7ff : 0xd89bff
+      shapeLayer.addChild(drawLocalFootprint(new Graphics(), model.base)
+        .stroke({ color: roleColor, width: pickHover ? 0.2 : 0.14, alpha: 0.98 }))
+    }
     token.addChild(shapeLayer)
 
     const label = new Text({
@@ -497,6 +523,10 @@ function drawScene(
           start: { x: event.global.x, y: event.global.y },
           camera: { x: cameraRef.current.x, y: cameraRef.current.y },
         }
+        return
+      }
+      if (currentProps.visibilityPickTarget) {
+        currentProps.onVisibilityPickModel(model.id)
         return
       }
       const unit = currentProps.gameState.units.find((candidate) => candidate.id === model.unitId)
@@ -582,6 +612,12 @@ function drawScene(
       }
       token.cursor = 'grabbing'
     })
+    token.on('pointerover', () => {
+      if (propsRef.current.visibilityPickTarget) propsRef.current.onVisibilityPickHover(model.id)
+    })
+    token.on('pointerout', () => {
+      if (propsRef.current.visibilityPickTarget) propsRef.current.onVisibilityPickHover(null)
+    })
     world.addChild(token)
 
     const activeSessionIds = props.gameState.movementSession?.modelIds
@@ -659,7 +695,7 @@ function drawScene(
   }
 
   if (props.spatialOverlay?.mode === 'coherency' && props.spatialOverlay.coherency) {
-    drawCoherencyStatus(world, models, props.spatialOverlay.coherency.models)
+    drawCoherencyStatus(world, props.spatialModels, props.spatialOverlay.coherency.models)
   }
 
   const session = props.gameState.movementSession
@@ -686,6 +722,82 @@ function drawScene(
 
   const selectionBox = selectionBoxRef.current
   if (selectionBox?.active) drawSelectionBox(world, selectionBox.start, selectionBox.current)
+}
+
+function drawBattlefieldFeature(
+  world: Container,
+  feature: BattlefieldFeature,
+  props: TabletopCanvasProps,
+  propsRef: React.MutableRefObject<TabletopCanvasProps>,
+  panRef: React.MutableRefObject<{ start: Point; camera: Point } | null>,
+  cameraRef: React.MutableRefObject<CameraState>,
+) {
+  const root = new Container()
+  root.position.set(feature.pose.position.x, feature.pose.position.y)
+  root.rotation = feature.pose.rotation
+  const canInspect = props.activeTool === 'select' && !props.gameState.movementSession
+  root.eventMode = canInspect ? 'static' : 'none'
+  root.cursor = 'pointer'
+  const localPose = { position: { x: 0, y: 0 }, rotation: 0 }
+  root.hitArea = { contains: (x: number, y: number) => footprintContainsPoint(feature.baseArea, localPose, { x, y }) }
+  const isObjective = Boolean(feature.capabilities.objective)
+  const isTerrain = Boolean(feature.capabilities.terrain)
+  const baseColor = isObjective && isTerrain ? 0xd9a96d : isObjective ? 0xf1c969 : 0x79baa5
+  const base = drawLocalFootprint(new Graphics(), feature.baseArea)
+    .fill({ color: baseColor, alpha: 0.14 })
+    .stroke({ color: baseColor, width: 0.15, alpha: 0.95 })
+  base.eventMode = 'none'
+  root.addChild(base)
+  if (props.selectedFeatureId === feature.id) {
+    const selection = drawLocalFootprint(new Graphics(), feature.baseArea)
+      .stroke({ color: 0xffffff, width: 0.27, alpha: 1 })
+    selection.eventMode = 'none'
+    root.addChild(selection)
+  }
+  for (const object of feature.objects) {
+    const child = drawLocalFootprint(new Graphics(), object.footprint)
+      .fill({ color: 0x465b57, alpha: 0.95 })
+      .stroke({ color: 0xc9ded2, width: 0.12 })
+    child.position.set(object.localPose.position.x, object.localPose.position.y)
+    child.rotation = object.localPose.rotation
+    child.eventMode = 'none'
+    root.addChild(child)
+  }
+  const label = new Text({
+    text: feature.name,
+    style: new TextStyle({ fontFamily: 'Arial', fontSize: 16, fontWeight: '700', fill: baseColor }),
+    resolution: 3,
+  })
+  label.anchor.set(0.5)
+  label.scale.set(0.55 / 16)
+  label.position.set(0, footprintBounds(feature.baseArea, localPose).bottom + 0.55)
+  label.eventMode = 'none'
+  root.addChild(label)
+  root.on('pointerdown', (event: FederatedPointerEvent) => {
+    event.stopPropagation()
+    if (event.button !== 0) {
+      panRef.current = {
+        start: { x: event.global.x, y: event.global.y },
+        camera: { x: cameraRef.current.x, y: cameraRef.current.y },
+      }
+      return
+    }
+    propsRef.current.onFeatureSelectionChange(feature.id)
+  })
+  world.addChild(root)
+  if (props.spatialOverlay?.mode === 'objectives' && feature.capabilities.objective) {
+    const area = featureObjectiveArea(feature)
+    if (area) {
+      const chosen = props.selectedObjectiveId === feature.id
+      const objectiveOutline = drawLocalFootprint(new Graphics(), area.footprint)
+        .fill({ color: 0xf1c969, alpha: chosen ? 0.08 : 0.035 })
+        .stroke({ color: 0xffd779, width: chosen ? 0.22 : 0.13, alpha: chosen ? 0.95 : 0.65 })
+      objectiveOutline.position.set(area.pose.position.x, area.pose.position.y)
+      objectiveOutline.rotation = area.pose.rotation
+      objectiveOutline.eventMode = 'none'
+      world.addChild(objectiveOutline)
+    }
+  }
 }
 
 function drawSmartMovePreview(
@@ -750,15 +862,14 @@ function drawExclusionArea(
   world: Container,
   models: GameState['models'],
   requiredSeparation: number,
-  targetFootprint: Footprint,
-  targetRotation: number,
 ) {
   const area = new Graphics()
   for (const model of models) {
+    const target = exclusionTargetForModel(model)
     drawClosedOutline(area, exclusionOutlineForTargetFootprint(
       model,
-      targetFootprint,
-      targetRotation,
+      target.footprint,
+      target.rotation,
       requiredSeparation,
     ))
   }
@@ -782,6 +893,24 @@ function drawCoherencyLinks(
   graphic.stroke({ color: 0x72d6a1, width: 0.08, alpha: 0.45 })
   graphic.eventMode = 'none'
   world.addChild(graphic)
+}
+
+function drawVisibility(
+  world: Container,
+  visibility: NonNullable<SpatialOverlayConfig['visibility']>,
+) {
+  visibility.segments.forEach((segment, index) => {
+    const color = segment.blocked ? 0xff7f70 : 0x8fe0b4
+    const line = new Graphics()
+      .moveTo(segment.startAnchor.x, segment.startAnchor.y)
+      .lineTo(segment.endAnchor.x, segment.endAnchor.y)
+      .stroke({ color, width: index === 0 ? 0.1 : 0.065, alpha: index === 0 ? 0.95 : 0.62 })
+      .circle(segment.startAnchor.x, segment.startAnchor.y, index === 0 ? 0.12 : 0.08)
+      .circle(segment.endAnchor.x, segment.endAnchor.y, index === 0 ? 0.12 : 0.08)
+      .fill({ color, alpha: index === 0 ? 0.95 : 0.68 })
+    line.eventMode = 'none'
+    world.addChild(line)
+  })
 }
 
 function drawClosedOutline(graphic: Graphics, points: readonly Point[]): void {

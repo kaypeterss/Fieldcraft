@@ -9,6 +9,7 @@ import {
 } from '../engine/movementCost'
 import { movementEnvelopeReach, poseFitsMovementEnvelope, projectPoseIntoMovementEnvelope } from '../engine/movementEnvelope'
 import { resolveModelRotation, shortestSignedAngularDelta } from '../engine/rotation'
+import { terrainDestinationLegal } from '../engine/terrainPolicy'
 import {
   appendPoseTrajectorySegment,
   createPoseTrajectory,
@@ -97,6 +98,8 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         modelIds: session.modelIds,
         translation,
         battlefield: state.battlefield,
+        terrainFeatures: state.battlefieldFeatures,
+        terrainPolicy: state.terrainPolicy,
         remainingMovement,
         movementEnvelopes,
       })
@@ -173,6 +176,8 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         modelId: model.id,
         angularDelta,
         battlefield: state.battlefield,
+        terrainFeatures: state.battlefieldFeatures,
+        terrainPolicy: state.terrainPolicy,
       })
       const allowance = getMovementAllowance(state, model)
       const requestedPose = { position: model.position, rotation: resolution.rotation }
@@ -187,6 +192,8 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         modelIds: [model.id],
         translation: projected.retreat,
         battlefield: state.battlefield,
+        terrainFeatures: state.battlefieldFeatures,
+        terrainPolicy: state.terrainPolicy,
       })
       const finalPosition = retreatResolution.positions.get(model.id) ?? model.position
       const finalRotation = session.movementPolicy.type !== 'movement-envelope'
@@ -263,6 +270,10 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       const participatingModels = session.modelIds
         .map((modelId) => state.models.find((model) => model.id === modelId))
         .filter((model): model is GameState['models'][number] => Boolean(model))
+      if (participatingModels.some((model) => !terrainDestinationLegal(
+        model, { position: model.position, rotation: model.rotation },
+        state.battlefieldFeatures, state.terrainPolicy,
+      ))) return state
       const moveAction = createMoveAction({
         sequence,
         actorPlayerId: state.gameContext.activePlayerId,
@@ -348,6 +359,10 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
           && Math.abs(model.position.y - start.y) <= GEOMETRY_EPSILON
       })
       if (!inputValid) return state
+      if (affectedModels.some((model) => !terrainDestinationLegal(model, {
+        position: action.finalPositions[model.id],
+        rotation: action.finalRotations?.[model.id] ?? model.rotation,
+      }, state.battlefieldFeatures, state.terrainPolicy))) return state
       const changedModels = affectedModels.filter((model) => {
         const final = action.finalPositions[model.id]
         return Math.abs(model.position.x - final.x) > GEOMETRY_EPSILON

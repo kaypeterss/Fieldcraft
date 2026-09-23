@@ -1,4 +1,4 @@
-import type { Battlefield, TabletopModel } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, TabletopModel, TerrainPolicyConfig } from '../domain/types'
 import {
   closestPointsBetweenFootprints,
   footprintBounds,
@@ -8,12 +8,15 @@ import {
   poseForModel,
 } from './geometry/footprints'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
+import { terrainObstacleModels } from './terrainPolicy'
 
 export interface RotationSweepRequest {
   allModels: ReadonlyArray<TabletopModel>
   modelId: string
   angularDelta: number
   battlefield: Battlefield
+  terrainFeatures?: ReadonlyArray<BattlefieldFeature>
+  terrainPolicy?: TerrainPolicyConfig
 }
 
 export interface RotationSweepResult {
@@ -52,7 +55,10 @@ export function resolveModelRotation(request: RotationSweepRequest): RotationSwe
     }
   }
 
-  const obstacles = request.allModels.filter((candidate) => candidate.id !== model.id)
+  const obstacles = [
+    ...request.allModels.filter((candidate) => candidate.id !== model.id),
+    ...terrainObstacleModels(model, request.terrainFeatures, request.terrainPolicy, 'finish'),
+  ]
   const radius = footprintCircumradiusInches(model.base)
   const direction = Math.sign(request.angularDelta)
   let travelled = 0

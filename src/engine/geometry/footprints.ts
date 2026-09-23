@@ -169,6 +169,49 @@ export function footprintIntersectsRectangle(
     <= GEOMETRY_EPSILON
 }
 
+/** Exact intersection between a finite tabletop segment and a convex footprint. */
+export function footprintIntersectsSegment(
+  footprint: Footprint,
+  pose: Pose,
+  start: Point,
+  end: Point,
+): boolean {
+  assertFinitePoint(start, 'Segment start')
+  assertFinitePoint(end, 'Segment end')
+  return closestBetweenShapes(
+    createSupportShape(footprint, pose),
+    createVertexShape([start, end]),
+  ).distance <= GEOMETRY_EPSILON
+}
+
+/**
+ * Exact intersection between a convex footprint and the complete sight region
+ * from one viewpoint to a convex target footprint. The sight region is the
+ * convex hull of the viewpoint and target, represented directly by support
+ * mapping rather than a bounding shape or sampled target boundary.
+ */
+export function footprintIntersectsSightCone(
+  footprint: Footprint,
+  pose: Pose,
+  viewpoint: Point,
+  targetFootprint: Footprint,
+  targetPose: Pose,
+): boolean {
+  assertFinitePoint(viewpoint, 'Sight viewpoint')
+  const target = createSupportShape(targetFootprint, targetPose)
+  const cone: SupportShape = {
+    center: scale(add(viewpoint, target.center), 0.5),
+    support: (direction) => {
+      const targetPoint = target.support(direction)
+      return dot(viewpoint, direction) > dot(targetPoint, direction)
+        ? { ...viewpoint }
+        : targetPoint
+    },
+  }
+  return closestBetweenShapes(createSupportShape(footprint, pose), cone).distance
+    <= GEOMETRY_EPSILON
+}
+
 export function closestPointsBetweenFootprints(
   footprintA: Footprint,
   poseA: Pose,
@@ -232,10 +275,180 @@ export function footprintsOverlap(
       circleFootprintRadiusInches(footprintB),
     )
   }
-  return closestBetweenShapes(
-    createSupportShape(footprintA, poseA),
-    createSupportShape(footprintB, poseB),
-  ).overlapping
+  if (isSmoothFootprint(footprintA) && isFlatFootprint(footprintB)) {
+    return smoothPolygonOverlap(footprintA, poseA, footprintB, poseB)
+  }
+  if (isFlatFootprint(footprintA) && isSmoothFootprint(footprintB)) {
+    return smoothPolygonOverlap(footprintB, poseB, footprintA, poseA)
+  }
+  const shapeA = createSupportShape(footprintA, poseA)
+  const shapeB = createSupportShape(footprintB, poseB)
+  // GJK's origin simplex can classify a near-tangent polygon edge as a tiny
+  // penetration. A separating flat-face axis is an exact non-overlap witness,
+  // especially important when repeated drag updates slide along that face.
+  if (isFlatFootprint(footprintA) && isFlatFootprint(footprintB)) {
+    return !flatFaceAxesSeparate(footprintA, poseA, footprintB, poseB, shapeA, shapeB)
+  }
+  return closestBetweenShapes(shapeA, shapeB).overlapping
+}
+
+/** Geometric inclusion, independent of terrain or objective rules. Boundary contact counts as within. */
+export function footprintContainsFootprint(
+  area: Footprint,
+  areaPose: Pose,
+  inner: Footprint,
+  innerPose: Pose,
+): boolean {
+  validateFootprint(area)
+  validateFootprint(inner)
+  if (isFlatFootprint(area)) {
+    const vertices = flatWorldVertices(area, areaPose)
+    return vertices.every((vertex, index) => {
+      const next = vertices[(index + 1) % vertices.length]
+      const outward = safeDirection({ x: next.y - vertex.y, y: vertex.x - next.x })
+      const extreme = footprintSupportPoint(inner, innerPose, outward)
+      return dot(subtract(extreme, vertex), outward) <= GEOMETRY_EPSILON
+    })
+  }
+  const radiusX = millimetersToInches(area.shape === 'circle' ? area.diameterMm : area.widthMm) / 2
+  const radiusY = millimetersToInches(area.shape === 'circle' ? area.diameterMm : area.heightMm) / 2
+  const normalized = (point: Point) => {
+    const local = inverseRotate(subtract(point, areaPose.position), areaPose.rotation)
+    return { x: local.x / radiusX, y: local.y / radiusY }
+  }
+  const tolerance = GEOMETRY_EPSILON / Math.min(radiusX, radiusY)
+  if (isFlatFootprint(inner)) {
+    return flatWorldVertices(inner, innerPose).every((vertex) => lengthSquared(normalized(vertex)) <= (1 + tolerance) ** 2)
+  }
+  if (area.shape === 'circle' && inner.shape === 'circle') {
+    return Math.hypot(innerPose.position.x - areaPose.position.x, innerPose.position.y - areaPose.position.y)
+      + millimetersToInches(inner.diameterMm) / 2 <= radiusX + GEOMETRY_EPSILON
+  }
+  // A smooth inner boundary is parameterized exactly. Its transformed squared
+  // radius is a degree-two trigonometric polynomial, with at most four extrema.
+  // Bracket every derivative sign change deterministically, then bisect roots.
+  const innerX = millimetersToInches(inner.shape === 'circle' ? inner.diameterMm : inner.widthMm) / 2
+  const innerY = millimetersToInches(inner.shape === 'circle' ? inner.diameterMm : inner.heightMm) / 2
+  const pointAt = (angle: number) => normalized(transformFootprintPoint(innerPose, {
+    x: innerX * Math.cos(angle), y: innerY * Math.sin(angle),
+  }))
+  const derivativeAt = (angle: number) => {
+    const point = pointAt(angle)
+    const velocity = inverseRotate({
+      x: -innerX * Math.sin(angle) * Math.cos(innerPose.rotation) - innerY * Math.cos(angle) * Math.sin(innerPose.rotation),
+      y: -innerX * Math.sin(angle) * Math.sin(innerPose.rotation) + innerY * Math.cos(angle) * Math.cos(innerPose.rotation),
+    }, areaPose.rotation)
+    return 2 * (point.x * velocity.x / radiusX + point.y * velocity.y / radiusY)
+  }
+  const steps = 128
+  let maximum = 0
+  for (let index = 0; index < steps; index += 1) {
+    let left = index * 2 * Math.PI / steps
+    let right = (index + 1) * 2 * Math.PI / steps
+    let derivativeLeft = derivativeAt(left)
+    const derivativeRight = derivativeAt(right)
+    maximum = Math.max(maximum, lengthSquared(pointAt(left)))
+    if (derivativeLeft * derivativeRight < 0) {
+      for (let iteration = 0; iteration < 50; iteration += 1) {
+        const middle = (left + right) / 2
+        const derivativeMiddle = derivativeAt(middle)
+        if (derivativeLeft * derivativeMiddle <= 0) right = middle
+        else { left = middle; derivativeLeft = derivativeMiddle }
+      }
+      maximum = Math.max(maximum, lengthSquared(pointAt((left + right) / 2)))
+    }
+  }
+  return maximum <= (1 + tolerance) ** 2
+}
+
+function isSmoothFootprint(footprint: Footprint): footprint is Extract<Footprint, { shape: 'circle' | 'ellipse' }> {
+  return footprint.shape === 'circle' || footprint.shape === 'ellipse'
+}
+
+function isFlatFootprint(footprint: Footprint): footprint is Extract<Footprint, { shape: 'rectangle' | 'polygon' }> {
+  return footprint.shape === 'rectangle' || footprint.shape === 'polygon'
+}
+
+/** Exact ellipse/convex-polygon overlap after mapping the ellipse to a unit circle. */
+function smoothPolygonOverlap(
+  smooth: Extract<Footprint, { shape: 'circle' | 'ellipse' }>,
+  smoothPose: Pose,
+  flat: Extract<Footprint, { shape: 'rectangle' | 'polygon' }>,
+  flatPose: Pose,
+): boolean {
+  const radiusX = smooth.shape === 'circle'
+    ? millimetersToInches(smooth.diameterMm) / 2 : millimetersToInches(smooth.widthMm) / 2
+  const radiusY = smooth.shape === 'circle'
+    ? radiusX : millimetersToInches(smooth.heightMm) / 2
+  const vertices = flatWorldVertices(flat, flatPose).map((vertex) => {
+    const local = inverseRotate(subtract(vertex, smoothPose.position), smoothPose.rotation)
+    return { x: local.x / radiusX, y: local.y / radiusY }
+  })
+  const tolerance = GEOMETRY_EPSILON / Math.min(radiusX, radiusY)
+  let inside = true
+  let minimumDistanceSquared = Number.POSITIVE_INFINITY
+  for (let index = 0; index < vertices.length; index += 1) {
+    const start = vertices[index]
+    const end = vertices[(index + 1) % vertices.length]
+    const edge = subtract(end, start)
+    if (cross(edge, negate(start)) < -tolerance) inside = false
+    const fraction = clamp(-dot(start, edge) / lengthSquared(edge), 0, 1)
+    minimumDistanceSquared = Math.min(minimumDistanceSquared,
+      lengthSquared(add(start, scale(edge, fraction))))
+  }
+  return inside || minimumDistanceSquared < (1 - tolerance) ** 2
+}
+
+function flatFaceAxesSeparate(
+  footprintA: Footprint,
+  poseA: Pose,
+  footprintB: Footprint,
+  poseB: Pose,
+  shapeA: SupportShape,
+  shapeB: SupportShape,
+): boolean {
+  const axes = [...flatFaceAxes(footprintA, poseA), ...flatFaceAxes(footprintB, poseB)]
+  return axes.some((axis) => {
+    const maximumA = dot(shapeA.support(axis), axis)
+    const minimumA = dot(shapeA.support(negate(axis)), axis)
+    const maximumB = dot(shapeB.support(axis), axis)
+    const minimumB = dot(shapeB.support(negate(axis)), axis)
+    return maximumA <= minimumB + GEOMETRY_EPSILON
+      || maximumB <= minimumA + GEOMETRY_EPSILON
+  })
+}
+
+function flatFaceAxes(footprint: Footprint, pose: Pose): Point[] {
+  if (footprint.shape === 'rectangle') {
+    const cosine = Math.cos(pose.rotation)
+    const sine = Math.sin(pose.rotation)
+    return [{ x: cosine, y: sine }, { x: -sine, y: cosine }]
+  }
+  if (footprint.shape !== 'polygon') return []
+  const vertices = flatWorldVertices(footprint, pose)
+  return vertices.map((vertex, index) => {
+    const next = vertices[(index + 1) % vertices.length]
+    return safeDirection({ x: next.y - vertex.y, y: vertex.x - next.x })
+  })
+}
+
+function flatWorldVertices(
+  footprint: Extract<Footprint, { shape: 'rectangle' | 'polygon' }>,
+  pose: Pose,
+): Point[] {
+  const local = footprint.shape === 'rectangle'
+    ? (() => {
+        const halfWidth = millimetersToInches(footprint.widthMm) / 2
+        const halfHeight = millimetersToInches(footprint.heightMm) / 2
+        return [
+          { x: -halfWidth, y: -halfHeight }, { x: halfWidth, y: -halfHeight },
+          { x: halfWidth, y: halfHeight }, { x: -halfWidth, y: halfHeight },
+        ]
+      })()
+    : footprint.verticesMm.map((vertex) => ({
+        x: millimetersToInches(vertex.x), y: millimetersToInches(vertex.y),
+      }))
+  return local.map((point) => transformFootprintPoint(pose, point))
 }
 
 export function footprintInsideBattlefield(
@@ -766,6 +979,10 @@ function sweepContactNormal(
   obstaclePose: Pose,
   fallbackNormal: Point | null,
 ): Point {
+  const faceNormal = flatFaceContactNormal(
+    movingFootprint, movingPose, translation, obstacleFootprint, obstaclePose,
+  )
+  if (faceNormal) return faceNormal
   if (fallbackNormal && lengthSquared(fallbackNormal) > GEOMETRY_EPSILON ** 2) {
     return safeDirection(fallbackNormal)
   }
@@ -784,6 +1001,31 @@ function sweepContactNormal(
   const separation = subtract(closest.startAnchor, closest.endAnchor)
   if (lengthSquared(separation) > GEOMETRY_EPSILON ** 2) return safeDirection(separation)
   return safeDirection(subtract(movingPose.position, obstaclePose.position))
+}
+
+function flatFaceContactNormal(
+  movingFootprint: Footprint,
+  movingPose: Pose,
+  translation: Point,
+  obstacleFootprint: Footprint,
+  obstaclePose: Pose,
+): Point | null {
+  const axes = flatFaceAxes(obstacleFootprint, obstaclePose)
+  if (axes.length === 0) return null
+  const moving = createSupportShape(movingFootprint, movingPose)
+  const obstacle = createSupportShape(obstacleFootprint, obstaclePose)
+  let best: { normal: Point; opposition: number; gap: number } | null = null
+  for (const axis of axes) for (const normal of [axis, negate(axis)]) {
+    const gap = dot(moving.support(negate(normal)), normal)
+      - dot(obstacle.support(normal), normal)
+    if (Math.abs(gap) > SWEEP_DISTANCE_TOLERANCE * 4) continue
+    const opposition = -dot(translation, normal)
+    if (!best || opposition > best.opposition + GEOMETRY_EPSILON
+      || Math.abs(opposition - best.opposition) <= GEOMETRY_EPSILON && Math.abs(gap) < Math.abs(best.gap)) {
+      best = { normal, opposition, gap }
+    }
+  }
+  return best?.normal ?? null
 }
 
 function validateRectangleBounds(rectangle: RectangleBounds): void {

@@ -1,4 +1,4 @@
-import type { Battlefield, MovementPolicyConfig, PoseTrajectory, TabletopModel, Unit } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, MovementPolicyConfig, PoseTrajectory, TabletopModel, TerrainPolicyConfig, Unit } from '../domain/types'
 import {
   projectCandidateModels,
   validateCandidateFormation,
@@ -35,6 +35,7 @@ import {
   type ModelPathResult,
 } from './pathfinding'
 import { baseRadiusInches, distanceBetweenBases } from './spatial'
+import { terrainDestinationLegal, terrainObstacleModels } from './terrainPolicy'
 
 export type SmartMoveFailureReason =
   | 'INVALID_SELECTION'
@@ -50,6 +51,8 @@ export interface SmartMoveRequest {
   allModels: ReadonlyArray<TabletopModel>
   units: ReadonlyArray<Unit>
   battlefield: Battlefield
+  terrainFeatures?: ReadonlyArray<BattlefieldFeature>
+  terrainPolicy?: TerrainPolicyConfig
   selectedModelIds: ReadonlyArray<string>
   target: Point
   movementRemaining: Readonly<Record<string, number>>
@@ -486,6 +489,7 @@ function solveRotationVariant(
     if (Math.abs(delta) <= 1e-3) continue
     const sweep = resolveModelRotation({
       allModels: rotatedModels, modelId, angularDelta: delta, battlefield: request.battlefield,
+      terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
     })
     if (sweep.blocked || Math.abs(sweep.angularRotation - Math.abs(delta)) > 1e-6) return null
     const allowance = remainingFor(request, modelId)
@@ -539,6 +543,7 @@ function solveRotationVariant(
   const unit = request.units.find((candidate) => candidate.id === solved.unitId)
   const validation = validateCandidateFormation({
     allModels: request.allModels, battlefield: request.battlefield,
+    terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
     positions: solved.positions, rotations,
     reachability: {
       movementCosts: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementCost])),
@@ -574,14 +579,17 @@ function orientationMayHelp(request: SmartMoveRequest, selected: ReadonlyArray<T
     if (maximumBattlefieldAdvance(model, direction, request.battlefield)
       < travel - MIN_ROTATION_PROGRESS_GAIN) return true
     const translation = { x: direction.x * travel, y: direction.y * travel }
-    return stationary.some((obstacle) => {
+    return [...stationary,
+      ...terrainObstacleModels(model, request.terrainFeatures, request.terrainPolicy, 'cross'),
+      ...terrainObstacleModels(model, request.terrainFeatures, request.terrainPolicy, 'finish')]
+      .some((obstacle) => {
       if (obstacle.unitId === model.unitId && request.coherencyPolicy
         && distanceBetween(model.position, obstacle.position)
           <= travel + request.coherencyPolicy.distance
             + footprintCircumradiusInches(model.base) + footprintCircumradiusInches(obstacle.base)) return true
       return sweepFootprintTranslation(model.base, poseForModel(model), translation,
         obstacle.base, poseForModel(obstacle)) !== null
-    })
+      })
   })
 }
 
@@ -596,7 +604,9 @@ function orientationCandidates(model: TabletopModel, request: SmartMoveRequest):
     ? model.base.widthMm >= model.base.heightMm ? 0 : Math.PI / 2
     : longestPolygonAxis(model)
   const candidates = [heading - majorAxis, heading + Math.PI / 2 - majorAxis]
-  const nearby = request.allModels
+  const nearby = [...request.allModels,
+    ...terrainObstacleModels(model, request.terrainFeatures, request.terrainPolicy, 'cross'),
+    ...terrainObstacleModels(model, request.terrainFeatures, request.terrainPolicy, 'finish')]
     .filter((other) => other.id !== model.id && other.base.shape !== 'circle')
     .sort((a, b) => distanceBetween(a.position, model.position) - distanceBetween(b.position, model.position)
       || a.id.localeCompare(b.id))[0]
@@ -714,7 +724,8 @@ function planCommonMaximumTranslation(
       x: model.position.x + translation.x,
       y: model.position.y + translation.y,
     }
-    const path = findDirectPath({ model, destination, obstacles: stationaryObstacles, battlefield: request.battlefield }, metrics)
+    const path = findDirectPath({ model, destination, obstacles: stationaryObstacles, battlefield: request.battlefield,
+      terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy }, metrics)
     if (!path || path.path.length !== 2 || Math.abs(path.distance - commonAdvance) > GEOMETRY_EPSILON) {
       return { reasons: [path ? 'COLLISION' : fastPathFailureReason(model, destination, request)] }
     }
@@ -752,7 +763,8 @@ function planDirectMaximumProgress(
     const remaining = remainingFor(request, model.id)
     const destination = maximumDirectProgressPosition(request, model)
     const advance = distanceBetween(model.position, destination)
-    const path = findDirectPath({ model, destination, obstacles: stationaryObstacles, battlefield: request.battlefield }, metrics)
+    const path = findDirectPath({ model, destination, obstacles: stationaryObstacles, battlefield: request.battlefield,
+      terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy }, metrics)
     if (!path || (advance > GEOMETRY_EPSILON && path.path.length !== 2)) {
       return { reasons: [path ? 'COLLISION' : fastPathFailureReason(model, destination, request)] }
     }
@@ -824,6 +836,7 @@ function validateFastPathPlan(
   const validation = validateCandidateFormation({
     allModels: request.allModels,
     battlefield: request.battlefield,
+    terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
     positions,
     reachability: {
       movementCosts: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementCost])),
@@ -1039,6 +1052,8 @@ function generateTargetOrderedCandidates(
   const collisionStartedAt = nowMilliseconds()
   const viableDestinations = deduplicated
     .filter((destination) => isModelPositionInsideBattlefield(destination, model, request.battlefield))
+    .filter((destination) => terrainDestinationLegal(model, poseForModel(model, destination),
+      request.terrainFeatures, request.terrainPolicy))
     .filter((destination) => !obstacles.some((obstacle) => modelsOverlapAt(
       model,
       destination,
@@ -1066,6 +1081,8 @@ function generateTargetOrderedCandidates(
       destination,
       obstacles,
       battlefield: request.battlefield,
+      terrainFeatures: request.terrainFeatures,
+      terrainPolicy: request.terrainPolicy,
     }
     let foundPath = findDirectPath(pathRequest, metrics)
     if (!foundPath && detourCandidatesTested < detourCandidateLimit) {
@@ -1079,6 +1096,8 @@ function generateTargetOrderedCandidates(
     if (!path || path.distance > remaining + GEOMETRY_EPSILON) return
     const finalPosition = path.path.at(-1)!
     if (!isModelPositionInsideBattlefield(finalPosition, model, request.battlefield)) return
+    if (!terrainDestinationLegal(model, poseForModel(model, finalPosition),
+      request.terrainFeatures, request.terrainPolicy)) return
     if (obstacles.some((obstacle) => modelsOverlapAt(model, finalPosition, obstacle))) return
     const progress = distanceBetween(model.position, request.target)
       - distanceBetween(finalPosition, request.target)
@@ -1316,6 +1335,7 @@ function validateCompleteFallbackCandidate(
   const validation = validateCandidateFormation({
     allModels: request.allModels,
     battlefield: request.battlefield,
+    terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
     positions,
     reachability: {
       movementCosts: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementCost])),
@@ -1405,6 +1425,7 @@ function planTemplate(
     const validation = validateCandidateFormation({
       allModels: request.allModels,
       battlefield: request.battlefield,
+      terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
       positions,
       reachability: { movementCosts, movementAllowances },
       ...(request.coherencyPolicy
@@ -1502,6 +1523,8 @@ function assignModelsToSlots(
         return { reasons: ['SEARCH_LIMIT'] }
       }
       if (!isModelPositionInsideBattlefield(option.destination, model, request.battlefield)) continue
+      if (!terrainDestinationLegal(model, poseForModel(model, option.destination),
+        request.terrainFeatures, request.terrainPolicy)) continue
       sawInside = true
       if (obstacles.some((obstacle) => modelsOverlapAt(model, option.destination, obstacle))) continue
       sawCollisionFree = true
@@ -1510,6 +1533,8 @@ function assignModelsToSlots(
         destination: option.destination,
         obstacles,
         battlefield: request.battlefield,
+        terrainFeatures: request.terrainFeatures,
+        terrainPolicy: request.terrainPolicy,
       }
       let path = findDirectPath(pathRequest, metrics)
       if (!path && detourCandidatesTested < detourCandidateLimit) {
@@ -1849,7 +1874,8 @@ function addValidationFailures(
 ) {
   for (const violation of validation.violations) {
     if (violation.type === 'OUT_OF_BOUNDS') failures.add('BATTLEFIELD')
-    if (violation.type === 'COLLIDES_WITH_STATIONARY_MODEL'
+    if (violation.type === 'TERRAIN_FINISH_FORBIDDEN'
+      || violation.type === 'COLLIDES_WITH_STATIONARY_MODEL'
       || violation.type === 'CANDIDATE_INTERNAL_OVERLAP') failures.add('COLLISION')
     if (violation.type === 'MOVEMENT_ALLOWANCE_EXCEEDED') failures.add('MOVEMENT_LIMIT')
     if (violation.type === 'COHERENCY_FAILED') failures.add('COHERENCY')

@@ -34,18 +34,14 @@ export function SmartMovePanel(props: SmartMovePanelProps) {
         <div><dt>Selected</dt><dd>{props.selectedCount} / {props.unitSize} models</dd></div>
         <div><dt>Unit</dt><dd>{props.unitName ?? '—'}</dd></div>
         <div><dt>Target</dt><dd>{props.targetMode === 'locked' ? 'Locked' : 'Live'}</dd></div>
-        {props.coherencyPolicy && <>
-          <div><dt>Coherency</dt><dd>{props.coherencyPolicy.distance}″</dd></div>
-          <div><dt>Required neighbors</dt><dd>{props.coherencyPolicy.requiredNeighbors}</dd></div>
-        </>}
-        {result && <div><dt>Candidates tested</dt><dd>{result.candidatesTested}</dd></div>}
-        {diagnostics && <>
-          <div><dt>Solver</dt><dd>{formatSolverStage(diagnostics.solverStage)}</dd></div>
-          <div><dt>Path movement</dt><dd>{diagnostics.totalActualPathMovement.toFixed(2)}″</dd></div>
-          <div><dt>Target progress</dt><dd>{diagnostics.totalTargetProgress.toFixed(2)}″</dd></div>
-          <div><dt>Average progress</dt><dd>{diagnostics.averageUsefulProgressPercent.toFixed(0)}%</dd></div>
-          <div><dt>Minimum progress</dt><dd>{diagnostics.minimumUsefulProgressPercent.toFixed(0)}%</dd></div>
-        </>}
+        <div><dt>Coherency</dt><dd>{props.coherencyPolicy ? `${props.coherencyPolicy.distance}″` : '—'}</dd></div>
+        <div><dt>Required neighbors</dt><dd>{props.coherencyPolicy?.requiredNeighbors ?? '—'}</dd></div>
+        <div><dt>Candidates tested</dt><dd>{result?.candidatesTested ?? '—'}</dd></div>
+        <div><dt>Solver</dt><dd>{diagnostics ? formatSolverStage(diagnostics.solverStage) : '—'}</dd></div>
+        <div><dt>Path movement</dt><dd>{diagnostics ? `${diagnostics.totalActualPathMovement.toFixed(2)}″` : '—'}</dd></div>
+        <div><dt>Target progress</dt><dd>{diagnostics ? `${diagnostics.totalTargetProgress.toFixed(2)}″` : '—'}</dd></div>
+        <div><dt>Average progress</dt><dd>{diagnostics ? `${diagnostics.averageUsefulProgressPercent.toFixed(0)}%` : '—'}</dd></div>
+        <div><dt>Minimum progress</dt><dd>{diagnostics ? `${diagnostics.minimumUsefulProgressPercent.toFixed(0)}%` : '—'}</dd></div>
       </dl>
       {props.thinkingVisible && props.asyncStatus === 'calculating' && (
         <p className="smart-calculating" role="status" aria-live="polite">

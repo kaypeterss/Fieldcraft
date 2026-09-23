@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { footprintDemoGameState, initialGameState, orientationGapGameState } from './game/initialState'
+import { battlefieldFeatureDemoGameState } from './game/battlefieldFeatureDemo'
 import type { GameState, MovementPolicyConfig } from './domain/types'
 import {
   canUndoLastMovement,
@@ -52,6 +53,16 @@ import {
 } from './tools/smartMoveWorkerController'
 import './styles.css'
 import { calculatePathMovementCost, isPathCostPolicy, movementPolicyLabel } from './engine/movementCost'
+import { effectiveTerrainPermissions, movementTerrainInteractions, terrainRelationships } from './engine/terrainPolicy'
+import { featureBaseArea, modelAreaRelationship, objectiveArea, playerAreaSummaries, unitAreaSummary } from './engine/areaRelationships'
+import { displayedSmartMovePreview, projectModelsForSmartMove } from './tools/projectedSpatialState'
+import { applyModelPick, type ModelPickerTarget } from './tools/modelPicker'
+import {
+  interpretVisibility,
+  visibilityBetweenModels,
+  type VisibilityMode,
+  type VisibilityPolicy,
+} from './engine/visibility'
 
 interface SmartMoveSessionState {
   modelIds: string[]
@@ -61,7 +72,9 @@ interface SmartMoveSessionState {
 export default function App() {
   const footprintDemoEnabled = new URLSearchParams(window.location.search).has('footprints')
   const orientationGapEnabled = new URLSearchParams(window.location.search).has('orientationGap')
-  const startupGameState = orientationGapEnabled ? orientationGapGameState
+  const battlefieldFeatureDemoEnabled = new URLSearchParams(window.location.search).has('battlefieldFeatures')
+  const startupGameState = battlefieldFeatureDemoEnabled ? battlefieldFeatureDemoGameState
+    : orientationGapEnabled ? orientationGapGameState
     : footprintDemoEnabled ? footprintDemoGameState : initialGameState
   const [{ gameState, revision: gameStateRevision }, dispatch] = useReducer(
     versionedGameReducer,
@@ -70,14 +83,22 @@ export default function App() {
   const [activeTool, setActiveTool] = useState<ActiveTool>('select')
   const [spatialEnabled, setSpatialEnabled] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null)
+  const [selectedObjectiveId, setSelectedObjectiveId] = useState<string | null>(
+    battlefieldFeatureDemoEnabled ? 'demo-combined' : null,
+  )
   const [measurementStartTarget, setMeasurementStartTarget] = useState<MeasurementTarget | null>(null)
   const [measurementPair, setMeasurementPair] = useState<MeasurementPair | null>(null)
   const [resetCameraSignal, setResetCameraSignal] = useState(0)
   const [spatialMode, setSpatialMode] = useState<SpatialMode>('range')
   const [rangeInches, setRangeInches] = useState(3)
   const [requiredSeparation, setRequiredSeparation] = useState(3)
-  const [targetBaseDiameterMm, setTargetBaseDiameterMm] = useState(32)
-  const [exclusionTargetModelId, setExclusionTargetModelId] = useState<string | null>(null)
+  const [visibilityViewerId, setVisibilityViewerId] = useState<string | null>(null)
+  const [visibilityTargetId, setVisibilityTargetId] = useState<string | null>(null)
+  const [visibilityPickTarget, setVisibilityPickTarget] = useState<ModelPickerTarget | null>(null)
+  const [visibilityPickHoverModelId, setVisibilityPickHoverModelId] = useState<string | null>(null)
+  const [visibilityMode, setVisibilityMode] = useState<VisibilityMode>('any-to-any')
+  const [visibilityPolicy, setVisibilityPolicy] = useState<VisibilityPolicy>('objects-block')
   const [coherencyAnalysisMode, setCoherencyAnalysisMode] = useState<CoherencyAnalysisMode>('unit-policy')
   const [analysisCoherencyPolicy, setAnalysisCoherencyPolicy] = useState<CoherencyPolicy>({ distance: 1, requiredNeighbors: 1, requireConnected: false })
   const [blockedMovementSessionId, setBlockedMovementSessionId] = useState<string | null>(null)
@@ -88,6 +109,25 @@ export default function App() {
   const [smartMoveDiagnostics, setSmartMoveDiagnostics] = useState<SmartMoveSchedulingDiagnostics | null>(null)
   const [smartMoveMessage, setSmartMoveMessage] = useState<string | null>(null)
   const smartMoveControllerRef = useRef<SmartMoveWorkerController | null>(null)
+  const smartMoveResult = smartMoveAsync.result
+  const spatialPreviewResult = displayedSmartMovePreview(smartMoveResult)
+  const spatialModels = useMemo(
+    () => projectModelsForSmartMove(gameState.models, spatialPreviewResult),
+    [gameState.models, spatialPreviewResult],
+  )
+  const visibilityModelOptions = useMemo(() => spatialModels.map((model) => ({
+    id: model.id,
+    label: `${model.label ?? model.id} · ${describeFootprint(model.base, model.rotation)}`,
+  })), [spatialModels])
+  const visibilityGeometry = useMemo(() => {
+    const viewer = spatialModels.find((model) => model.id === visibilityViewerId)
+    const target = spatialModels.find((model) => model.id === visibilityTargetId)
+    if (!viewer || !target || viewer.id === target.id) return null
+    return visibilityBetweenModels(viewer, target, gameState.battlefieldFeatures)
+  }, [gameState.battlefieldFeatures, spatialModels, visibilityTargetId, visibilityViewerId])
+  const visibilityAnalysis = useMemo(() => visibilityGeometry
+    ? interpretVisibility(visibilityGeometry, visibilityPolicy, visibilityMode)
+    : null, [visibilityGeometry, visibilityMode, visibilityPolicy])
 
   useEffect(() => {
     const controller = new SmartMoveWorkerController({
@@ -121,6 +161,29 @@ export default function App() {
     [gameState.models, selectedIds],
   )
 
+  const selectedFeature = gameState.battlefieldFeatures?.find((feature) => feature.id === selectedFeatureId)
+  const selectedTerrainRelationships = selectedModel
+    ? terrainRelationships(selectedModel, gameState.battlefieldFeatures, gameState.terrainPolicy)
+    : []
+  const selectedTerrainMovement = selectedModel && gameState.movementSession?.models[selectedModel.id]
+    ? movementTerrainInteractions(
+      selectedModel,
+      gameState.movementSession.models[selectedModel.id].trajectory,
+      gameState.battlefieldFeatures,
+      gameState.terrainPolicy,
+    ) : undefined
+  const selectedEffectiveTerrainPermissions = selectedModel
+    ? effectiveTerrainPermissions(
+      selectedModel.id,
+      gameState.battlefieldFeatures,
+      gameState.terrainPolicy,
+      new Set([
+        ...(selectedFeatureId ? [selectedFeatureId] : []),
+        ...selectedTerrainRelationships.map((entry) => entry.featureId),
+        ...(selectedTerrainMovement ?? []).map((entry) => entry.featureId),
+      ]),
+    ) : []
+
   const selectedWholeUnit = useMemo(() => gameState.units.find((unit) =>
     unit.modelIds.length === selectedIds.size && unit.modelIds.every((id) => selectedIds.has(id))), [gameState.units, selectedIds])
   const selectedWholeUnitName = selectedWholeUnit
@@ -128,6 +191,31 @@ export default function App() {
     : undefined
   const selectedUnit = selectedModel ? getUnitForModel(gameState, selectedModel.id) : undefined
   const selectedUnitDefinition = selectedUnit ? getUnitDefinition(gameState, selectedUnit) : undefined
+  const selectedObjective = gameState.battlefieldFeatures?.find((feature) => feature.id === selectedObjectiveId && feature.capabilities.objective)
+  const selectedObjectiveArea = selectedObjective ? objectiveArea(selectedObjective) : null
+  const spatialSelectedModel = selectedModel ? spatialModels.find((model) => model.id === selectedModel.id) : undefined
+  const selectedObjectiveAnalysis = selectedObjective && selectedObjectiveArea ? {
+    featureName: selectedObjective.name,
+    areaType: selectedObjective.capabilities.objective?.area.type ?? 'feature-base',
+    unitName: selectedUnitDefinition?.name,
+    modelRelationship: spatialSelectedModel ? modelAreaRelationship(spatialSelectedModel, selectedObjectiveArea) : null,
+    unitSummary: selectedUnit ? unitAreaSummary(selectedUnit, spatialModels, selectedObjectiveArea) : null,
+    playerSummaries: playerAreaSummaries(
+      gameState.players,
+      gameState.units,
+      spatialModels,
+      selectedObjectiveArea,
+      new Map(gameState.unitDefinitions.map((definition) => [definition.id, definition.name])),
+    ),
+  } : null
+  const selectedTerrainAreaAnalysis = selectedModel ? (gameState.battlefieldFeatures ?? [])
+    .filter((feature) => feature.capabilities.terrain && (feature.id === selectedFeatureId
+      || selectedTerrainRelationships.some((relation) => relation.featureId === feature.id)))
+    .map((feature) => ({
+      featureId: feature.id, featureName: feature.name,
+      modelRelationship: modelAreaRelationship(selectedModel, featureBaseArea(feature)),
+      unitSummary: selectedUnit ? unitAreaSummary(selectedUnit, gameState.models, featureBaseArea(feature)) : null,
+    })) : []
   const selectedUnitPolicy = selectedUnit ? getUnitCoherencyPolicy(gameState, selectedUnit) : undefined
   const selectedUnitCoherency = useMemo(
     () => selectedUnit && selectedUnitPolicy
@@ -140,31 +228,6 @@ export default function App() {
     if (selectedWholeUnit) return selectedWholeUnit.modelIds
     return selectedModel ? [selectedModel.id] : []
   }, [selectedModel, selectedWholeUnit])
-
-  const exclusionTargetModel = useMemo(
-    () => gameState.models.find((model) => model.id === exclusionTargetModelId),
-    [exclusionTargetModelId, gameState.models],
-  )
-  const exclusionTargetFootprint = useMemo(
-    () => exclusionTargetModel?.base ?? { shape: 'circle' as const, diameterMm: targetBaseDiameterMm },
-    [exclusionTargetModel, targetBaseDiameterMm],
-  )
-  const exclusionTargetRotation = exclusionTargetModel?.rotation ?? 0
-  const exclusionTargetOptions = useMemo(() => {
-    const seen = new Set<string>()
-    return gameState.models.flatMap((model) => {
-      const geometryKey = JSON.stringify({
-        footprint: model.base,
-        rotation: model.base.shape === 'circle' ? 0 : model.rotation,
-      })
-      if (seen.has(geometryKey)) return []
-      seen.add(geometryKey)
-      return [{
-        id: model.id,
-        label: `${model.label ?? model.id} · ${describeFootprint(model.base, model.rotation)}`,
-      }]
-    })
-  }, [gameState.models])
 
   const coherencyUnit = useMemo(
     () => selectedWholeUnit ?? resolveSpatialCoherencyUnit(gameState.units, selectedIds),
@@ -182,26 +245,32 @@ export default function App() {
 
   const coherency = useMemo(
     () => coherencyUnit
-      ? evaluateUnitCoherency(coherencyUnit, gameState.models, spatialCoherencyPolicy)
+      ? evaluateUnitCoherency(coherencyUnit, spatialModels, spatialCoherencyPolicy)
       : null,
-    [coherencyUnit, gameState.models, spatialCoherencyPolicy],
+    [coherencyUnit, spatialModels, spatialCoherencyPolicy],
   )
 
   const spatialDisplaySourceIds = spatialMode === 'coherency'
     ? coherencyUnit?.modelIds ?? []
+    : spatialMode === 'objectives' || spatialMode === 'visibility' ? []
     : spatialSourceIds
-  const spatialDisplaySources = gameState.models.filter((model) => spatialDisplaySourceIds.includes(model.id))
+  const spatialDisplaySources = spatialModels.filter((model) => spatialDisplaySourceIds.includes(model.id))
 
   const spatialOverlay = useMemo<SpatialOverlayConfig | null>(() => spatialEnabled ? {
     mode: spatialMode,
-    sourceModelIds: spatialMode === 'coherency' ? coherencyUnit?.modelIds ?? [] : spatialSourceIds,
+    sourceModelIds: spatialMode === 'coherency' ? coherencyUnit?.modelIds ?? []
+      : spatialMode === 'objectives' || spatialMode === 'visibility' ? [] : spatialSourceIds,
     range: rangeInches,
     requiredSeparation,
-    targetFootprint: exclusionTargetFootprint,
-    targetRotation: exclusionTargetRotation,
     coherencyPolicy: spatialCoherencyPolicy,
     coherency,
-  } : null, [coherency, coherencyUnit, exclusionTargetFootprint, exclusionTargetRotation, rangeInches, requiredSeparation, spatialCoherencyPolicy, spatialEnabled, spatialMode, spatialSourceIds])
+    visibility: visibilityAnalysis,
+    visibilityViewerId,
+    visibilityTargetId,
+    visibilityPickTarget,
+    visibilityPickHoverModelId,
+    previewActive: Boolean(spatialPreviewResult),
+  } : null, [coherency, coherencyUnit, rangeInches, requiredSeparation, spatialCoherencyPolicy, spatialEnabled, spatialMode, spatialPreviewResult, spatialSourceIds, visibilityAnalysis, visibilityPickHoverModelId, visibilityPickTarget, visibilityTargetId, visibilityViewerId])
 
   const movementSummary = useMemo<MovementSummary | null>(() => {
     const session = gameState.movementSession
@@ -266,8 +335,6 @@ export default function App() {
     smartMoveControllerRef.current?.updateSnapshot(gameStateRevision, smartMoveRequestFactory)
   }, [gameStateRevision, smartMoveRequestFactory, smartMoveSession])
 
-  const smartMoveResult = smartMoveAsync.result
-
   const previewSmartMoveTarget = useCallback((target: { x: number; y: number }) => {
     if (!smartMoveSession) return
     setSmartMoveTargeting((state) => previewTarget(state, target))
@@ -289,6 +356,20 @@ export default function App() {
 
   const handleSelectionChange = useCallback((nextSelectedIds: Set<string>) => {
     setSelectedIds(nextSelectedIds)
+    setSelectedFeatureId(null)
+    if (spatialMode === 'visibility' && nextSelectedIds.size === 1) {
+      const selectedId = [...nextSelectedIds][0]
+      if (!visibilityViewerId) setVisibilityViewerId(selectedId)
+      else if (selectedId !== visibilityViewerId) setVisibilityTargetId(selectedId)
+    }
+    if (!selectedObjectiveId && nextSelectedIds.size > 0) {
+      const selectedModels = gameState.models.filter((model) => nextSelectedIds.has(model.id))
+      const relevantObjective = (gameState.battlefieldFeatures ?? []).find((feature) => {
+        const area = feature.capabilities.objective ? objectiveArea(feature) : null
+        return area && selectedModels.some((model) => modelAreaRelationship(model, area).intersects)
+      })
+      if (relevantObjective) setSelectedObjectiveId(relevantObjective.id)
+    }
     if (activeTool !== 'smart-move') return
     smartMoveControllerRef.current?.cancelSession()
     setSmartMoveSession(null)
@@ -318,7 +399,23 @@ export default function App() {
       gameStateRevision,
       createSmartMoveRequestFactory(gameState, session.modelIds, policy, movementPolicy),
     )
-  }, [activeTool, gameState, gameStateRevision, movementPolicy])
+  }, [activeTool, gameState, gameStateRevision, movementPolicy, selectedObjectiveId, spatialMode, visibilityViewerId])
+
+  const handleFeatureSelectionChange = useCallback((featureId: string) => {
+    setSelectedFeatureId(featureId)
+    if (gameState.battlefieldFeatures?.some((feature) => feature.id === featureId && feature.capabilities.objective)) {
+      setSelectedObjectiveId(featureId)
+    }
+  }, [gameState.battlefieldFeatures])
+
+  const handleVisibilityPickModel = useCallback((modelId: string) => {
+    if (!visibilityPickTarget) return
+    const next = applyModelPick(visibilityPickTarget, modelId, { viewerId: visibilityViewerId, targetId: visibilityTargetId })
+    setVisibilityViewerId(next.viewerId)
+    setVisibilityTargetId(next.targetId)
+    setVisibilityPickTarget(null)
+    setVisibilityPickHoverModelId(null)
+  }, [visibilityPickTarget, visibilityTargetId, visibilityViewerId])
 
   const applySmartMove = useCallback(() => {
     const result = smartMoveControllerRef.current?.getApplicableResult()
@@ -334,6 +431,8 @@ export default function App() {
     const authoritativeValidation = validateCandidateFormation({
       allModels: gameState.models,
       battlefield: gameState.battlefield,
+      terrainFeatures: gameState.battlefieldFeatures,
+      terrainPolicy: gameState.terrainPolicy,
       positions: result.positions,
       rotations: Object.fromEntries(result.assignments.map((assignment) => {
         const model = gameState.models.find((candidate) => candidate.id === assignment.modelId)
@@ -385,10 +484,11 @@ export default function App() {
       ])),
     })
     cancelSmartMove()
-    setActiveTool('select')
   }, [cancelSmartMove, gameState, smartMovePolicy, smartMoveSession, smartMoveUnit])
 
   const changeTool = useCallback((tool: ActiveTool) => {
+    setVisibilityPickTarget(null)
+    setVisibilityPickHoverModelId(null)
     if (tool === 'smart-move') {
       if (gameState.movementSession) {
         setBlockedMovementSessionId(gameState.movementSession.id)
@@ -433,6 +533,8 @@ export default function App() {
   }, [cancelSmartMove, gameState, gameStateRevision, movementPolicy, selectedIds])
 
   const toggleSpatialOverlay = useCallback(() => {
+    setVisibilityPickTarget(null)
+    setVisibilityPickHoverModelId(null)
     if (!spatialEnabled) {
       // Opening analysis returns the pointer to ordinary tabletop manipulation.
       cancelSmartMove()
@@ -484,6 +586,11 @@ export default function App() {
       if (event.key.toLowerCase() === 'g') changeTool('smart-move')
       if (event.key.toLowerCase() === 'f') setResetCameraSignal((value) => value + 1)
       if (event.key === 'Escape') {
+        if (visibilityPickTarget) {
+          setVisibilityPickTarget(null)
+          setVisibilityPickHoverModelId(null)
+          return
+        }
         if (gameState.movementSession) {
           dispatch({ type: 'movement/cancelled' })
           return
@@ -503,7 +610,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, gameState, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay])
+  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, gameState, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
 
   const handleEndTurn = useCallback(() => {
     if (gameState.movementSession) {
@@ -548,21 +655,28 @@ export default function App() {
       <section className="workspace">
         <TabletopCanvas
           gameState={gameState}
+          spatialModels={spatialModels}
           activeTool={activeTool}
           selectedIds={selectedIds}
+          selectedFeatureId={selectedFeatureId}
+          selectedObjectiveId={selectedObjectiveId}
           measurement={measurement}
           measurementTargetA={measurementPair?.targetA ?? measurementStartTarget}
           measurementTargetB={measurementPair?.targetB ?? null}
           spatialOverlay={spatialOverlay}
-          smartMoveResult={smartMoveResult}
+          smartMoveResult={spatialPreviewResult}
           smartMoveRawTarget={smartMoveTargeting.target}
           smartMoveTargetLocked={smartMoveTargeting.mode === 'locked'}
+          visibilityPickTarget={visibilityPickTarget}
           resetCameraSignal={resetCameraSignal}
           movementPolicy={movementPolicy}
           onSelectionChange={handleSelectionChange}
+          onFeatureSelectionChange={handleFeatureSelectionChange}
           onMeasureTarget={handleMeasureTarget}
           onSmartMoveTargetPreview={previewSmartMoveTarget}
           onSmartMoveTargetLock={lockSmartMoveTarget}
+          onVisibilityPickModel={handleVisibilityPickModel}
+          onVisibilityPickHover={setVisibilityPickHoverModelId}
           dispatch={dispatch}
         />
         {(footprintDemoEnabled || orientationGapEnabled) && (
@@ -574,6 +688,12 @@ export default function App() {
         )}
         <DebugPanel
           model={selectedModel}
+          feature={selectedFeature}
+          terrainRelationships={gameState.terrainPolicy ? selectedTerrainRelationships : undefined}
+          terrainMovement={selectedTerrainMovement}
+          effectiveTerrainPermissions={selectedEffectiveTerrainPermissions}
+          terrainAreaAnalysis={selectedTerrainAreaAnalysis}
+          objectiveAnalysis={spatialMode === 'objectives' ? selectedObjectiveAnalysis : null}
           selectedCount={selectedIds.size}
           wholeUnitName={selectedWholeUnitName}
           ownerDisplayName={selectedModel ? getPlayerForModel(gameState, selectedModel)?.displayName : undefined}
@@ -594,26 +714,38 @@ export default function App() {
             mode={spatialMode}
             range={rangeInches}
             requiredSeparation={requiredSeparation}
-            targetBaseDiameterMm={targetBaseDiameterMm}
-            targetModelId={exclusionTargetModel?.id ?? null}
-            targetModelOptions={exclusionTargetOptions}
             sourceGeometryLabel={describeSpatialSources(spatialDisplaySources)}
-            targetGeometryLabel={describeFootprint(exclusionTargetFootprint, exclusionTargetRotation)}
             coherencyAnalysisMode={coherencyAnalysisMode}
             coherencyPolicy={spatialCoherencyPolicy}
             customCoherencyPolicy={analysisCoherencyPolicy}
             coherency={coherency}
-            sourceCount={spatialMode === 'coherency' ? coherencyUnit?.modelIds.length ?? 0 : spatialSourceIds.length}
+            sourceCount={spatialMode === 'coherency' ? coherencyUnit?.modelIds.length ?? 0
+              : spatialMode === 'objectives' ? 0
+                : spatialMode === 'visibility' ? Number(Boolean(visibilityViewerId)) + Number(Boolean(visibilityTargetId))
+                  : spatialSourceIds.length}
             coherencyUnitAvailable={Boolean(coherencyUnit)}
             unitPolicyAvailable={Boolean(coherencyUnitPolicy)}
+            objectiveOptions={(gameState.battlefieldFeatures ?? []).filter((feature) => feature.capabilities.objective)
+              .map((feature) => ({ id: feature.id, name: feature.name }))}
+            selectedObjectiveId={selectedObjectiveId}
+            objectiveAnalysis={spatialMode === 'objectives' ? selectedObjectiveAnalysis : null}
+            modelOptions={visibilityModelOptions}
+            visibilityViewerId={visibilityViewerId}
+            visibilityTargetId={visibilityTargetId}
+            visibilityPickTarget={visibilityPickTarget}
+            visibilityMode={visibilityMode}
+            visibilityPolicy={visibilityPolicy}
+            visibilityAnalysis={spatialMode === 'visibility' ? visibilityAnalysis : null}
+            previewActive={Boolean(spatialPreviewResult)}
+            onObjectiveChange={setSelectedObjectiveId}
+            onVisibilityViewerChange={(id) => { setVisibilityPickTarget(null); setVisibilityViewerId(id) }}
+            onVisibilityTargetChange={(id) => { setVisibilityPickTarget(null); setVisibilityTargetId(id) }}
+            onVisibilityPick={setVisibilityPickTarget}
+            onVisibilityModeChange={setVisibilityMode}
+            onVisibilityPolicyChange={setVisibilityPolicy}
             onModeChange={setSpatialMode}
             onRangeChange={setRangeInches}
             onRequiredSeparationChange={setRequiredSeparation}
-            onTargetBaseDiameterChange={(diameterMm) => {
-              setTargetBaseDiameterMm(diameterMm)
-              setExclusionTargetModelId(null)
-            }}
-            onTargetModelChange={setExclusionTargetModelId}
             onCoherencyAnalysisModeChange={setCoherencyAnalysisMode}
             onCoherencyPolicyChange={setAnalysisCoherencyPolicy}
           />
@@ -677,6 +809,8 @@ function createSmartMoveRequestFactory(
     allModels: gameState.models,
     units: gameState.units,
     battlefield: gameState.battlefield,
+    terrainFeatures: gameState.battlefieldFeatures,
+    terrainPolicy: gameState.terrainPolicy,
     selectedModelIds: modelIds,
     target: { ...target },
     movementRemaining,

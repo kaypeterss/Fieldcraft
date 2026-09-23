@@ -1,4 +1,4 @@
-import type { Battlefield, MovementPolicyConfig, TabletopModel } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, MovementPolicyConfig, TabletopModel, TerrainPolicyConfig } from '../domain/types'
 import { isModelPositionInsideBattlefield } from './geometry/battlefield'
 import { circlesOverlap, firstCirclePathCollisionT } from './geometry/circles'
 import {
@@ -13,12 +13,15 @@ import { distanceBetween, type Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
 import { calculatePathMovementCost, DEFAULT_MOVEMENT_POLICY, isPathCostPolicy } from './movementCost'
 import { baseRadiusInches } from './spatial'
+import { terrainObstacleModels } from './terrainPolicy'
 
 export interface ModelPathRequest {
   model: TabletopModel
   destination: Point
   obstacles: ReadonlyArray<TabletopModel>
   battlefield: Battlefield
+  terrainFeatures?: ReadonlyArray<BattlefieldFeature>
+  terrainPolicy?: TerrainPolicyConfig
   /** Optional reachability policy. With an allowance, omission uses the engine default policy. */
   movementPolicy?: MovementPolicyConfig
   movementAllowance?: number
@@ -46,18 +49,18 @@ export function createModelPathPlanner(): ModelPathPlanner {
 export function findDirectModelPath(request: ModelPathRequest): ModelPathResult | null {
   const start = request.model.position
   const destination = request.destination
-  const obstacles = sortedObstacles(request)
-  const useCircleFastPath = allCircleGeometry(request.model, obstacles)
+  const obstacles = traversalObstacles(request)
+  const finishObstacles = destinationObstacles(request)
+  const useCircleFastPath = allCircleGeometry(request.model, [...obstacles, ...finishObstacles])
   const destinationIsLegal = useCircleFastPath
-    ? circlePlacementIsLegal(request.model, destination, obstacles, request.battlefield)
-    : placementIsLegal(request.model, destination, obstacles, request.battlefield)
+    ? circlePlacementIsLegal(request.model, destination, finishObstacles, request.battlefield)
+    : placementIsLegal(request.model, destination, finishObstacles, request.battlefield)
   if (!destinationIsLegal) return null
   const distance = distanceBetween(start, destination)
   const result = distance <= GEOMETRY_EPSILON
     ? { path: [{ ...start }], distance: 0 }
     : { path: [{ ...start }, { ...destination }], distance }
-  if (!request.model.canPassOverModels
-    && distance > GEOMETRY_EPSILON
+  if (distance > GEOMETRY_EPSILON
     && !(useCircleFastPath
       ? circleSegmentIsClear(start, destination, baseRadiusInches(request.model.base), obstacles)
       : segmentIsClearForModel(request.model, start, destination, obstacles))) return null
@@ -83,13 +86,15 @@ export function findModelPath(
   directPathAlreadyChecked = false,
 ): ModelPathResult | null {
   const direct = directPathAlreadyChecked ? null : findDirectModelPath(request)
-  if (direct || request.model.canPassOverModels) return direct
+  if (direct) return direct
 
-  const obstacles = sortedObstacles(request)
+  const obstacles = traversalObstacles(request)
+  if (obstacles.length === 0) return null
+  const finishObstacles = destinationObstacles(request)
   if (allCircleGeometry(request.model, obstacles)) {
-    return findCircularRoutedPath(request, obstacles, planner)
+    return findCircularRoutedPath(request, obstacles, finishObstacles, planner)
   }
-  return findGenericRoutedPath(request, obstacles, planner)
+  return findGenericRoutedPath(request, obstacles, finishObstacles, planner)
 }
 
 /** Applies existing policy semantics without changing the returned path distance. */
@@ -117,6 +122,7 @@ export function isFixedOrientationPathWithinPolicy(
 function findCircularRoutedPath(
   request: ModelPathRequest,
   obstacles: ReadonlyArray<TabletopModel>,
+  finishObstacles: ReadonlyArray<TabletopModel>,
   planner?: ModelPathPlanner,
 ): ModelPathResult | null {
   const start = request.model.position
@@ -153,13 +159,14 @@ function findCircularRoutedPath(
       circleSegmentIsClear(startPoint, endPoint, modelRadius, obstacles))
     planner?.visibilityGraphs.set(graphKey, baseGraph)
   }
-  return routeToDestination(request, obstacles, baseGraph, (startPoint, endPoint) =>
+  return routeToDestination(request, finishObstacles, baseGraph, (startPoint, endPoint) =>
     circleSegmentIsClear(startPoint, endPoint, modelRadius, obstacles))
 }
 
 function findGenericRoutedPath(
   request: ModelPathRequest,
   obstacles: ReadonlyArray<TabletopModel>,
+  finishObstacles: ReadonlyArray<TabletopModel>,
   planner?: ModelPathPlanner,
 ): ModelPathResult | null {
   const directBlockers = obstacles.filter((obstacle) => segmentContactsObstacle(
@@ -183,26 +190,26 @@ function findGenericRoutedPath(
   // Every obstacle participates in authoritative edge validation, so every
   // obstacle pose belongs in the cache identity even when bounded waypoint
   // generation only samples the relevant blocker cluster.
-  const graphKey = genericGraphKey(request.model, obstacles, request.battlefield)
+  const graphKey = genericGraphKey(request.model, [...obstacles, ...finishObstacles], request.battlefield)
   const segmentIsClear = createGenericSegmentClearer(request.model, obstacles)
   let baseGraph = planner?.visibilityGraphs.get(graphKey)
   if (!baseGraph) {
     const baseNodes: Point[] = [{ ...request.model.position }]
     for (const obstacle of routingObstacles) {
       baseNodes.push(...configurationSpaceWaypoints(request.model, obstacle)
-        .filter((point) => placementIsLegal(request.model, point, obstacles, request.battlefield)))
+        .filter((point) => placementIsLegal(request.model, point, finishObstacles, request.battlefield)))
     }
     if (cluster.length > 1) baseNodes.push(...genericClusterEnvelopeWaypoints(
       request.model,
       cluster,
-      obstacles,
+      finishObstacles,
       request.battlefield,
     ))
     const uniqueNodes = deduplicatePoints(baseNodes)
     baseGraph = buildBoundedVisibilityGraph(uniqueNodes, MAX_GENERIC_NEAREST_NEIGHBORS, segmentIsClear)
     planner?.visibilityGraphs.set(graphKey, baseGraph)
   }
-  return routeToDestination(request, obstacles, baseGraph, segmentIsClear)
+  return routeToDestination(request, finishObstacles, baseGraph, segmentIsClear)
 }
 
 function routeToDestination(
@@ -554,6 +561,20 @@ function sortedObstacles(request: ModelPathRequest): TabletopModel[] {
   return [...request.obstacles]
     .filter((obstacle) => obstacle.id !== request.model.id)
     .sort((a, b) => a.id.localeCompare(b.id))
+}
+
+function traversalObstacles(request: ModelPathRequest): TabletopModel[] {
+  return [
+    ...(request.model.canPassOverModels ? [] : sortedObstacles(request)),
+    ...terrainObstacleModels(request.model, request.terrainFeatures, request.terrainPolicy, 'cross'),
+  ]
+}
+
+function destinationObstacles(request: ModelPathRequest): TabletopModel[] {
+  return [
+    ...sortedObstacles(request),
+    ...terrainObstacleModels(request.model, request.terrainFeatures, request.terrainPolicy, 'finish'),
+  ]
 }
 
 function allCircleGeometry(model: TabletopModel, obstacles: ReadonlyArray<TabletopModel>): boolean {

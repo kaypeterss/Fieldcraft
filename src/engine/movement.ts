@@ -1,9 +1,10 @@
-import type { Battlefield, Pose, TabletopModel } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, Pose, TabletopModel, TerrainPolicyConfig } from '../domain/types'
 import { firstCirclePathCollisionT } from './geometry/circles'
 import {
   circleFootprintRadiusInches,
   footprintBounds,
   footprintInsideBattlefield,
+  footprintSupportPoint,
   footprintsOverlap,
   poseForModel,
   sweepFootprintTranslation,
@@ -11,6 +12,7 @@ import {
 import { distanceBetween, type Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
 import { poseFitsMovementEnvelope, sweepTranslationToMovementEnvelope } from './movementEnvelope'
+import { terrainDestinationLegal, terrainMotionObstacles } from './terrainPolicy'
 
 export interface MovementResolution {
   positions: Map<string, Point>
@@ -26,6 +28,8 @@ export interface RigidTranslationRequest {
   /** Shared translation requested from every participating model's current position. */
   translation: Point
   battlefield: Battlefield
+  terrainFeatures?: ReadonlyArray<BattlefieldFeature>
+  terrainPolicy?: TerrainPolicyConfig
   remainingMovement?: ReadonlyMap<string, number>
   movementEnvelopes?: ReadonlyMap<string, { startPose: Pose; allowance: number }>
 }
@@ -72,6 +76,27 @@ function resolveRigidTranslationForModels(
   let currentOffset = { x: 0, y: 0 }
   let remainingVector = { ...requestedTranslation }
   let distanceUsed = 0
+  const legalOffset = (offset: Point) => {
+    const positions = positionsAtOffset(movingModels, offset)
+    return isProposedPlacementValid(allModels, positions, request.terrainFeatures, request.terrainPolicy)
+      && isFormationInsideBattlefield(movingModels, positions, battlefield)
+      && isFormationInsideMovementEnvelopes(movingModels, positions, movementEnvelopes)
+  }
+  const safeOffset = (start: Point, requested: Point) => {
+    if (legalOffset(requested)) return requested
+    // Generic contact sweeps can stop a few floating-point steps inside a wall.
+    // Keep the maximum safe progress instead of discarding the whole drag.
+    if (!legalOffset(start)) return start
+    let low = 0
+    let high = 1
+    for (let index = 0; index < 40; index += 1) {
+      const middle = (low + high) / 2
+      const candidate = add(start, scale(subtract(requested, start), middle))
+      if (legalOffset(candidate)) low = middle
+      else high = middle
+    }
+    return add(start, scale(subtract(requested, start), low))
+  }
 
   for (let iteration = 0; iteration < MAX_SLIDE_ITERATIONS; iteration += 1) {
     const allowanceRemaining = Math.max(0, maximumDistance - distanceUsed)
@@ -92,6 +117,8 @@ function resolveRigidTranslationForModels(
       currentOffset,
       permittedVector,
       allModels,
+      request.terrainFeatures,
+      request.terrainPolicy,
     )
     const contactFraction = Math.min(
       boundaryContacts[0]?.fraction ?? 1,
@@ -100,18 +127,23 @@ function resolveRigidTranslationForModels(
     )
 
     if (contactFraction >= 1) {
-      const nextOffset = add(currentOffset, permittedVector)
+      const nextOffset = safeOffset(currentOffset, add(currentOffset, permittedVector))
       distanceUsed += appendTranslationSegment(translationPath, currentOffset, nextOffset)
       currentOffset = nextOffset
       break
     }
 
-    const nextOffset = add(currentOffset, scale(permittedVector, contactFraction))
+    const tolerance = fractionTolerance(permittedVector)
+    const activeObstacleContacts = obstacleContacts
+      .filter((contact) => Math.abs(contact.fraction - contactFraction) <= tolerance)
+    const nextOffset = stabilizeContactOffset(
+      safeOffset(currentOffset, add(currentOffset, scale(permittedVector, contactFraction))),
+      activeObstacleContacts,
+    )
     distanceUsed += appendTranslationSegment(translationPath, currentOffset, nextOffset)
     currentOffset = nextOffset
 
     const untravelled = scale(permittedVector, 1 - contactFraction)
-    const tolerance = fractionTolerance(permittedVector)
     const normals = [
       ...boundaryContacts
         .filter((contact) => Math.abs(contact.fraction - contactFraction) <= tolerance)
@@ -119,22 +151,25 @@ function resolveRigidTranslationForModels(
       ...envelopeContacts
         .filter((contact) => Math.abs(contact.fraction - contactFraction) <= tolerance)
         .map((contact) => contact.normal),
-      ...obstacleContacts
-        .filter((contact) => Math.abs(contact.fraction - contactFraction) <= tolerance)
-        .map((contact) => contact.normal),
+      ...activeObstacleContacts.map((contact) => contact.normal),
     ]
     remainingVector = projectOntoContactConstraints(untravelled, normals)
   }
 
   currentOffset = snapBoundaryOffset(movingModels, currentOffset, battlefield)
   let positions = positionsAtOffset(movingModels, currentOffset)
-  if (!isProposedPlacementValid(allModels, positions)
-    || !isFormationInsideBattlefield(movingModels, positions, battlefield)
-    || !isFormationInsideMovementEnvelopes(movingModels, positions, movementEnvelopes)) {
+  if (!legalOffset(currentOffset)) {
+    const previousOffset = translationPath.at(-1) ?? { x: 0, y: 0 }
+    currentOffset = legalOffset(previousOffset) ? previousOffset : { x: 0, y: 0 }
+    positions = positionsAtOffset(movingModels, currentOffset)
+  }
+  if (!legalOffset(currentOffset)) {
     currentOffset = { x: 0, y: 0 }
+    positions = positionsAtOffset(movingModels, currentOffset)
+  }
+  if (currentOffset.x === 0 && currentOffset.y === 0 && translationPath.length > 1) {
     distanceUsed = 0
     translationPath.splice(0, translationPath.length, { x: 0, y: 0 })
-    positions = positionsAtOffset(movingModels, currentOffset)
   }
 
   const paths = new Map(movingModels.map((model) => [
@@ -143,6 +178,28 @@ function resolveRigidTranslationForModels(
   ]))
   const distances = new Map(movingModels.map((model) => [model.id, distanceUsed]))
   return { positions, distances, paths, translationPath }
+}
+
+/** Align near-contact support faces exactly; no gameplay clearance is introduced. */
+function stabilizeContactOffset(offset: Point, contacts: ReadonlyArray<ObstacleContact>): Point {
+  let corrected = offset
+  for (let iteration = 0; iteration < 2; iteration += 1) {
+    for (const contact of contacts) {
+      const movingPose = poseForModel(contact.movingModel, add(contact.movingModel.position, corrected))
+      const obstaclePose = poseForModel(contact.obstacle)
+      const normal = contact.normal
+      const movingMinimum = dot(footprintSupportPoint(contact.movingModel.base, movingPose,
+        scale(normal, -1)), normal)
+      const obstacleMaximum = dot(footprintSupportPoint(contact.obstacle.base, obstaclePose, normal), normal)
+      const gap = movingMinimum - obstacleMaximum
+      if (gap >= 0 || gap < -1e-6) continue
+      const roundoff = Number.EPSILON * Math.max(1,
+        Math.abs(movingPose.position.x), Math.abs(movingPose.position.y),
+        Math.abs(obstaclePose.position.x), Math.abs(obstaclePose.position.y))
+      corrected = add(corrected, scale(normal, -gap + roundoff))
+    }
+  }
+  return corrected
 }
 
 function envelopeContactCandidates(
@@ -174,6 +231,8 @@ function obstacleContactCandidates(
   currentOffset: Point,
   translation: Point,
   allModels: ReadonlyArray<TabletopModel>,
+  terrainFeatures?: ReadonlyArray<BattlefieldFeature>,
+  terrainPolicy?: TerrainPolicyConfig,
 ): ObstacleContact[] {
   const candidates: ObstacleContact[] = []
 
@@ -181,7 +240,10 @@ function obstacleContactCandidates(
     const start = add(movingModel.position, currentOffset)
     const end = add(start, translation)
 
-    for (const obstacle of allModels) {
+    const terrainObstacles = terrainMotionObstacles(
+      movingModel, poseForModel(movingModel, end), terrainFeatures, terrainPolicy,
+    )
+    for (const obstacle of [...allModels, ...terrainObstacles]) {
       if (movingIds.has(obstacle.id)) continue
       const destinationOverlaps = footprintsOverlap(
         movingModel.base,
@@ -189,7 +251,7 @@ function obstacleContactCandidates(
         obstacle.base,
         poseForModel(obstacle),
       )
-      if (movingModel.canPassOverModels && !destinationOverlaps) continue
+      if (movingModel.canPassOverModels && obstacle.ownerId !== 'terrain' && !destinationOverlaps) continue
 
       if (movingModel.base.shape === 'circle' && obstacle.base.shape === 'circle') {
         const radius = circleFootprintRadiusInches(movingModel.base)
@@ -360,11 +422,14 @@ function isFormationInsideMovementEnvelopes(
 function isProposedPlacementValid(
   allModels: ReadonlyArray<TabletopModel>,
   proposedPositions: ReadonlyMap<string, Point>,
+  terrainFeatures?: ReadonlyArray<BattlefieldFeature>,
+  terrainPolicy?: TerrainPolicyConfig,
 ): boolean {
   const movingIds = new Set(proposedPositions.keys())
   const movingModels = allModels.filter((model) => movingIds.has(model.id))
   for (const movingModel of movingModels) {
     const movingPosition = proposedPositions.get(movingModel.id) ?? movingModel.position
+    if (!terrainDestinationLegal(movingModel, poseForModel(movingModel, movingPosition), terrainFeatures, terrainPolicy)) return false
     for (const obstacle of allModels) {
       if (movingIds.has(obstacle.id)) continue
       if (footprintsOverlap(

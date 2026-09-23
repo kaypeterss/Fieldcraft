@@ -31,7 +31,7 @@ describe('Smart Move status', () => {
     const badge = screen.getByText('CALCULATING')
     expect(badge.className).toContain('neutral')
     expect(screen.getByRole('button', { name: 'Apply Move' }).hasAttribute('disabled')).toBe(true)
-    expect(screen.queryByText('Candidates tested')).toBeNull()
+    expect(screen.getByText('Candidates tested').nextElementSibling?.textContent).toBe('—')
   })
 
   it('keeps search limit in a warning tone and errors in a failure tone', () => {
@@ -39,5 +39,21 @@ describe('Smart Move status', () => {
     expect(smartMoveBadge('error')).toEqual({ label: 'ERROR', tone: 'invalid' })
     expect(smartMoveBadge('ready-valid').tone).toBe('valid')
     expect(smartMoveBadge('ready-invalid').tone).toBe('invalid')
+  })
+
+  it('keeps every information row present across solving states', () => {
+    const states = ['idle', 'calculating', 'ready-valid', 'ready-invalid', 'search-limit', 'error'] as const
+    const rowCounts = states.map((asyncStatus) => {
+      const view = render(<SmartMovePanel
+        selectedCount={1} unitSize={1} targetMode="locked"
+        result={previousValidResult} asyncStatus={asyncStatus} thinkingVisible={asyncStatus === 'calculating'}
+        canApply={false} errorMessage={asyncStatus === 'error' ? 'Worker failed' : undefined}
+        onApply={vi.fn()} onCancel={vi.fn()}
+      />)
+      const count = view.container.querySelector('.smart-move-panel dl')?.children.length
+      view.unmount()
+      return count
+    })
+    expect(new Set(rowCounts).size).toBe(1)
   })
 })

@@ -46,6 +46,57 @@ export interface Pose {
   rotation: number
 }
 
+/** Local geometry and pose are relative to the parent BattlefieldFeature. */
+export interface BattlefieldFeatureObject {
+  id: string
+  name: string
+  footprint: Footprint
+  localPose: Pose
+}
+
+export type ObjectiveArea =
+  | { type: 'feature-base' }
+  | { type: 'local-footprint'; footprint: Footprint; localPose: Pose }
+  | { type: 'point-range'; localPoint: Point; rangeInches: number }
+
+/** Roles describe what a feature is; game-system policy later defines their effects. */
+export interface BattlefieldFeatureCapabilities {
+  terrain?: { type: 'terrain' }
+  objective?: { type: 'objective'; area: ObjectiveArea }
+  movable?: { type: 'movable' }
+}
+
+export interface BattlefieldFeature {
+  id: string
+  name: string
+  pose: Pose
+  baseArea: Footprint
+  capabilities: BattlefieldFeatureCapabilities
+  objects: BattlefieldFeatureObject[]
+}
+
+/** Prototype policy data, independent of feature geometry and named game systems. */
+export interface TerrainPermissions {
+  canEnter: boolean
+  canCross: boolean
+  canFinish: boolean
+}
+
+export interface TerrainPolicyRule {
+  featureId: string
+  /** Omitted for the feature base; supplied for one child object. */
+  objectId?: string
+  /** Omitted for all models; supplied for a model-specific override. */
+  modelId?: string
+  permissions: TerrainPermissions
+}
+
+export interface TerrainPolicyConfig {
+  defaultBase: TerrainPermissions
+  defaultObject: TerrainPermissions
+  rules: TerrainPolicyRule[]
+}
+
 /**
  * One ordered rigid-motion segment. The center travels linearly from the
  * previous pose to `endPose` while rotation advances by `angularDelta`.
@@ -186,6 +237,10 @@ export interface GameState {
   battlefield: Battlefield
   players: Player[]
   models: TabletopModel[]
+  /** Optional for compatibility with existing schema-version-3 saves. */
+  battlefieldFeatures?: BattlefieldFeature[]
+  /** Optional so pre-M7 snapshots continue to have no terrain movement effects. */
+  terrainPolicy?: TerrainPolicyConfig
   units: Unit[]
   unitDefinitions: UnitDefinition[]
   gameContext: GameContext

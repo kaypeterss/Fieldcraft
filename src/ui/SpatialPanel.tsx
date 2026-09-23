@@ -1,20 +1,24 @@
 import { useCallback, useState } from 'react'
 import type { CoherencyPolicy, CoherencyResult } from '../engine/coherency'
 import type { CoherencyAnalysisMode, SpatialMode } from '../tools/spatialOverlay'
+import {
+  visibilityModeLabel,
+  visibilityPolicyLabel,
+  type VisibilityAnalysis,
+  type VisibilityMode,
+  type VisibilityPolicy,
+} from '../engine/visibility'
 import { formatNumericValue, normalizeNumericDraft } from './numberInput'
+import { AreaSummary, type ObjectiveDisplayAnalysis } from './DebugPanel'
+import type { ModelPickerTarget } from '../tools/modelPicker'
 
 const RANGE_PRESETS = [3, 6, 9, 12, 18]
-const TARGET_BASE_PRESETS = [25, 32, 40, 50]
 
 interface SpatialPanelProps {
   mode: SpatialMode
   range: number
   requiredSeparation: number
-  targetBaseDiameterMm: number
-  targetModelId: string | null
-  targetModelOptions: Array<{ id: string; label: string }>
   sourceGeometryLabel: string
-  targetGeometryLabel: string
   coherencyAnalysisMode: CoherencyAnalysisMode
   coherencyPolicy: CoherencyPolicy
   customCoherencyPolicy: CoherencyPolicy
@@ -22,11 +26,26 @@ interface SpatialPanelProps {
   sourceCount: number
   coherencyUnitAvailable: boolean
   unitPolicyAvailable: boolean
+  objectiveOptions?: Array<{ id: string; name: string }>
+  selectedObjectiveId?: string | null
+  objectiveAnalysis?: ObjectiveDisplayAnalysis | null
+  modelOptions?: Array<{ id: string; label: string }>
+  visibilityViewerId?: string | null
+  visibilityTargetId?: string | null
+  visibilityPickTarget?: ModelPickerTarget | null
+  visibilityMode?: VisibilityMode
+  visibilityPolicy?: VisibilityPolicy
+  visibilityAnalysis?: VisibilityAnalysis | null
+  previewActive?: boolean
+  onObjectiveChange?: (id: string | null) => void
+  onVisibilityViewerChange?: (id: string | null) => void
+  onVisibilityTargetChange?: (id: string | null) => void
+  onVisibilityPick?: (target: ModelPickerTarget) => void
+  onVisibilityModeChange?: (mode: VisibilityMode) => void
+  onVisibilityPolicyChange?: (policy: VisibilityPolicy) => void
   onModeChange: (mode: SpatialMode) => void
   onRangeChange: (range: number) => void
   onRequiredSeparationChange: (distance: number) => void
-  onTargetBaseDiameterChange: (diameterMm: number) => void
-  onTargetModelChange: (modelId: string | null) => void
   onCoherencyAnalysisModeChange: (mode: CoherencyAnalysisMode) => void
   onCoherencyPolicyChange: (policy: CoherencyPolicy) => void
 }
@@ -36,11 +55,14 @@ export function SpatialPanel(props: SpatialPanelProps) {
     <aside className="spatial-panel" aria-label="Spatial analysis tools">
       <div className="spatial-panel-heading">
         <div><span className="eyebrow">ANALYSIS OVERLAY</span><h2>Spatial Tools</h2></div>
-        <span className="spatial-source-count">{props.sourceCount}</span>
+        <div className="spatial-heading-status">
+          {props.previewActive && <span className="spatial-preview-badge">SMART MOVE PREVIEW</span>}
+          <span className="spatial-source-count">{props.sourceCount}</span>
+        </div>
       </div>
 
       <div className="segmented-control" aria-label="Spatial visualization mode">
-        {(['range', 'exclusion', 'coherency'] as const).map((mode) => (
+        {(['range', 'exclusion', 'coherency', 'objectives', 'visibility'] as const).map((mode) => (
           <button
             key={mode}
             className={props.mode === mode ? 'active' : ''}
@@ -62,24 +84,10 @@ export function SpatialPanel(props: SpatialPanelProps) {
 
       {props.mode === 'exclusion' && (
         <>
-          <div className="panel-section-label">TARGET-ORIGIN EXCLUSION</div>
-          <GeometrySummary source={props.sourceGeometryLabel} target={props.targetGeometryLabel} />
+          <div className="panel-section-label">MODEL-FOOTPRINT EXCLUSION</div>
+          <GeometrySummary source={props.sourceGeometryLabel} />
+          <p className="spatial-help">Each selected model uses its actual footprint and current orientation.</p>
           <NumberField key={`separation-${props.requiredSeparation}`} label="Required separation" value={props.requiredSeparation} min={0} step="any" suffix="in" onChange={props.onRequiredSeparationChange} />
-          <label className="spatial-select-field">
-            <span>Target footprint</span>
-            <select
-              aria-label="Target footprint"
-              value={props.targetModelId ?? ''}
-              onChange={(event) => props.onTargetModelChange(event.target.value || null)}
-            >
-              <option value="">Manual circle</option>
-              {props.targetModelOptions.map((option) => (
-                <option key={option.id} value={option.id}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-          <div className="spatial-field-label">Manual circle presets</div>
-          <PresetButtons values={TARGET_BASE_PRESETS} value={props.targetModelId ? Number.NaN : props.targetBaseDiameterMm} suffix="mm" onChange={props.onTargetBaseDiameterChange} />
         </>
       )}
 
@@ -132,11 +140,114 @@ export function SpatialPanel(props: SpatialPanelProps) {
         </>
       )}
 
-      {props.sourceCount === 0 && props.mode !== 'coherency' && (
+      {props.mode === 'visibility' && (
+        <section className="spatial-visibility-section" aria-label="Visibility analysis">
+          <div className="panel-section-label">GEOMETRIC LINE OF SIGHT</div>
+          <ModelSelect label="Viewer" value={props.visibilityViewerId ?? ''}
+            options={props.modelOptions ?? []} excludeId={props.visibilityTargetId}
+            pickTarget="viewer" activePickTarget={props.visibilityPickTarget}
+            onPick={props.onVisibilityPick} onChange={(id) => props.onVisibilityViewerChange?.(id)} />
+          <ModelSelect label="Target" value={props.visibilityTargetId ?? ''}
+            options={props.modelOptions ?? []} excludeId={props.visibilityViewerId}
+            pickTarget="target" activePickTarget={props.visibilityPickTarget}
+            onPick={props.onVisibilityPick} onChange={(id) => props.onVisibilityTargetChange?.(id)} />
+          {props.visibilityPickTarget && (
+            <p className="spatial-help visibility-pick-help">
+              Pick {props.visibilityPickTarget} on the battlefield. Press Escape to cancel.
+            </p>
+          )}
+          <div className="segmented-control visibility-mode" aria-label="Visibility mode">
+            {(['any-to-any', 'any-to-all'] as const).map((mode) => (
+              <button key={mode} className={props.visibilityMode === mode ? 'active' : ''}
+                onClick={() => props.onVisibilityModeChange?.(mode)}>
+                {visibilityModeLabel(mode)}
+              </button>
+            ))}
+          </div>
+          <div className="segmented-control visibility-policy" aria-label="Visibility policy">
+            {(['base-blocks', 'objects-block', 'nothing-blocks'] as const).map((policy) => (
+              <button key={policy} className={props.visibilityPolicy === policy ? 'active' : ''}
+                onClick={() => props.onVisibilityPolicyChange?.(policy)}>
+                {visibilityPolicyLabel(policy)}
+              </button>
+            ))}
+          </div>
+          {props.visibilityAnalysis ? <VisibilitySummary analysis={props.visibilityAnalysis} />
+            : <p className="spatial-empty">Choose a viewer and target model to analyze visibility.</p>}
+        </section>
+      )}
+
+      {props.sourceCount === 0 && !['coherency', 'objectives', 'visibility'].includes(props.mode) && (
         <p className="spatial-empty">Select one model or a complete unit to visualize this overlay.</p>
       )}
+      {props.mode === 'objectives' && (props.objectiveOptions?.length ?? 0) > 0 && <section className="spatial-objective-section" aria-label="Objective area analysis">
+        <div className="panel-section-label">OBJECTIVE AREAS · GEOMETRY ONLY</div>
+        <label className="spatial-select-field">
+          <span>Analyze objective</span>
+          <select aria-label="Analyze objective" value={props.selectedObjectiveId ?? ''}
+            onChange={(event) => props.onObjectiveChange?.(event.target.value || null)}>
+            <option value="">Choose an objective</option>
+            {props.objectiveOptions?.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+          </select>
+        </label>
+        {props.objectiveAnalysis && (props.objectiveAnalysis.modelRelationship || props.objectiveAnalysis.unitSummary || (props.objectiveAnalysis.playerSummaries?.length ?? 0) > 0)
+          ? <AreaSummary name={props.objectiveAnalysis.featureName}
+              model={props.objectiveAnalysis.modelRelationship}
+              unit={props.objectiveAnalysis.unitSummary}
+              unitName={props.objectiveAnalysis.unitName}
+              players={props.objectiveAnalysis.playerSummaries} />
+          : <p className="spatial-empty">Select a model or unit to see live objective relationships.</p>}
+      </section>}
       <p className="spatial-note">Overlay only · movement remains permissive</p>
     </aside>
+  )
+}
+
+function ModelSelect(props: {
+  label: string
+  value: string
+  options: Array<{ id: string; label: string }>
+  excludeId?: string | null
+  pickTarget: ModelPickerTarget
+  activePickTarget?: ModelPickerTarget | null
+  onPick?: (target: ModelPickerTarget) => void
+  onChange: (id: string | null) => void
+}) {
+  return (
+    <label className="spatial-select-field">
+      <span className="visibility-select-label">
+        {props.label}
+        <button type="button" className={props.activePickTarget === props.pickTarget ? 'active' : ''}
+          aria-label={`Pick ${props.label}`} onClick={() => props.onPick?.(props.pickTarget)}>
+          {props.activePickTarget === props.pickTarget ? 'Picking…' : 'Pick'}
+        </button>
+      </span>
+      <select aria-label={props.label} value={props.value} onChange={(event) => props.onChange(event.target.value || null)}>
+        <option value="">Choose model</option>
+        {props.options.filter((option) => option.id !== props.excludeId || option.id === props.value)
+          .map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+      </select>
+    </label>
+  )
+}
+
+function VisibilitySummary({ analysis }: { analysis: VisibilityAnalysis }) {
+  const bases = analysis.basesCrossed.map((entry) => entry.featureName).join(', ') || 'None'
+  const objects = analysis.objectsCrossed.map((entry) => `${entry.featureName} · ${entry.objectName}`).join(', ') || 'None'
+  return (
+    <div className={analysis.visible ? 'visibility-summary visible' : 'visibility-summary blocked'}>
+      <strong>{analysis.visible ? 'VISIBLE' : 'BLOCKED'}</strong>
+      <p className="spatial-help">{analysis.mode === 'any-to-any'
+        ? 'At least one footprint-to-footprint sightline must be clear.'
+        : 'One point of the viewer must see the complete target footprint.'}</p>
+      <dl className="spatial-policy-summary">
+        <div><dt>Distance</dt><dd>{analysis.distance.toFixed(2)}″</dd></div>
+        <div><dt>Mode</dt><dd>{visibilityModeLabel(analysis.mode)}</dd></div>
+        <div><dt>Bases crossed</dt><dd>{bases}</dd></div>
+        <div><dt>Objects crossed</dt><dd>{objects}</dd></div>
+        <div><dt>Policy</dt><dd>{visibilityPolicyLabel(analysis.policy)}</dd></div>
+      </dl>
+    </div>
   )
 }
 

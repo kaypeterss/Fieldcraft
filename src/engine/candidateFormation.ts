@@ -1,9 +1,10 @@
-import type { Battlefield, TabletopModel, Unit } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, TabletopModel, TerrainPolicyConfig, Unit } from '../domain/types'
 import type { CoherencyPolicy } from './coherency'
 import { evaluateUnitCoherency, isCoherencyResultValid } from './coherency'
 import { footprintInsideBattlefield, footprintsOverlap, poseForModel } from './geometry/footprints'
 import type { Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
+import { terrainDestinationLegal } from './terrainPolicy'
 
 export type CandidateFormation = Readonly<Record<string, Point>>
 
@@ -21,6 +22,8 @@ export interface CandidateCoherencyConstraint {
 export interface CandidateFormationRequest {
   allModels: ReadonlyArray<TabletopModel>
   battlefield: Battlefield
+  terrainFeatures?: ReadonlyArray<BattlefieldFeature>
+  terrainPolicy?: TerrainPolicyConfig
   positions: CandidateFormation
   /** Optional final orientations; omitted models retain their current rotation. */
   rotations?: Readonly<Record<string, number>>
@@ -32,6 +35,7 @@ export type CandidateFormationViolation =
   | { type: 'MODEL_NOT_FOUND'; modelIds: [string] }
   | { type: 'OUT_OF_BOUNDS'; modelIds: [string] }
   | { type: 'COLLIDES_WITH_STATIONARY_MODEL'; modelIds: [string, string] }
+  | { type: 'TERRAIN_FINISH_FORBIDDEN'; modelIds: [string] }
   | { type: 'CANDIDATE_INTERNAL_OVERLAP'; modelIds: [string, string] }
   | { type: 'MOVEMENT_ALLOWANCE_EXCEEDED'; modelIds: [string]; movementCost: number; movementAllowance: number }
   | { type: 'COHERENCY_FAILED'; modelIds: string[] }
@@ -81,6 +85,9 @@ export function validateCandidateFormation(request: CandidateFormationRequest): 
     const position = request.positions[modelId]
     if (!footprintInsideBattlefield(candidate.base, poseForModel(candidate, position), request.battlefield)) {
       violations.push({ type: 'OUT_OF_BOUNDS', modelIds: [modelId] })
+    }
+    if (!terrainDestinationLegal(candidate, poseForModel(candidate, position), request.terrainFeatures, request.terrainPolicy)) {
+      violations.push({ type: 'TERRAIN_FINISH_FORBIDDEN', modelIds: [modelId] })
     }
   }
 

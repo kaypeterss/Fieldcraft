@@ -1,9 +1,15 @@
 import type { CoherencyPolicy, CoherencyResult } from '../engine/coherency'
 import type { Footprint, TabletopModel, Unit } from '../domain/types'
 import { normalizeRotation } from '../engine/geometry/footprints'
+import type { VisibilityAnalysis } from '../engine/visibility'
+import type { ModelPickerTarget } from './modelPicker'
 
-export type SpatialMode = 'range' | 'exclusion' | 'coherency'
+export type SpatialMode = 'range' | 'exclusion' | 'coherency' | 'objectives' | 'visibility'
 export type CoherencyAnalysisMode = 'unit-policy' | 'custom'
+
+export function exclusionTargetForModel(model: TabletopModel): { footprint: Footprint; rotation: number } {
+  return { footprint: model.base, rotation: model.rotation }
+}
 
 export function resolveSpatialCoherencyPolicy(
   mode: CoherencyAnalysisMode,
@@ -26,10 +32,14 @@ export interface SpatialOverlayConfig {
   sourceModelIds: string[]
   range: number
   requiredSeparation: number
-  targetFootprint: Footprint
-  targetRotation: number
   coherencyPolicy: CoherencyPolicy
   coherency: CoherencyResult | null
+  visibility?: VisibilityAnalysis | null
+  visibilityViewerId?: string | null
+  visibilityTargetId?: string | null
+  visibilityPickTarget?: ModelPickerTarget | null
+  visibilityPickHoverModelId?: string | null
+  previewActive?: boolean
 }
 
 export function describeFootprint(footprint: Footprint, rotation = 0): string {

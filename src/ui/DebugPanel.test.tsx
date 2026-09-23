@@ -1,6 +1,8 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { initialGameState } from '../game/initialState'
+import { battlefieldFeatureDemoGameState } from '../game/battlefieldFeatureDemo'
+import { effectiveTerrainPermissions } from '../engine/terrainPolicy'
 import { evaluateUnitCoherency, isCoherencyResultValid } from '../engine/coherency'
 import {
   getPlayerForModel,
@@ -110,5 +112,29 @@ describe('DebugPanel ownership display', () => {
     expect(screen.getByText('Unit Bases')).toBeTruthy()
     expect(screen.getByText('Hull 105 × 44 mm')).toBeTruthy()
     expect(screen.getByText('Hull 105 × 44mm (6-point) @ 0°')).toBeTruthy()
+  })
+
+  it('labels selected-model terrain permissions separately from current occupancy', () => {
+    const state = battlefieldFeatureDemoGameState
+    const crossingModel = state.models.find((model) => model.id === 'qa-phaser')!
+    const ruinPermissions = effectiveTerrainPermissions(crossingModel.id,
+      state.battlefieldFeatures, state.terrainPolicy, new Set(['demo-ruin']))
+    const view = render(<DebugPanel model={crossingModel} selectedCount={1}
+      terrainRelationships={[]} effectiveTerrainPermissions={ruinPermissions} />)
+    expect(screen.getByText('CURRENT TERRAIN RELATION')).toBeTruthy()
+    expect(screen.getByText('None')).toBeTruthy()
+    expect(screen.getByText('EFFECTIVE TERRAIN PERMISSIONS')).toBeTruthy()
+    expect(screen.getByText('For this selected model only')).toBeTruthy()
+    expect(screen.getByText('Wall B · Object').parentElement?.textContent).toContain('Cross: Yes')
+    expect(screen.getByText('Wall B · Object').parentElement?.textContent).toContain('Finish: No')
+
+    const groundPermissions = effectiveTerrainPermissions(crossingModel.id,
+      state.battlefieldFeatures, state.terrainPolicy, new Set(['demo-impassable']))
+    view.rerender(<DebugPanel model={crossingModel} selectedCount={1}
+      terrainRelationships={[]} effectiveTerrainPermissions={groundPermissions} />)
+    const base = screen.getByText('Base').parentElement?.textContent
+    expect(base).toContain('Enter: No')
+    expect(base).toContain('Cross: No')
+    expect(base).toContain('Finish: No')
   })
 })
