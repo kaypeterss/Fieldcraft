@@ -4,8 +4,10 @@ export type ActiveTool = 'select' | 'measure' | 'smart-move'
 interface ToolbarProps {
   activeTool: ActiveTool
   spatialEnabled: boolean
+  diceOpen: boolean
   onToolChange: (tool: ActiveTool) => void
   onSpatialToggle: () => void
+  onDiceToggle: () => void
   onResetCamera: () => void
 }
 
@@ -54,7 +56,20 @@ function SmartMoveIcon() {
   )
 }
 
-export function Toolbar({ activeTool, spatialEnabled, onToolChange, onSpatialToggle, onResetCamera }: ToolbarProps) {
+function DiceIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="16" height="16" rx="3" />
+      <circle cx="8" cy="8" r=".8" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="8" r=".8" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r=".8" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="16" r=".8" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="16" r=".8" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
+export function Toolbar({ activeTool, spatialEnabled, diceOpen, onToolChange, onSpatialToggle, onDiceToggle, onResetCamera }: ToolbarProps) {
   return (
     <nav className="toolbar" aria-label="Tabletop tools">
       <div className="brand-mark" aria-hidden="true"><span /></div>
@@ -86,6 +101,13 @@ export function Toolbar({ activeTool, spatialEnabled, onToolChange, onSpatialTog
           aria-pressed={activeTool === 'smart-move'}
         >
           <SmartMoveIcon /><span>Smart Move</span><kbd>G</kbd>
+        </button>
+        <button
+          className={diceOpen ? 'tool-button active' : 'tool-button'}
+          onClick={onDiceToggle}
+          aria-pressed={diceOpen}
+        >
+          <DiceIcon /><span>Dice</span>
         </button>
       </div>
       <div className="toolbar-spacer" />

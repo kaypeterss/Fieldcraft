@@ -22,6 +22,8 @@ import { GEOMETRY_EPSILON } from '../engine/geometry/tolerance'
 import { createMoveAction } from '../game/moveActions'
 import { getMovementAllowance } from '../game/selectors'
 import { advanceTurn } from '../game/turns'
+import { createScoreEvent } from '../game/scoring'
+import { createDiceRollRecord, createDiceSequenceRecord, updateDiceRollRecord } from '../game/diceHistory'
 import type { GameStateAction } from './actions'
 
 export function gameReducer(state: GameState, action: GameStateAction): GameState {
@@ -451,6 +453,90 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
           } : model
         }),
         movementSession: null,
+      }
+    }
+
+    case 'score/eventRecorded': {
+      if (!state.players.some((player) => player.id === action.playerId)) return state
+      try {
+        const scoreEvent = createScoreEvent({
+          sequence: state.nextActionSequence,
+          playerId: action.playerId,
+          pointsDelta: action.pointsDelta,
+          reason: action.reason,
+          gameContext: state.gameContext,
+          source: action.source,
+        })
+        return {
+          ...state,
+          scoreHistory: [...(state.scoreHistory ?? []), scoreEvent],
+          nextActionSequence: state.nextActionSequence + 1,
+        }
+      } catch {
+        return state
+      }
+    }
+
+    case 'score/lastEventUndone': {
+      const scoreHistory = state.scoreHistory ?? []
+      const lastScoreEvent = scoreHistory[scoreHistory.length - 1]
+      if (!lastScoreEvent) return state
+      return {
+        ...state,
+        scoreHistory: scoreHistory.filter((scoreEvent) => scoreEvent.id !== lastScoreEvent.id),
+      }
+    }
+
+    case 'dice/rollRecorded': {
+      if (!state.players.some((player) => player.id === action.playerId)) return state
+      try {
+        const roll = createDiceRollRecord({
+          sequence: state.nextActionSequence,
+          playerId: action.playerId,
+          gameContext: state.gameContext,
+          result: action.result,
+        })
+        return {
+          ...state,
+          diceHistory: [...(state.diceHistory ?? []), roll],
+          nextActionSequence: state.nextActionSequence + 1,
+        }
+      } catch {
+        return state
+      }
+    }
+
+    case 'dice/rollUpdated': {
+      const history = state.diceHistory ?? []
+      if (!history.some((roll) => roll.type === 'DICE_ROLL' && roll.id === action.rollId)) return state
+      try {
+        return {
+          ...state,
+          diceHistory: history.map((roll) => roll.type === 'DICE_ROLL' && roll.id === action.rollId
+            ? updateDiceRollRecord(roll, action.result)
+            : roll),
+        }
+      } catch {
+        return state
+      }
+    }
+
+    case 'dice/sequenceRecorded': {
+      if (!state.players.some((player) => player.id === action.playerId)) return state
+      try {
+        const sequence = createDiceSequenceRecord({
+          sequence: state.nextActionSequence,
+          playerId: action.playerId,
+          gameContext: state.gameContext,
+          resolution: action.resolution,
+        })
+        return {
+          ...state,
+          diceHistory: [...(state.diceHistory ?? []), sequence],
+          nextActionSequence: state.nextActionSequence + 1,
+        }
+      } catch {
+        return state
       }
     }
 

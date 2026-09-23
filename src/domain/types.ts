@@ -1,5 +1,8 @@
 import type { Point } from '../engine/geometry/point'
 
+/** Passive, JSON-safe rule vocabulary interpreted only by a loaded game system. */
+export type Keyword = string
+
 export interface Battlefield {
   width: number
   height: number
@@ -50,6 +53,7 @@ export interface Pose {
 export interface BattlefieldFeatureObject {
   id: string
   name: string
+  keywords?: Keyword[]
   footprint: Footprint
   localPose: Pose
 }
@@ -129,12 +133,18 @@ export interface TabletopModel {
   /** Serialized compatibility field; its value is the model footprint. */
   base: Footprint
   canPassOverModels: boolean
+  /** Optional raw game-data value; the loaded GameSystem decides how to interpret it. */
+  objectiveControl?: number
+  keywords?: Keyword[]
   label?: string
 }
 
 export interface UnitDefinition {
   id: string
   name: string
+  keywords?: Keyword[]
+  /** Optional raw game-data value inherited by models without an override. */
+  objectiveControl?: number
   movementAllowance: number
   coherencyPolicy?: CoherencyPolicy
 }
@@ -230,6 +240,116 @@ export interface MoveAction {
   }
 }
 
+export interface ScoreEventSource {
+  type: string
+  referenceId?: string
+}
+
+/** A confirmed score adjustment; objective control never creates this implicitly. */
+export interface ScoreEvent {
+  id: string
+  sequence: number
+  type: 'SCORE'
+  playerId: string
+  round: number
+  turn: number
+  turnSequence: number
+  turnId: string
+  phase?: string
+  payload: {
+    pointsDelta: number
+    reason: string
+    source?: ScoreEventSource
+  }
+}
+
+/** One value-based reroll pass over a dice pool. Indices refer to the stable pool order. */
+export interface DiceReroll {
+  values: number[]
+  indices: number[]
+  previousResults: number[]
+  replacementResults: number[]
+}
+
+/** Pure, JSON-safe result returned by both manual and GameSystem-driven dice rolls. */
+export interface DicePoolResult {
+  count: number
+  sides: number
+  originalResults: number[]
+  rerolls: DiceReroll[]
+  finalResults: number[]
+  total: number
+  distribution: Record<number, number>
+  successThreshold?: number
+  successes?: number
+}
+
+/** Confirmed dice history keeps its player and match context without becoming a game rule. */
+export interface DiceRollRecord extends DicePoolResult {
+  id: string
+  sequence: number
+  type: 'DICE_ROLL'
+  playerId: string
+  round: number
+  turn: number
+  turnSequence: number
+  turnId: string
+  phase?: string
+}
+
+export type DiceContinuation = 'successes' | 'failures'
+
+export interface DiceStageDefinition {
+  id: string
+  label: string
+  sides: number
+  threshold: number
+  continuation: DiceContinuation
+  reroll?: { values: number[] }
+  /** Passive adapter keys; the generic engine attaches no named-rule meaning. */
+  modifierIds?: string[]
+}
+
+export interface DiceSequenceDefinition {
+  id: string
+  label: string
+  startingDiceCount: number
+  stages: DiceStageDefinition[]
+}
+
+export interface DiceStageResult {
+  stage: DiceStageDefinition
+  inputDiceCount: number
+  effectiveThreshold: number
+  roll: DicePoolResult
+  successCount: number
+  failureCount: number
+  continuationCount: number
+}
+
+/** Serializable state supports both one-stage-at-a-time and complete resolution. */
+export interface DiceSequenceResolution {
+  definition: DiceSequenceDefinition
+  stageResults: DiceStageResult[]
+  complete: boolean
+  finalResult?: number
+}
+
+export interface DiceSequenceRecord extends DiceSequenceResolution {
+  id: string
+  sequence: number
+  type: 'DICE_SEQUENCE'
+  playerId: string
+  round: number
+  turn: number
+  turnSequence: number
+  turnId: string
+  phase?: string
+}
+
+export type DiceHistoryEntry = DiceRollRecord | DiceSequenceRecord
+
+/** Existing movement-action contract retained for compatibility. */
 export type GameAction = MoveAction
 
 export interface GameState {
@@ -246,6 +366,10 @@ export interface GameState {
   gameContext: GameContext
   turnConfiguration: TurnConfiguration
   actionHistory: GameAction[]
+  /** Optional for compatibility with pre-M8.1 schema-version-3 snapshots. */
+  scoreHistory?: ScoreEvent[]
+  /** Optional for compatibility with pre-M8.2 schema-version-3 snapshots. */
+  diceHistory?: DiceHistoryEntry[]
   nextActionSequence: number
   movementSession: MovementSession | null
   lastConfirmedMovementUndo?: MovementUndoSnapshot | null

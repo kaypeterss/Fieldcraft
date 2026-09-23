@@ -1,4 +1,6 @@
 import type { Footprint, GameState, TabletopModel, Unit } from '../domain/types'
+import { developmentGameSystem } from '../gameSystem/developmentGameSystem'
+import { turnConfigurationFor } from '../gameSystem/policies'
 
 const model = (
   id: string,
@@ -91,15 +93,16 @@ export const initialGameState: GameState = {
     { id: 'player-2', displayName: 'Player 2' },
   ],
   models,
+  terrainPolicy: developmentGameSystem.terrain,
   units,
   unitDefinitions: [
-    { id: 'def-standard-infantry', name: 'Standard Infantry', movementAllowance: 6, coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true } },
-    { id: 'def-horde', name: 'Horde', movementAllowance: 6, coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true } },
-    { id: 'def-oval-cavalry', name: 'Oval Cavalry', movementAllowance: 10, coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true } },
-    { id: 'def-elite-large', name: 'Elite Large-Base Unit', movementAllowance: 6, coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true } },
-    { id: 'def-heavy-oval', name: 'Heavy Oval Unit', movementAllowance: 8, coherencyPolicy: { distance: 2, requiredNeighbors: 1, requireConnected: true } },
-    { id: 'def-vehicles', name: 'Vehicle / Hull Unit', movementAllowance: 10, coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true } },
-    { id: 'def-strong-coherency', name: 'Strong Coherency Unit', movementAllowance: 5, coherencyPolicy: { distance: 1, requiredNeighbors: 2, requireConnected: true } },
+    { id: 'def-standard-infantry', name: 'Standard Infantry', objectiveControl: 1, movementAllowance: 6, coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true } },
+    { id: 'def-horde', name: 'Horde', objectiveControl: 1, movementAllowance: 6, coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true } },
+    { id: 'def-oval-cavalry', name: 'Oval Cavalry', objectiveControl: 2, movementAllowance: 10, coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true } },
+    { id: 'def-elite-large', name: 'Elite Large-Base Unit', objectiveControl: 2, movementAllowance: 6, coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true } },
+    { id: 'def-heavy-oval', name: 'Heavy Oval Unit', objectiveControl: 10, movementAllowance: 8, coherencyPolicy: { distance: 2, requiredNeighbors: 1, requireConnected: true } },
+    { id: 'def-vehicles', name: 'Vehicle / Hull Unit', objectiveControl: 10, movementAllowance: 10, coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true } },
+    { id: 'def-strong-coherency', name: 'Strong Coherency Unit', objectiveControl: 2, movementAllowance: 5, coherencyPolicy: { distance: 1, requiredNeighbors: 2, requireConnected: true } },
   ],
   gameContext: {
     round: 1,
@@ -108,7 +111,7 @@ export const initialGameState: GameState = {
     turnId: 'turn-1',
     activePlayerId: 'player-1',
   },
-  turnConfiguration: { playerOrder: ['player-1', 'player-2'] },
+  turnConfiguration: turnConfigurationFor(developmentGameSystem, ['player-1', 'player-2']),
   actionHistory: [],
   nextActionSequence: 1,
   movementSession: null,

@@ -1,5 +1,5 @@
 import type { Point } from '../engine/geometry/point'
-import type { MovementPolicyConfig, PoseTrajectory } from '../domain/types'
+import type { DicePoolResult, DiceSequenceResolution, MovementPolicyConfig, PoseTrajectory } from '../domain/types'
 
 export interface StartMovementSessionAction {
   type: 'movement/sessionStarted'
@@ -37,6 +37,29 @@ export interface ApplyValidatedCandidateMovementAction {
   paths?: Record<string, Point[]>
 }
 export interface EndTurnAction { type: 'game/turnEnded' }
+export interface RecordScoreEventAction {
+  type: 'score/eventRecorded'
+  playerId: string
+  pointsDelta: number
+  reason: string
+  source?: { type: string; referenceId?: string }
+}
+export interface UndoLastScoreEventAction { type: 'score/lastEventUndone' }
+export interface RecordDiceRollAction {
+  type: 'dice/rollRecorded'
+  playerId: string
+  result: DicePoolResult
+}
+export interface UpdateDiceRollAction {
+  type: 'dice/rollUpdated'
+  rollId: string
+  result: DicePoolResult
+}
+export interface RecordDiceSequenceAction {
+  type: 'dice/sequenceRecorded'
+  playerId: string
+  resolution: DiceSequenceResolution
+}
 
 export type GameStateAction =
   | StartMovementSessionAction
@@ -46,4 +69,9 @@ export type GameStateAction =
   | CancelMovementAction
   | UndoConfirmedMovementAction
   | ApplyValidatedCandidateMovementAction
+  | RecordScoreEventAction
+  | UndoLastScoreEventAction
+  | RecordDiceRollAction
+  | UpdateDiceRollAction
+  | RecordDiceSequenceAction
   | EndTurnAction

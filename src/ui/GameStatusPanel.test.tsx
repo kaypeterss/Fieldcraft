@@ -12,6 +12,18 @@ function freshState(): GameState {
 }
 
 describe('game status turn display', () => {
+  it('shows score totals derived from signed score events', () => {
+    let state = freshState()
+    state = gameReducer(state, {
+      type: 'score/eventRecorded', playerId: 'player-1', pointsDelta: 7, reason: 'Test',
+    })
+    state = gameReducer(state, {
+      type: 'score/eventRecorded', playerId: 'player-1', pointsDelta: -2, reason: 'Correction',
+    })
+    render(<GameStatusPanel gameState={state} blockedMessage={null} onEndTurn={vi.fn()} />)
+    expect(screen.getByText('5 VP')).toBeTruthy()
+  })
+
   it('shows configured turn indexes that reset within each round', () => {
     let state = freshState()
     const view = render(<GameStatusPanel gameState={state} blockedMessage={null} onEndTurn={vi.fn()} />)

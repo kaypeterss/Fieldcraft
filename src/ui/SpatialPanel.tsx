@@ -195,7 +195,9 @@ export function SpatialPanel(props: SpatialPanelProps) {
               model={props.objectiveAnalysis.modelRelationship}
               unit={props.objectiveAnalysis.unitSummary}
               unitName={props.objectiveAnalysis.unitName}
-              players={props.objectiveAnalysis.playerSummaries} />
+              players={props.objectiveAnalysis.playerSummaries}
+              control={props.objectiveAnalysis.control}
+              controlPreview={props.objectiveAnalysis.controlPreview} />
           : <p className="spatial-empty">Select a model or unit to see live objective relationships.</p>}
       </section>}
       <p className="spatial-note">Overlay only · movement remains permissive</p>

@@ -46,8 +46,21 @@ describe('objective analysis overlay', () => {
           centerWithin: true, distanceInches: 0 },
         unitSummary: { modelCount: 10, intersectingCount: 7, whollyWithinCount: 4,
           centerWithinCount: 6, distanceInches: 0, closestModelId: 'one' },
+        controlPreview: true,
+        control: {
+          state: 'controlled', controllingPlayerId: 'player-2',
+          players: [
+            { playerId: 'player-1', playerName: 'Player 1', qualifyingModelIds: ['a', 'b'],
+              qualifyingModelCount: 2, totalControl: 2 },
+            { playerId: 'player-2', playerName: 'Player 2', qualifyingModelIds: ['x'],
+              qualifyingModelCount: 1, totalControl: 10 },
+          ],
+        },
       },
     })
+    expect(screen.getByText('PROJECTED CONTROL')).toBeTruthy()
+    expect(screen.getByText('Controlled by Player 2')).toBeTruthy()
+    expect(screen.getByText('10 Control')).toBeTruthy()
     expect(screen.getByText('Infantry 10')).toBeTruthy()
     expect(screen.getByText('7 / 10')).toBeTruthy()
     expect(screen.getByText('4 / 10')).toBeTruthy()

@@ -199,6 +199,24 @@ describe('Smart Move worker execution', () => {
     controller.dispose()
   })
 
+  it('can start a fresh target session for the same selection after an apply reset', () => {
+    const { controller, workers, states } = setup()
+    controller.lockTarget({ x: 10, y: 5 })
+    workers[0].complete(0)
+    expect(controller.getApplicableResult()?.valid).toBe(true)
+
+    // App Apply clears the completed target/result, then begins a new session
+    // after the authoritative movement revision has advanced.
+    controller.cancelSession()
+    controller.beginSession(2, requestFor)
+    controller.lockTarget({ x: 12, y: 5 })
+    expect(states.at(-1)?.status).toBe('calculating')
+    expect(workers[0].messages[1].stateRevision).toBe(2)
+    workers[0].complete(1)
+    expect(controller.getApplicableResult()?.target).toEqual({ x: 12, y: 5 })
+    controller.dispose()
+  })
+
   it('invalidates a ready preview when the movement policy changes without a state revision', () => {
     const { controller, workers, states } = setup()
     controller.lockTarget({ x: 10, y: 5 })

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { footprintDemoGameState, initialGameState, orientationGapGameState } from './game/initialState'
 import { battlefieldFeatureDemoGameState } from './game/battlefieldFeatureDemo'
-import type { GameState, MovementPolicyConfig } from './domain/types'
+import type { DicePoolResult, GameState, MovementPolicyConfig } from './domain/types'
 import {
   canUndoLastMovement,
   getMovementAllowance,
@@ -63,6 +63,10 @@ import {
   type VisibilityMode,
   type VisibilityPolicy,
 } from './engine/visibility'
+import { developmentGameSystem } from './gameSystem/developmentGameSystem'
+import { movementPermissionForUnit } from './gameSystem/policies'
+import { evaluateObjectiveControl } from './engine/objectiveControl'
+import { DicePanel } from './ui/DicePanel'
 
 interface SmartMoveSessionState {
   modelIds: string[]
@@ -82,6 +86,7 @@ export default function App() {
   )
   const [activeTool, setActiveTool] = useState<ActiveTool>('select')
   const [spatialEnabled, setSpatialEnabled] = useState(false)
+  const [diceOpen, setDiceOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null)
   const [selectedObjectiveId, setSelectedObjectiveId] = useState<string | null>(
@@ -97,17 +102,18 @@ export default function App() {
   const [visibilityTargetId, setVisibilityTargetId] = useState<string | null>(null)
   const [visibilityPickTarget, setVisibilityPickTarget] = useState<ModelPickerTarget | null>(null)
   const [visibilityPickHoverModelId, setVisibilityPickHoverModelId] = useState<string | null>(null)
-  const [visibilityMode, setVisibilityMode] = useState<VisibilityMode>('any-to-any')
-  const [visibilityPolicy, setVisibilityPolicy] = useState<VisibilityPolicy>('objects-block')
+  const [visibilityMode, setVisibilityMode] = useState<VisibilityMode>(developmentGameSystem.visibility.mode)
+  const [visibilityPolicy, setVisibilityPolicy] = useState<VisibilityPolicy>(developmentGameSystem.visibility.terrainPolicy)
   const [coherencyAnalysisMode, setCoherencyAnalysisMode] = useState<CoherencyAnalysisMode>('unit-policy')
   const [analysisCoherencyPolicy, setAnalysisCoherencyPolicy] = useState<CoherencyPolicy>({ distance: 1, requiredNeighbors: 1, requireConnected: false })
   const [blockedMovementSessionId, setBlockedMovementSessionId] = useState<string | null>(null)
-  const [movementPolicy, setMovementPolicy] = useState<MovementPolicyConfig>({ type: 'movement-envelope' })
+  const [movementPolicy, setMovementPolicy] = useState<MovementPolicyConfig>(developmentGameSystem.movement.cost)
   const [smartMoveSession, setSmartMoveSession] = useState<SmartMoveSessionState | null>(null)
   const [smartMoveTargeting, setSmartMoveTargeting] = useState(initialSmartMoveTargetState)
   const [smartMoveAsync, setSmartMoveAsync] = useState(initialSmartMoveAsyncState)
   const [smartMoveDiagnostics, setSmartMoveDiagnostics] = useState<SmartMoveSchedulingDiagnostics | null>(null)
   const [smartMoveMessage, setSmartMoveMessage] = useState<string | null>(null)
+  const restartSmartMoveAfterApplyRef = useRef(false)
   const smartMoveControllerRef = useRef<SmartMoveWorkerController | null>(null)
   const smartMoveResult = smartMoveAsync.result
   const spatialPreviewResult = displayedSmartMovePreview(smartMoveResult)
@@ -207,6 +213,16 @@ export default function App() {
       selectedObjectiveArea,
       new Map(gameState.unitDefinitions.map((definition) => [definition.id, definition.name])),
     ),
+    control: evaluateObjectiveControl({
+      area: selectedObjectiveArea,
+      players: gameState.players,
+      models: spatialModels,
+      units: gameState.units,
+      unitDefinitions: gameState.unitDefinitions,
+      gameContext: gameState.gameContext,
+      objective: developmentGameSystem.objectives,
+    }),
+    controlPreview: Boolean(spatialPreviewResult),
   } : null
   const selectedTerrainAreaAnalysis = selectedModel ? (gameState.battlefieldFeatures ?? [])
     .filter((feature) => feature.capabilities.terrain && (feature.id === selectedFeatureId
@@ -352,7 +368,61 @@ export default function App() {
     setSmartMoveSession(null)
     setSmartMoveTargeting(initialSmartMoveTargetState())
     setSmartMoveMessage(null)
+    restartSmartMoveAfterApplyRef.current = false
   }, [])
+
+  const beginSmartMoveForSelection = useCallback((models: GameState['models'], state: GameState, revision: number) => {
+    const sortedModels = models.slice().sort((a, b) => a.id.localeCompare(b.id))
+    const unitIds = [...new Set(sortedModels.map((model) => model.unitId))]
+    if (sortedModels.length === 0) {
+      setSmartMoveSession(null)
+      setSmartMoveMessage('Select one or more models first.')
+      return
+    }
+    if (unitIds.length !== 1) {
+      setSmartMoveSession(null)
+      setSmartMoveMessage('Smart Move requires models from a single unit.')
+      return
+    }
+    const unit = state.units.find((candidate) => candidate.id === unitIds[0])
+    const policy = unit ? getUnitCoherencyPolicy(state, unit) : undefined
+    const allowance = sortedModels[0] ? getMovementAllowance(state, sortedModels[0]) : 0
+    const permission = unit ? movementPermissionForUnit({
+      policy: developmentGameSystem.movement.permissions,
+      actions: state.actionHistory,
+      gameContext: state.gameContext,
+      unitId: unit.id,
+      modelIds: unit.modelIds,
+      baseAllowance: allowance,
+    }) : null
+    if (!unit || !policy) {
+      setSmartMoveSession(null)
+      setSmartMoveMessage('This unit has no configured coherency policy.')
+      return
+    }
+    if (!permission?.canStartAction) {
+      setSmartMoveSession(null)
+      setSmartMoveMessage('This unit has no movement actions remaining under the active GameSystem.')
+      return
+    }
+    const session = { modelIds: sortedModels.map((model) => model.id), unitId: unit.id }
+    setSmartMoveSession(session)
+    setSmartMoveMessage(null)
+    smartMoveControllerRef.current?.beginSession(
+      revision,
+      createSmartMoveRequestFactory(state, session.modelIds, policy, movementPolicy),
+    )
+  }, [movementPolicy])
+
+  useEffect(() => {
+    if (!restartSmartMoveAfterApplyRef.current || activeTool !== 'smart-move' || gameState.movementSession) return
+    restartSmartMoveAfterApplyRef.current = false
+    beginSmartMoveForSelection(
+      gameState.models.filter((model) => selectedIds.has(model.id)),
+      gameState,
+      gameStateRevision,
+    )
+  }, [activeTool, beginSmartMoveForSelection, gameState, gameStateRevision, selectedIds])
 
   const handleSelectionChange = useCallback((nextSelectedIds: Set<string>) => {
     setSelectedIds(nextSelectedIds)
@@ -374,32 +444,9 @@ export default function App() {
     smartMoveControllerRef.current?.cancelSession()
     setSmartMoveSession(null)
     setSmartMoveTargeting(initialSmartMoveTargetState())
-    const models = gameState.models
-      .filter((model) => nextSelectedIds.has(model.id))
-      .sort((a, b) => a.id.localeCompare(b.id))
-    const unitIds = [...new Set(models.map((model) => model.unitId))]
-    if (models.length === 0) {
-      setSmartMoveMessage('Select one or more models first.')
-      return
-    }
-    if (unitIds.length !== 1) {
-      setSmartMoveMessage('Smart Move requires models from a single unit.')
-      return
-    }
-    const unit = gameState.units.find((candidate) => candidate.id === unitIds[0])
-    const policy = unit ? getUnitCoherencyPolicy(gameState, unit) : undefined
-    if (!unit || !policy) {
-      setSmartMoveMessage('This unit has no configured coherency policy.')
-      return
-    }
-    const session = { modelIds: models.map((model) => model.id), unitId: unit.id }
-    setSmartMoveSession(session)
-    setSmartMoveMessage(null)
-    smartMoveControllerRef.current?.beginSession(
-      gameStateRevision,
-      createSmartMoveRequestFactory(gameState, session.modelIds, policy, movementPolicy),
-    )
-  }, [activeTool, gameState, gameStateRevision, movementPolicy, selectedObjectiveId, spatialMode, visibilityViewerId])
+    const models = gameState.models.filter((model) => nextSelectedIds.has(model.id))
+    beginSmartMoveForSelection(models, gameState, gameStateRevision)
+  }, [activeTool, beginSmartMoveForSelection, gameState, gameStateRevision, selectedObjectiveId, spatialMode, visibilityViewerId])
 
   const handleFeatureSelectionChange = useCallback((featureId: string) => {
     setSelectedFeatureId(featureId)
@@ -484,6 +531,7 @@ export default function App() {
       ])),
     })
     cancelSmartMove()
+    restartSmartMoveAfterApplyRef.current = true
   }, [cancelSmartMove, gameState, smartMovePolicy, smartMoveSession, smartMoveUnit])
 
   const changeTool = useCallback((tool: ActiveTool) => {
@@ -496,41 +544,17 @@ export default function App() {
       }
       const models = gameState.models
         .filter((model) => selectedIds.has(model.id))
-        .sort((a, b) => a.id.localeCompare(b.id))
-      const unitIds = [...new Set(models.map((model) => model.unitId))]
+      const sortedModels = models.sort((a, b) => a.id.localeCompare(b.id))
       setActiveTool('smart-move')
       smartMoveControllerRef.current?.cancelSession()
       setSmartMoveTargeting(initialSmartMoveTargetState())
-      if (models.length === 0) {
-        setSmartMoveSession(null)
-        setSmartMoveMessage('Select one or more models first.')
-        return
-      }
-      if (unitIds.length !== 1) {
-        setSmartMoveSession(null)
-        setSmartMoveMessage('Smart Move requires models from a single unit.')
-        return
-      }
-      const unit = gameState.units.find((candidate) => candidate.id === unitIds[0])
-      const policy = unit ? getUnitCoherencyPolicy(gameState, unit) : undefined
-      if (!unit || !policy) {
-        setSmartMoveSession(null)
-        setSmartMoveMessage('This unit has no configured coherency policy.')
-        return
-      }
-      setSmartMoveMessage(null)
-      const session = { modelIds: models.map((model) => model.id), unitId: unitIds[0] }
-      setSmartMoveSession(session)
-      smartMoveControllerRef.current?.beginSession(
-        gameStateRevision,
-        createSmartMoveRequestFactory(gameState, session.modelIds, policy, movementPolicy),
-      )
+      beginSmartMoveForSelection(sortedModels, gameState, gameStateRevision)
       return
     }
     cancelSmartMove()
     setActiveTool(tool)
     if (tool !== 'measure') setMeasurementStartTarget(null)
-  }, [cancelSmartMove, gameState, gameStateRevision, movementPolicy, selectedIds])
+  }, [beginSmartMoveForSelection, cancelSmartMove, gameState, gameStateRevision, selectedIds])
 
   const toggleSpatialOverlay = useCallback(() => {
     setVisibilityPickTarget(null)
@@ -638,6 +662,11 @@ export default function App() {
             ? 'Finish or cancel the current movement first.'
             : null}
           onEndTurn={handleEndTurn}
+          onRecordScore={(playerId, pointsDelta, reason) => dispatch({
+            type: 'score/eventRecorded', playerId, pointsDelta, reason,
+            source: { type: 'manual' },
+          })}
+          onUndoLastScore={() => dispatch({ type: 'score/lastEventUndone' })}
         />
         <div className="session-info">
           <span className="status-dot" /> LOCAL SANDBOX
@@ -648,8 +677,10 @@ export default function App() {
       <Toolbar
         activeTool={activeTool}
         spatialEnabled={spatialEnabled}
+        diceOpen={diceOpen}
         onToolChange={changeTool}
         onSpatialToggle={toggleSpatialOverlay}
+        onDiceToggle={() => setDiceOpen((open) => !open)}
         onResetCamera={() => setResetCameraSignal((value) => value + 1)}
       />
       <section className="workspace">
@@ -775,6 +806,23 @@ export default function App() {
               cancelSmartMove()
               setActiveTool('select')
             }}
+          />
+        )}
+        {diceOpen && (
+          <DicePanel
+            players={gameState.players}
+            activePlayerId={gameState.gameContext.activePlayerId}
+            history={gameState.diceHistory ?? []}
+            onClose={() => setDiceOpen(false)}
+            onRecord={(playerId: string, result: DicePoolResult) => {
+              const rollId = `dice-${gameState.nextActionSequence}`
+              dispatch({ type: 'dice/rollRecorded', playerId, result })
+              return rollId
+            }}
+            onUpdate={(rollId, result) => dispatch({ type: 'dice/rollUpdated', rollId, result })}
+            onRecordSequence={(playerId, resolution) => dispatch({
+              type: 'dice/sequenceRecorded', playerId, resolution,
+            })}
           />
         )}
       </section>

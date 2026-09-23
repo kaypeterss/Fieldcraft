@@ -124,6 +124,23 @@ const objectiveInfantry: TabletopModel[] = Array.from({ length: 10 }, (_, index)
   canPassOverModels: false, label: String(index + 1),
 }))
 
+/** Open Objective starts with the requested 5 × OC1 versus 1 × OC10 control fixture. */
+const objectiveControlModels: TabletopModel[] = [
+  ...[
+    { x: 3.2, y: 33.8 }, { x: 4.7, y: 33.5 }, { x: 3, y: 35.4 },
+    { x: 4.5, y: 35.5 }, { x: 5.6, y: 34.4 },
+  ].map((position, index): TabletopModel => ({
+    id: `qa-oc1-${index + 1}`, unitId: 'qa-oc1-unit', ownerId: 'player-1', position,
+    rotation: 0, base: { shape: 'circle', diameterMm: 32 },
+    canPassOverModels: false, label: `OC1-${index + 1}`,
+  })),
+  {
+    id: 'qa-oc10', unitId: 'qa-oc10-unit', ownerId: 'player-2',
+    position: { x: 7.3, y: 35.8 }, rotation: 0,
+    base: { shape: 'circle', diameterMm: 50 }, canPassOverModels: false, label: 'OC10',
+  },
+]
+
 const allow = { canEnter: true, canCross: true, canFinish: true }
 const block = { canEnter: false, canCross: false, canFinish: false }
 
@@ -132,17 +149,26 @@ export const battlefieldFeatureDemoGameState: GameState = {
   models: footprintDemoGameState.models.map((model) => ({
     ...model,
     position: { x: model.position.x, y: model.position.y + 20 },
-  })).concat(terrainTestModels, objectiveInfantry),
+  })).concat(terrainTestModels, objectiveInfantry, objectiveControlModels),
   units: [...footprintDemoGameState.units, ...terrainTestModels.map((model) => ({
     id: model.unitId, ownerId: model.ownerId, definitionId: 'qa-terrain-mover', modelIds: [model.id],
   })), { id: 'qa-objective-unit', ownerId: 'player-2', definitionId: 'qa-objective-infantry',
-    modelIds: objectiveInfantry.map((model) => model.id) }],
+    modelIds: objectiveInfantry.map((model) => model.id) },
+  { id: 'qa-oc1-unit', ownerId: 'player-1', definitionId: 'qa-oc1-definition',
+    modelIds: objectiveControlModels.filter((model) => model.unitId === 'qa-oc1-unit').map((model) => model.id) },
+  { id: 'qa-oc10-unit', ownerId: 'player-2', definitionId: 'qa-oc10-definition', modelIds: ['qa-oc10'] }],
   unitDefinitions: [...footprintDemoGameState.unitDefinitions, {
     id: 'qa-terrain-mover', name: 'Terrain QA Mover', movementAllowance: 18,
     coherencyPolicy: { distance: 0, requiredNeighbors: 0, requireConnected: true },
   }, {
-    id: 'qa-objective-infantry', name: 'Objective Infantry 10', movementAllowance: 6,
+    id: 'qa-objective-infantry', name: 'Objective Infantry 10', objectiveControl: 1, movementAllowance: 6,
     coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true },
+  }, {
+    id: 'qa-oc1-definition', name: 'Five OC1 Models', objectiveControl: 1, movementAllowance: 6,
+    coherencyPolicy: { distance: 1, requiredNeighbors: 1, requireConnected: true },
+  }, {
+    id: 'qa-oc10-definition', name: 'One OC10 Model', objectiveControl: 10, movementAllowance: 6,
+    coherencyPolicy: { distance: 0, requiredNeighbors: 0, requireConnected: true },
   }],
   battlefieldFeatures: battlefieldFeatureDemoFeatures,
   terrainPolicy: {

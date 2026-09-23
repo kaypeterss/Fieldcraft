@@ -1,14 +1,17 @@
 import type { GameState } from '../domain/types'
 import { hasUnitPerformedAction } from '../game/actionQueries'
 import { getUnitBaseLabel, getUnitDefinition } from '../game/selectors'
+import { Scoreboard } from './Scoreboard'
 
 interface GameStatusPanelProps {
   gameState: GameState
   blockedMessage: string | null
   onEndTurn: () => void
+  onRecordScore?: (playerId: string, pointsDelta: number, reason: string) => void
+  onUndoLastScore?: () => void
 }
 
-export function GameStatusPanel({ gameState, blockedMessage, onEndTurn }: GameStatusPanelProps) {
+export function GameStatusPanel({ gameState, blockedMessage, onEndTurn, onRecordScore, onUndoLastScore }: GameStatusPanelProps) {
   const { gameContext } = gameState
   const activePlayer = gameState.players.find((player) => player.id === gameContext.activePlayerId)
 
@@ -20,6 +23,8 @@ export function GameStatusPanel({ gameState, blockedMessage, onEndTurn }: GameSt
         {gameContext.phase && <small>{gameContext.phase}</small>}
       </div>
       <button type="button" className="end-turn" onClick={onEndTurn}>End Turn</button>
+      <Scoreboard players={gameState.players} events={gameState.scoreHistory ?? []}
+        onRecord={onRecordScore ?? (() => undefined)} onUndoLast={onUndoLastScore ?? (() => undefined)} />
       <details className="unit-status-menu">
         <summary>Units</summary>
         <div className="status-popover">

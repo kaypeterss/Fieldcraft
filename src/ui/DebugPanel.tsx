@@ -4,6 +4,7 @@ import type { CoherencyResult } from '../engine/coherency'
 import { formatInches, millimetersToInches } from '../engine/units'
 import { describeFootprint } from '../tools/spatialOverlay'
 import type { ModelAreaRelationship, PlayerAreaSummary, UnitAreaSummary } from '../engine/areaRelationships'
+import type { ObjectiveControlResult } from '../engine/objectiveControl'
 
 export interface ObjectiveDisplayAnalysis {
   featureName: string
@@ -12,6 +13,8 @@ export interface ObjectiveDisplayAnalysis {
   modelRelationship: ModelAreaRelationship | null
   unitSummary: UnitAreaSummary | null
   playerSummaries?: PlayerAreaSummary[]
+  control?: ObjectiveControlResult | null
+  controlPreview?: boolean
 }
 
 interface DebugPanelProps {
@@ -80,7 +83,9 @@ export function DebugPanel(props: DebugPanelProps) {
               model={props.objectiveAnalysis.modelRelationship}
               unit={props.objectiveAnalysis.unitSummary}
               unitName={props.objectiveAnalysis.unitName}
-              players={props.objectiveAnalysis.playerSummaries} />
+              players={props.objectiveAnalysis.playerSummaries}
+              control={props.objectiveAnalysis.control}
+              controlPreview={props.objectiveAnalysis.controlPreview} />
           </details>}
           {props.terrainMovement && <>
             <div className="panel-section-label">CURRENT MOVEMENT TERRAIN INTERACTION</div>
@@ -178,15 +183,30 @@ export function DebugPanel(props: DebugPanelProps) {
   )
 }
 
-export function AreaSummary({ name, model, unit, unitName, players }: {
+export function AreaSummary({ name, model, unit, unitName, players, control, controlPreview }: {
   name: string
   model: ModelAreaRelationship | null
   unit: UnitAreaSummary | null
   unitName?: string
   players?: PlayerAreaSummary[]
+  control?: ObjectiveControlResult | null
+  controlPreview?: boolean
 }) {
   return <div className="area-summary">
     <strong>{name}</strong>
+    {control && <div className="objective-control-summary">
+      <div className="objective-control-heading">
+        <span>{controlPreview ? 'PROJECTED CONTROL' : 'OBJECTIVE CONTROL'}</span>
+        <strong>{control.state === 'controlled'
+          ? `Controlled by ${control.players.find((player) => player.playerId === control.controllingPlayerId)?.playerName ?? control.controllingPlayerId}`
+          : control.state === 'contested' ? 'Tied / contested' : 'Nobody controls'}</strong>
+      </div>
+      {control.players.map((player) => <div className="objective-control-player" key={player.playerId}>
+        <span>{player.playerName}</span>
+        <small>{player.qualifyingModelCount} models</small>
+        <strong>{player.totalControl} Control</strong>
+      </div>)}
+    </div>}
     {model && <dl>
       <div><dt>Selected model</dt><dd>{model.placement === 'wholly-within' ? 'Wholly within'
         : model.intersects ? 'Touching / intersecting' : 'Outside'}</dd></div>
@@ -200,7 +220,9 @@ export function AreaSummary({ name, model, unit, unitName, players }: {
       <div><dt>Centers within</dt><dd>{unit.centerWithinCount} / {unit.modelCount}</dd></div>
       <div><dt>Unit ↔ area</dt><dd>{unit.distanceInches === null ? '—' : formatInches(unit.distanceInches)}</dd></div>
     </dl>}
-    {players && players.length > 0 && <div className="area-player-summaries">
+    {players && players.length > 0 && <details className="objective-geometry-details">
+      <summary>GEOMETRIC RELATIONSHIPS</summary>
+      <div className="area-player-summaries">
       {players.map((player) => <details key={player.playerId} open>
         <summary>{player.playerName} · {player.modelCount} models</summary>
         <dl>
@@ -212,7 +234,8 @@ export function AreaSummary({ name, model, unit, unitName, players }: {
           <span>{entry.unitName}</span><small>{entry.intersectingCount} / {entry.whollyWithinCount} / {entry.centerWithinCount}</small>
         </div>)}
       </details>)}
-    </div>}
+      </div>
+    </details>}
   </div>
 }
 
