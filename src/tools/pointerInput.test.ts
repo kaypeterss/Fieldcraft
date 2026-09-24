@@ -32,4 +32,11 @@ describe('tabletop pointer priority', () => {
     })).toEqual(new Set(['a', 'b']))
     expect(resolveModelPointerDown('smart-move', 1)).toBe('camera-pan')
   })
+
+  it('gives a transient model picker priority without consuming camera pan', () => {
+    expect(resolveTabletopPointerDown('measure', 0, true)).toEqual({ kind: 'model-pick-wait' })
+    expect(resolveModelPointerDown('smart-move', 0, true)).toBe('pick-model')
+    expect(resolveTabletopPointerDown('measure', 1, true)).toEqual({ kind: 'camera-pan' })
+    expect(resolveModelPointerDown('smart-move', 1, true)).toBe('camera-pan')
+  })
 })

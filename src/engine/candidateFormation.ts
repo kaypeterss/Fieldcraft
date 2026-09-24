@@ -39,6 +39,8 @@ export type CandidateFormationViolation =
   | { type: 'CANDIDATE_INTERNAL_OVERLAP'; modelIds: [string, string] }
   | { type: 'MOVEMENT_ALLOWANCE_EXCEEDED'; modelIds: [string]; movementCost: number; movementAllowance: number }
   | { type: 'COHERENCY_FAILED'; modelIds: string[] }
+  | { type: 'OUTSIDE_REQUIRED_AREA'; modelIds: [string]; constraintId: string }
+  | { type: 'TOO_CLOSE_TO_AREA'; modelIds: [string]; constraintId: string; minimumDistance: number; actualDistance: number }
 
 export interface CandidateFormationResult {
   valid: boolean

@@ -22,6 +22,7 @@ import {
   rangeOutlineForModel,
 } from '../../engine/spatial'
 import { millimetersToInches } from '../../engine/units'
+import { minimumDistanceBoundary } from '../../engine/placement'
 import type { GameStateAction } from '../../state/actions'
 import type { MeasurementResult, MeasurementTarget } from '../../tools/measurement'
 import { hasDragIntent, individualSameUnitHandoffTarget, selectionForModelPointerDown } from '../../tools/selection'
@@ -55,6 +56,10 @@ interface TabletopCanvasProps {
   lifecyclePlacementActive: boolean
   lifecyclePlacementPreviews: Array<{ model: TabletopModel; pose: Pose; valid: boolean }>
   lifecyclePlacementCoherency: Array<{ models: TabletopModel[]; result: CoherencyResult }>
+  deploymentZoneHighlightRole?: 'attacker' | 'defender'
+  deploymentZoneChoiceId?: string | null
+  deploymentForbiddenRegion?: { areas: Point[][]; distance: number } | null
+  placementHoveredModelId?: string | null
   resetCameraSignal: number
   movementPolicy: MovementPolicyConfig
   onSelectionChange: (ids: Set<string>) => void
@@ -66,6 +71,8 @@ interface TabletopCanvasProps {
   onVisibilityPickHover: (modelId: string | null) => void
   onLifecyclePlacementPreview: (point: Point) => void
   onLifecyclePlacementCommit: (point: Point) => void
+  onPlacementModelHover?: (modelId: string | null) => void
+  onPlacementModelDrag?: (modelId: string, point: Point, commit: boolean) => void
   dispatch: (action: GameStateAction) => void
 }
 
@@ -90,6 +97,7 @@ interface RotationDragState {
   dragStarted: boolean
 }
 interface SelectionBoxState { start: Point; current: Point; additive: boolean; active: boolean }
+interface PlacementDragState { modelId: string }
 
 const OWNER_COLORS: Record<string, { fill: number; rim: number }> = {
   'player-1': { fill: 0xd96c4d, rim: 0xffa37f },
@@ -105,6 +113,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
   const rotationDragRef = useRef<RotationDragState | null>(null)
   const panRef = useRef<{ start: Point; camera: Point } | null>(null)
   const selectionBoxRef = useRef<SelectionBoxState | null>(null)
+  const placementDragRef = useRef<PlacementDragState | null>(null)
   const movementSequenceRef = useRef(0)
   const smartTargetFrameRef = useRef<number | null>(null)
   const latestSmartTargetRef = useRef<Point | null>(null)
@@ -170,16 +179,20 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
       }
 
       app.stage.on('pointerdown', (event: FederatedPointerEvent) => {
-        const route = resolveTabletopPointerDown(propsRef.current.activeTool, event.button)
+        const route = resolveTabletopPointerDown(
+          propsRef.current.activeTool,
+          event.button,
+          Boolean(propsRef.current.visibilityPickTarget),
+        )
         if (route.kind === 'camera-pan') {
           beginCameraPan(event)
           return
         }
+        if (route.kind === 'model-pick-wait') return
         if (propsRef.current.lifecyclePlacementActive && event.button === 0) {
           propsRef.current.onLifecyclePlacementCommit(screenToWorld(event.global, cameraRef.current))
           return
         }
-        if (propsRef.current.visibilityPickTarget) return
         if (propsRef.current.activeTool === 'measure') {
           const point = screenToWorld(event.global, cameraRef.current)
           if (isPointInsideBattlefield(point, propsRef.current.gameState.battlefield)) {
@@ -211,7 +224,12 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
         }
 
         if (propsRef.current.lifecyclePlacementActive && !pan) {
-          propsRef.current.onLifecyclePlacementPreview(screenToWorld(event.global, cameraRef.current))
+          const point = screenToWorld(event.global, cameraRef.current)
+          if (placementDragRef.current && propsRef.current.onPlacementModelDrag) {
+            propsRef.current.onPlacementModelDrag(placementDragRef.current.modelId, point, false)
+          } else {
+            propsRef.current.onLifecyclePlacementPreview(point)
+          }
         }
 
         if (propsRef.current.activeTool === 'smart-move'
@@ -299,11 +317,19 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
           selectionBox.current = screenToWorld(event.global, cameraRef.current)
           selectionBox.active = selectionBox.active
             || Math.hypot(selectionBox.current.x - selectionBox.start.x, selectionBox.current.y - selectionBox.start.y) > 0.15
-          if (selectionBox.active) drawScene(world, propsRef, dragRef, rotationDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
+          if (selectionBox.active) drawScene(world, propsRef, dragRef, rotationDragRef, placementDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
         }
       })
 
-      const endPointerGesture = () => {
+      const endPointerGesture = (event: FederatedPointerEvent) => {
+        if (placementDragRef.current && propsRef.current.onPlacementModelDrag) {
+          propsRef.current.onPlacementModelDrag(
+            placementDragRef.current.modelId,
+            screenToWorld(event.global, cameraRef.current),
+            true,
+          )
+          placementDragRef.current = null
+        }
         const drag = dragRef.current
         if (drag?.handoffTargetId && !drag.dragStarted) {
           propsRef.current.dispatch({ type: 'movement/confirmed' })
@@ -325,7 +351,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
             propsRef.current.onSelectionChange(new Set())
           }
           selectionBoxRef.current = null
-          drawScene(world, propsRef, dragRef, rotationDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
+          drawScene(world, propsRef, dragRef, rotationDragRef, placementDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
         }
         dragRef.current = null
         rotationDragRef.current = null
@@ -352,7 +378,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
       app.canvas.addEventListener('contextmenu', (event) => event.preventDefault())
 
       fitCamera()
-      drawScene(world, propsRef, dragRef, rotationDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
+      drawScene(world, propsRef, dragRef, rotationDragRef, placementDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
     })
 
     return () => {
@@ -366,8 +392,8 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
 
   useEffect(() => {
     const world = worldRef.current
-    if (world) drawScene(world, propsRef, dragRef, rotationDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
-  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult, props.lifecyclePlacementActive, props.lifecyclePlacementPreviews, props.lifecyclePlacementCoherency])
+    if (world) drawScene(world, propsRef, dragRef, rotationDragRef, placementDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
+  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult, props.lifecyclePlacementActive, props.lifecyclePlacementPreviews, props.lifecyclePlacementCoherency, props.deploymentZoneHighlightRole, props.deploymentZoneChoiceId, props.deploymentForbiddenRegion, props.placementHoveredModelId])
 
   useEffect(() => {
     if (props.resetCameraSignal > 0) fitCamera()
@@ -411,6 +437,7 @@ function drawScene(
   propsRef: React.MutableRefObject<TabletopCanvasProps>,
   dragRef: React.MutableRefObject<DragState | null>,
   rotationDragRef: React.MutableRefObject<RotationDragState | null>,
+  placementDragRef: React.MutableRefObject<PlacementDragState | null>,
   panRef: React.MutableRefObject<{ start: Point; camera: Point } | null>,
   cameraRef: React.MutableRefObject<CameraState>,
   selectionBoxRef: React.MutableRefObject<SelectionBoxState | null>,
@@ -434,7 +461,8 @@ function drawScene(
   grid.eventMode = 'none'
   world.addChild(grid)
 
-  drawDeploymentZones(world, props.gameState)
+  drawDeploymentZones(world, props.gameState, props.deploymentZoneHighlightRole, props.deploymentZoneChoiceId)
+  if (props.deploymentForbiddenRegion) drawDeploymentForbiddenRegion(world, props.deploymentForbiddenRegion)
 
   for (const feature of props.gameState.battlefieldFeatures ?? []) {
     drawBattlefieldFeature(world, feature, props, propsRef, panRef, cameraRef)
@@ -536,7 +564,11 @@ function drawScene(
     token.on('pointerdown', (event: FederatedPointerEvent) => {
       event.stopPropagation()
       const currentProps = propsRef.current
-      const modelRoute = resolveModelPointerDown(currentProps.activeTool, event.button)
+      const modelRoute = resolveModelPointerDown(
+        currentProps.activeTool,
+        event.button,
+        Boolean(currentProps.visibilityPickTarget),
+      )
       if (modelRoute === 'camera-pan') {
         panRef.current = {
           start: { x: event.global.x, y: event.global.y },
@@ -544,12 +576,12 @@ function drawScene(
         }
         return
       }
-      if (currentProps.lifecyclePlacementActive) {
-        currentProps.onLifecyclePlacementCommit(screenToWorld(event.global, cameraRef.current))
+      if (modelRoute === 'pick-model') {
+        currentProps.onVisibilityPickModel(model.id)
         return
       }
-      if (currentProps.visibilityPickTarget) {
-        currentProps.onVisibilityPickModel(model.id)
+      if (currentProps.lifecyclePlacementActive) {
+        currentProps.onLifecyclePlacementCommit(screenToWorld(event.global, cameraRef.current))
         return
       }
       const unit = currentProps.gameState.units.find((candidate) => candidate.id === model.unitId)
@@ -746,11 +778,29 @@ function drawScene(
     const preview = new Container()
     preview.position.set(placement.pose.position.x, placement.pose.position.y)
     preview.rotation = placement.pose.rotation
-    const color = placement.valid ? 0x72d6a1 : 0xff7d6d
+    const hovered = props.placementHoveredModelId === placement.model.id
+    const color = hovered ? 0xf1c969 : placement.valid ? 0x72d6a1 : 0xff7d6d
     preview.addChild(drawLocalFootprint(new Graphics(), placement.model.base)
       .fill({ color, alpha: 0.18 })
       .stroke({ color, width: 0.18, alpha: 1 }))
-    preview.eventMode = 'none'
+    preview.eventMode = props.onPlacementModelDrag ? 'static' : 'none'
+    preview.cursor = props.onPlacementModelDrag ? 'grab' : 'default'
+    if (props.onPlacementModelDrag) {
+      preview.on('pointerover', () => propsRef.current.onPlacementModelHover?.(placement.model.id))
+      preview.on('pointerout', () => propsRef.current.onPlacementModelHover?.(null))
+      preview.on('pointerdown', (event: FederatedPointerEvent) => {
+        event.stopPropagation()
+        if (event.button !== 0) {
+          panRef.current = {
+            start: { x: event.global.x, y: event.global.y },
+            camera: { x: cameraRef.current.x, y: cameraRef.current.y },
+          }
+          return
+        }
+        placementDragRef.current = { modelId: placement.model.id }
+        propsRef.current.onPlacementModelHover?.(placement.model.id)
+      })
+    }
     world.addChild(preview)
   }
   for (const preview of props.lifecyclePlacementCoherency) {
@@ -762,18 +812,55 @@ function drawScene(
   if (selectionBox?.active) drawSelectionBox(world, selectionBox.start, selectionBox.current)
 }
 
-function drawDeploymentZones(world: Container, gameState: GameState) {
+function drawDeploymentZones(world: Container, gameState: GameState, highlightRole?: 'attacker' | 'defender', choiceId?: string | null) {
   for (const zone of gameState.resolvedMatchConfiguration?.deploymentZones ?? []) {
     const color = zone.ownerRole === 'attacker' ? 0xd76565 : 0x6397dc
+    const highlighted = zone.id === choiceId || Boolean(highlightRole && zone.ownerRole === highlightRole)
     for (const area of zone.areas ?? []) {
       if (area.vertices.length < 3) continue
       const graphic = new Graphics()
         .poly(area.vertices.flatMap((point) => [point.x, point.y]))
-        .fill({ color, alpha: 0.075 })
-        .stroke({ color, alpha: 0.62, width: 0.12 })
+        .fill({ color, alpha: highlighted ? 0.14 : 0.075 })
+        .stroke({ color, alpha: highlighted ? 0.95 : 0.62, width: highlighted ? 0.2 : 0.12 })
       graphic.eventMode = 'none'
       world.addChild(graphic)
     }
+    if (choiceId) {
+      const first = zone.areas?.[0]?.vertices
+      if (first?.length) {
+        const center = first.reduce((sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }), { x: 0, y: 0 })
+        const index = gameState.resolvedMatchConfiguration?.deploymentZones.findIndex((candidate) => candidate.id === zone.id) ?? 0
+        const label = new Text({ text: `TERRITORY ${String.fromCharCode(65 + index)}`, style: new TextStyle({ fontFamily: 'Arial', fontSize: 18, fontWeight: '700', fill: 0xffffff }), resolution: 3 })
+        label.anchor.set(0.5)
+        label.scale.set(0.65 / 18)
+        label.position.set(center.x / first.length, center.y / first.length)
+        label.eventMode = 'none'
+        world.addChild(label)
+      }
+    }
+  }
+}
+
+function drawDeploymentForbiddenRegion(world: Container, region: { areas: Point[][]; distance: number }) {
+  for (const boundary of minimumDistanceBoundary(region.areas, region.distance)) {
+    if (boundary.length < 3) continue
+    const forbidden = new Graphics()
+      .poly(boundary.flatMap((point) => [point.x, point.y]))
+      .fill({ color: 0x202832, alpha: 0.16 })
+      .stroke({ color: 0xd9e1ea, alpha: 0.82, width: 0.08 })
+    forbidden.eventMode = 'none'
+    world.addChild(forbidden)
+    const anchor = boundary[0]
+    const label = new Text({
+      text: '9″ LIMIT',
+      style: new TextStyle({ fontFamily: 'Arial', fontSize: 13, fontWeight: '700', fill: 0xe5ebf2 }),
+      resolution: 3,
+    })
+    label.anchor.set(0, 0.5)
+    label.scale.set(0.38 / 13)
+    label.position.set(anchor.x + 0.12, anchor.y - 0.18)
+    label.eventMode = 'none'
+    world.addChild(label)
   }
 }
 

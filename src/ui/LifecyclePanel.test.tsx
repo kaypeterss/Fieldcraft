@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LifecyclePanel, type LifecyclePanelEntry } from './LifecyclePanel'
 
@@ -73,6 +73,27 @@ describe('LifecyclePanel', () => {
     expect(destroy).toHaveBeenCalledOnce()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Require final unit coherency' }))
     expect(coherency).toHaveBeenCalledWith(true)
+  })
+
+  it('auto-reveals selected units and distinguishes full versus partial selection', async () => {
+    render(<LifecyclePanel {...baseProps} selectedIds={new Set(['infantry-a1'])} />)
+    await waitFor(() => expect(screen.getByText('infantry-a1')).toBeTruthy())
+    expect(screen.getByText('1 / 2 selected')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Select Unit' }).length).toBeGreaterThan(0)
+
+    cleanup()
+    const onSelectModels = vi.fn()
+    render(<LifecyclePanel {...baseProps} selectedIds={new Set(['infantry-a1', 'infantry-a2'])} onSelectModels={onSelectModels} />)
+    await waitFor(() => expect(screen.getAllByText('✓ Full unit selected').length).toBeGreaterThan(0))
+    expect(screen.getByRole('button', { name: 'Selected' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Selected' }))
+    expect(onSelectModels).toHaveBeenCalledWith(['infantry-a1', 'infantry-a2'])
+  })
+
+  it('auto-reveals off-board selections without requiring battlefield poses', async () => {
+    render(<LifecyclePanel {...baseProps} selectedIds={new Set(['cavalry-b1'])} />)
+    await waitFor(() => expect(screen.getByText('cavalry-b1')).toBeTruthy())
+    expect(screen.getByText('1 / 2 selected')).toBeTruthy()
   })
 
   it('makes staged atomic placement progress and cancellation explicit', () => {

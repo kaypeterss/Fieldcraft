@@ -18,6 +18,8 @@ export function reduceGameCommand(
   action: GameStateAction,
 ): GameState {
   switch (action.type) {
+    case 'gameSystem/command':
+      return runtime.registration?.executeCommand?.(state, action.command) ?? state
     case 'movement/sessionStarted': {
       const authorization = authorizeMovement(runtime, state, action.modelIds)
       if (!authorization.allowed) return state
@@ -93,6 +95,19 @@ export function reduceGameCommand(
       return authorizeCommand(runtime, state, 'MODEL_PLACEMENT', Object.keys(action.placements))
         ? gameReducer(state, action)
         : state
+    case 'history/undoLastCommitted':
+    case 'movement/undoLastConfirmed': {
+      const undo = state.lastCommittedOperationUndo
+      const operation = undo
+        ? state.committedOperations?.find((candidate) => candidate.id === undo.operationId)
+        : undefined
+      if (operation && runtime.gameSystem.authorizeUndo?.({
+        state,
+        gameSystemState: runtime.gameSystemState,
+        operation,
+      }) === false) return state
+      return gameReducer(state, action)
+    }
     default:
       return gameReducer(state, action)
   }

@@ -1,5 +1,6 @@
-import { useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import type { ModelPresence } from '../domain/types'
+import type { FormationPresetId } from '../tools/formationPresets'
 
 export interface LifecyclePanelEntry {
   modelId: string
@@ -16,6 +17,9 @@ export interface LifecyclePlacementStatus {
   placedCount: number
   totalCount: number
   coherency?: Array<{ coherent: boolean; componentCount: number }>
+  formationPreset?: FormationPresetId | 'custom'
+  formationOptions?: Array<{ id: FormationPresetId; label: string; available: boolean; reason?: string }>
+  formationRotation?: number
 }
 
 type PresenceGroup = 'ON_BATTLEFIELD' | 'OFF_BOARD' | 'DESTROYED'
@@ -38,6 +42,8 @@ interface LifecyclePanelProps {
   onPlaceFormation: () => void
   onCancelPlacement: () => void
   onRequireCoherencyChange: (required: boolean) => void
+  onFormationPresetChange?: (preset: FormationPresetId) => void
+  onFormationRotate?: (delta: number) => void
 }
 
 export function LifecyclePanel(props: LifecyclePanelProps) {
@@ -46,6 +52,31 @@ export function LifecyclePanel(props: LifecyclePanelProps) {
   const [expandedPresence, setExpandedPresence] = useState<Set<string>>(() => new Set(
     groupedPlayers(props.entries).map((player) => `${player.ownerId}:ON_BATTLEFIELD`),
   ))
+  useEffect(() => {
+    const selectedEntries = props.entries.filter((entry) => props.selectedIds.has(entry.modelId))
+    if (selectedEntries.length === 0) return
+    const unitsById = new Map(groupedUnits(props.entries).map((unit) => [unit.unitId, unit]))
+    queueMicrotask(() => {
+      setExpandedPlayers((current) => {
+        const next = new Set(current)
+        selectedEntries.forEach((entry) => next.add(entry.ownerId))
+        return next
+      })
+      setExpandedPresence((current) => {
+        const next = new Set(current)
+        selectedEntries.forEach((entry) => {
+          const unit = unitsById.get(entry.unitId)
+          if (unit) next.add(`${entry.ownerId}:${unitPresence(unit.entries)}`)
+        })
+        return next
+      })
+      setExpandedUnits((current) => {
+        const next = new Set(current)
+        selectedEntries.forEach((entry) => next.add(entry.unitId))
+        return next
+      })
+    })
+  }, [props.entries, props.selectedIds])
   const selected = props.entries.filter((entry) => props.selectedIds.has(entry.modelId))
   const selectedActive = selected.filter((entry) => entry.presence === 'ON_BATTLEFIELD').length
   const selectedInactive = selected.length - selectedActive
@@ -86,6 +117,16 @@ export function LifecyclePanel(props: LifecyclePanelProps) {
         Projected coherency: {props.placement.coherency.every((entry) => entry.coherent) ? 'Valid' : 'Invalid'}
         {props.placement.coherency.some((entry) => entry.componentCount > 1) ? ' · disconnected' : ''}
       </span>}
+      {props.placement.mode === 'formation' && props.placement.formationOptions && <div className="lifecycle-formation-controls">
+        <span>Formation</span>
+        <div>{props.placement.formationOptions.map((option) => <button type="button" key={option.id}
+          disabled={!option.available} title={option.reason}
+          className={props.placement?.formationPreset === option.id ? 'active' : ''}
+          onClick={() => props.onFormationPresetChange?.(option.id)}>{option.label}</button>)}</div>
+        <div><button type="button" onClick={() => props.onFormationRotate?.(-Math.PI / 12)}>↶</button>
+          <strong>{Math.round((props.placement.formationRotation ?? 0) * 180 / Math.PI)}°</strong>
+          <button type="button" onClick={() => props.onFormationRotate?.(Math.PI / 12)}>↷</button></div>
+      </div>}
       {/* Do not pass the browser click event into the status-message callback. */}
       <button type="button" onClick={() => props.onCancelPlacement()}>Cancel placement</button>
     </div>}
@@ -167,8 +208,10 @@ function UnitRow({ unit, expandedUnits, setExpandedUnits, props }: {
 }) {
   const expanded = expandedUnits.has(unit.unitId)
   const counts = presenceCounts(unit.entries)
+  const selectedCount = unit.entries.filter((entry) => props.selectedIds.has(entry.modelId)).length
+  const selectionState = selectedCount === 0 ? 'unselected' : selectedCount === unit.entries.length ? 'selected' : 'partial'
   return <section className="lifecycle-unit">
-    <div className="lifecycle-unit-heading">
+    <div className={`lifecycle-unit-heading lifecycle-unit-${selectionState}`} aria-selected={selectionState === 'selected'}>
       <button type="button" className="lifecycle-unit-toggle" aria-expanded={expanded}
         onClick={() => setExpandedUnits((current) => {
           const next = new Set(current)
@@ -179,9 +222,14 @@ function UnitRow({ unit, expandedUnits, setExpandedUnits, props }: {
         <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
         <span><strong>{unit.unitName}</strong><small>{unit.entries.length} models · {presenceSummary(counts)}</small></span>
       </button>
-      {!props.readOnly && <button type="button" className="lifecycle-unit-select" onClick={() => props.onSelectModels(unit.entries.map((entry) => entry.modelId))}>Select Unit</button>}
+      {!props.readOnly && <button type="button" className="lifecycle-unit-select" onClick={() => props.onSelectModels(unit.entries.map((entry) => entry.modelId))}>
+        {selectionState === 'selected' ? 'Selected' : 'Select Unit'}
+      </button>}
     </div>
-    {expanded && <div className="lifecycle-unit-models">{unit.entries.map((entry) => <article className="lifecycle-entry" key={entry.modelId}>
+    {selectedCount > 0 && <span className={`lifecycle-unit-selection lifecycle-unit-selection-${selectionState}`}>
+      {selectionState === 'selected' ? '✓ Full unit selected' : `${selectedCount} / ${unit.entries.length} selected`}
+    </span>}
+    {expanded && <div className="lifecycle-unit-models">{unit.entries.map((entry) => <article className={`lifecycle-entry ${props.selectedIds.has(entry.modelId) ? 'lifecycle-entry-selected' : ''}`} key={entry.modelId}>
       {!props.readOnly && <input type="checkbox" aria-label={`Select ${entry.label}`} checked={props.selectedIds.has(entry.modelId)} onChange={() => props.onToggleModel(entry.modelId)} />}
       <button type="button" className="lifecycle-entry-identity" onClick={() => props.onInspect(entry.modelId)}>
         <strong>{entry.label}</strong><span>{entry.modelId}</span><small>{entry.ownerName} · {presenceLabel(entry.presence)}</small>

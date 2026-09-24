@@ -7,6 +7,7 @@ interface ToolbarProps {
   diceOpen: boolean
   lifecycleOpen: boolean
   gameplayToolsEnabled?: boolean
+  diceEnabled?: boolean
   lifecycleEnabled?: boolean
   spatialPanelOpen?: boolean
   dicePanelOpen?: boolean
@@ -84,6 +85,7 @@ function LifecycleIcon() {
 }
 
 export function Toolbar({ activeTool, spatialEnabled, diceOpen, lifecycleOpen, gameplayToolsEnabled = true,
+  diceEnabled = gameplayToolsEnabled,
   lifecycleEnabled = gameplayToolsEnabled, spatialPanelOpen = false, dicePanelOpen = false,
   lifecyclePanelOpen = false, onToolChange, onSpatialToggle, onDiceToggle, onLifecycleToggle,
   onResetCamera }: ToolbarProps) {
@@ -112,22 +114,22 @@ export function Toolbar({ activeTool, spatialEnabled, diceOpen, lifecycleOpen, g
         >
           <SpatialIcon /><span>Spatial</span><kbd>S</kbd>
         </button>
-        {gameplayToolsEnabled && <>
+        {gameplayToolsEnabled &&
           <button
             className={activeTool === 'smart-move' ? 'tool-button active' : 'tool-button'}
             onClick={() => onToolChange('smart-move')}
             aria-pressed={activeTool === 'smart-move'}
           >
             <SmartMoveIcon /><span>Smart Move</span><kbd>G</kbd>
-          </button>
+          </button>}
+        {diceEnabled &&
           <button
             className={`tool-button${dicePanelOpen ? ' panel-open' : ''}${diceOpen ? ' state-active' : ''}`}
             onClick={onDiceToggle}
             aria-pressed={diceOpen}
           >
             <DiceIcon /><span>Dice</span>
-          </button>
-        </>}
+          </button>}
         {lifecycleEnabled && <button
             className={`tool-button${lifecyclePanelOpen ? ' panel-open' : ''}${lifecycleOpen ? ' state-active' : ''}`}
             onClick={onLifecycleToggle}

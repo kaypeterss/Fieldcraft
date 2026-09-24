@@ -4,6 +4,7 @@ import { stormcastTestRoster, skavenTestRoster } from './content/rosters/testRos
 import { stormcastWarscrolls } from './content/warscrolls/stormcast'
 import { skavenWarscrolls } from './content/warscrolls/skaven'
 import type { AosRoster, AosWarscrollProfile } from './content/types'
+import { initialAosDeploymentState } from './deployment'
 
 const profiles = new Map([...stormcastWarscrolls, ...skavenWarscrolls].map((profile) => [profile.id, profile]))
 
@@ -21,14 +22,18 @@ export function prepareAgeOfSigmarMatch(state: GameState): GameState {
       id: whatsYoursIsOurs.id, version: whatsYoursIsOurs.version, roundLimit: whatsYoursIsOurs.roundLimit,
       objectiveFeatureIds: whatsYoursIsOurs.objectives.map((objective) => `aos-objective-${objective.id}`),
       deploymentZones: [
-        { id: 'attacker-territory', name: "Attacker's Territory", ownerRole: 'attacker', areas: whatsYoursIsOurs.territories.filter((area) => area.id.startsWith('attacker')).map((area) => ({ vertices: area.vertices.map((point) => ({ ...point })) })) },
-        { id: 'defender-territory', name: "Defender's Territory", ownerRole: 'defender', areas: whatsYoursIsOurs.territories.filter((area) => area.id.startsWith('defender')).map((area) => ({ vertices: area.vertices.map((point) => ({ ...point })) })) },
+        { id: 'attacker-territory', name: 'Territory A', ownerRole: 'attacker', areas: whatsYoursIsOurs.territories.filter((area) => area.id.startsWith('attacker')).map((area) => ({ vertices: area.vertices.map((point) => ({ ...point })) })) },
+        { id: 'defender-territory', name: 'Territory B', ownerRole: 'defender', areas: whatsYoursIsOurs.territories.filter((area) => area.id.startsWith('defender')).map((area) => ({ vertices: area.vertices.map((point) => ({ ...point })) })) },
       ],
       policyReferences: { battlepack: 'generals-handbook/2026-27', battleplan: 'whats-yours-is-ours/2026-27' },
     },
     models: [...stormcast.models, ...skaven.models], units: [...stormcast.units, ...skaven.units],
     unitDefinitions: [...stormcast.definitions, ...skaven.definitions],
-    gameSystemState: { ...state.gameSystemState!, data: { status: 'deployment', setup: aosSetupData() } },
+    gameSystemState: {
+      schemaId: 'fieldcraft.age-of-sigmar.alpha-match-state',
+      schemaVersion: 1,
+      data: { status: 'deployment', setup: aosSetupData(), deployment: initialAosDeploymentState() } as unknown as import('../../domain/types').JsonValue,
+    },
   }
 }
 
@@ -56,7 +61,11 @@ function projectRoster(roster: AosRoster, ownerId: string): { models: TabletopMo
 }
 function definitionFor(profile: AosWarscrollProfile, id: string): UnitDefinition {
   return { id, name: profile.name, movementAllowance: profile.move, objectiveControl: profile.control,
-    keywords: [...profile.keywords], coherencyPolicy: { distance: 0.5, requiredNeighbors: profile.unitSize >= 7 ? 2 : 1, requireConnected: true } }
+    keywords: [...profile.keywords], coherencyPolicy: {
+      distance: 0.5,
+      requiredNeighbors: profile.unitSize === 1 ? 0 : profile.unitSize >= 7 ? 2 : 1,
+      requireConnected: true,
+    } }
 }
 function objectiveFeatures(): BattlefieldFeature[] {
   const controlDiameterMm = 40 + (6 * 25.4)

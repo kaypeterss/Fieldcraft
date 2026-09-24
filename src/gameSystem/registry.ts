@@ -3,7 +3,7 @@ import type {
   GameState,
   MatchIdentity,
 } from '../domain/types'
-import type { GameSystem } from './types'
+import type { GameSystem, GameSystemCommand } from './types'
 
 export interface InstalledContentPackage extends ContentManifestEntry {
   name: string
@@ -44,6 +44,8 @@ export interface RegisteredGameSystem {
   createMatch: (options?: MatchCreationOptions) => GameState
   /** Optional adapter-owned setup transition; generic Fieldcraft does not interpret its content. */
   prepareMatch?: (state: GameState) => GameState
+  /** Executes an adapter-owned authoritative command without teaching generic state its rules. */
+  executeCommand?: (state: GameState, command: GameSystemCommand) => GameState
   ui: GameSystemUiContribution
 }
 

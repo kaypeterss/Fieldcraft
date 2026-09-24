@@ -31,6 +31,9 @@ import type { GameStateAction } from './actions'
 
 export function gameReducer(state: GameState, action: GameStateAction): GameState {
   switch (action.type) {
+    case 'gameSystem/command':
+      // Adapter-owned commands are consumed by the authoritative command boundary.
+      return state
     case 'movement/sessionStarted': {
       if (state.movementSession) return state
       const models = activeBattlefieldModels(state).filter((model) => action.modelIds.includes(model.id))

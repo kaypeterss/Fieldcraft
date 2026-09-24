@@ -1,5 +1,6 @@
 import type { Point } from '../engine/geometry/point'
 import type { DicePoolResult, DiceSequenceResolution, ModelPresence, MovementPolicyConfig, Pose, PoseTrajectory } from '../domain/types'
+import type { GameSystemCommand } from '../gameSystem/types'
 
 export interface StartMovementSessionAction {
   type: 'movement/sessionStarted'
@@ -84,6 +85,10 @@ export interface RecordDiceSequenceAction {
   playerId: string
   resolution: DiceSequenceResolution
 }
+export interface ExecuteGameSystemCommandAction {
+  type: 'gameSystem/command'
+  command: GameSystemCommand
+}
 
 export type GameStateAction =
   | StartMovementSessionAction
@@ -103,4 +108,5 @@ export type GameStateAction =
   | RecordDiceRollAction
   | UpdateDiceRollAction
   | RecordDiceSequenceAction
+  | ExecuteGameSystemCommandAction
   | EndTurnAction

@@ -23,7 +23,7 @@ import { DebugPanel } from './ui/DebugPanel'
 import { Toolbar, type ActiveTool } from './ui/Toolbar'
 import { MovementPanel, type MovementSummary } from './ui/MovementPanel'
 import { MovementCostPolicyPanel } from './ui/MovementCostPolicyPanel'
-import { isEditableKeyboardTarget, isUndoMovementShortcut } from './tools/keyboard'
+import { formationShortcutForEvent, isEditableKeyboardTarget, isUndoMovementShortcut } from './tools/keyboard'
 import { evaluateUnitCoherency, isCoherencyResultValid, type CoherencyPolicy } from './engine/coherency'
 import {
   resolveSpatialCoherencyPolicy,
@@ -38,6 +38,7 @@ import { SpatialPanel } from './ui/SpatialPanel'
 import { GameStatusPanel } from './ui/GameStatusPanel'
 import type { SmartMoveRequest } from './engine/smartMove'
 import { validateCandidateFormation } from './engine/candidateFormation'
+import type { CandidateFormationViolation } from './engine/candidateFormation'
 import { GEOMETRY_EPSILON } from './engine/geometry/tolerance'
 import { SmartMovePanel } from './ui/SmartMovePanel'
 import {
@@ -70,7 +71,8 @@ import { authorizeMovement, loadRegisteredMatchRuntime } from './gameSystem/runt
 import { reduceGameCommand } from './state/commandBoundary'
 import { validateModelPlacements } from './engine/placement'
 import { LifecyclePanel, type LifecyclePanelEntry } from './ui/LifecyclePanel'
-import { derivePlacementCoherency, formationPlacements, nextUnplacedModelId } from './tools/lifecyclePlacement'
+import { derivePlacementCoherency, nextUnplacedModelId } from './tools/lifecyclePlacement'
+import { formationPresetCandidates, rotateFormationPlacements, type FormationPresetId } from './tools/formationPresets'
 import { gameSystemRegistry } from './gameSystem/registeredGameSystems'
 import { listSavedMatches, loadMatchFromStorage, loadSavedMatch as loadSavedMatchRecord, saveMatchAsToStorage, saveMatchToStorage, deleteSavedMatch } from './game/matchPersistence'
 import { NewMatchDialog } from './ui/NewMatchDialog'
@@ -81,6 +83,9 @@ import { UnsavedChangesDialog } from './ui/UnsavedChangesDialog'
 import { MatchIdentityHeader } from './ui/MatchIdentityHeader'
 import { SaveAsDialog } from './ui/SaveAsDialog'
 import { MatchInfoPanel } from './ui/MatchInfoPanel'
+import { DeploymentPanel, type DeploymentPlacementView } from './ui/DeploymentPanel'
+import { aosDeploymentPlacementRules, aosDeploymentState, validateAosDeploymentPlacements } from './gameSystem/ageOfSigmar/deployment'
+import { rollDice, systemRandomSource } from './engine/dice'
 
 interface SmartMoveSessionState {
   modelIds: string[]
@@ -91,9 +96,25 @@ interface LifecyclePlacementSession {
   mode: 'individual' | 'formation'
   modelIds: string[]
   stagedPoses: Record<string, Pose>
+  formationPreset: FormationPresetId | 'custom'
+  formationAnchor: { x: number; y: number } | null
+  formationRotation: number
 }
 
-type ContextPanelId = 'inspector' | 'spatial' | 'lifecycle' | 'dice' | 'smart-move' | 'movement' | 'match-info'
+interface DeploymentPlacementSession {
+  unitId: string
+  placements: Record<string, Pose>
+  locked: boolean
+  adjustingModelId: string | null
+  hoveredModelId: string | null
+  formationPreset: FormationPresetId | 'custom'
+  formationAnchor: { x: number; y: number } | null
+  formationRotation: number
+}
+
+type ContextPanelId = 'inspector' | 'spatial' | 'lifecycle' | 'dice' | 'smart-move' | 'movement' | 'match-info' | 'deployment'
+
+const FORMATION_ROTATION_STEP = Math.PI / 12
 
 export default function App() {
   const [session, setSession] = useState(() => ({ gameState: startupGameState(), key: 0 }))
@@ -274,7 +295,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const [spatialEnabled, setSpatialEnabled] = useState(false)
   const [diceOpen, setDiceOpen] = useState(false)
   const [lifecycleOpen, setLifecycleOpen] = useState(false)
-  const [contextPanel, setContextPanel] = useState<ContextPanelId>('inspector')
+  const [contextPanel, setContextPanel] = useState<ContextPanelId>(() => (
+    initialState.matchIdentity?.gameSystem.id === 'age-of-sigmar' && initialState.matchLifecycle === 'DEPLOYMENT'
+      ? 'deployment' : 'inspector'
+  ))
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null)
   const [selectedObjectiveId, setSelectedObjectiveId] = useState<string | null>(
@@ -333,7 +357,6 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const [smartMoveDiagnostics, setSmartMoveDiagnostics] = useState<SmartMoveSchedulingDiagnostics | null>(null)
   const [smartMoveMessage, setSmartMoveMessage] = useState<string | null>(null)
   const [lifecycleMessage, setLifecycleMessage] = useState<string | null>(null)
-  const [lifecycleSelectedIds, setLifecycleSelectedIds] = useState<Set<string>>(new Set())
   const [lifecycleRequireCoherency, setLifecycleRequireCoherency] = useState(false)
   const [lifecyclePlacement, setLifecyclePlacement] = useState<LifecyclePlacementSession | null>(null)
   const [lifecyclePlacementPreviews, setLifecyclePlacementPreviews] = useState<Array<{
@@ -341,11 +364,33 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     pose: Pose
     valid: boolean
   }>>([])
+  const [deploymentPlacement, setDeploymentPlacement] = useState<DeploymentPlacementSession | null>(null)
+  const [deploymentTerritoryHoverId, setDeploymentTerritoryHoverId] = useState<string | null>(null)
+  const aosDeployment = useMemo(() => aosDeploymentState(gameState), [gameState])
   const lifecyclePlacementCoherency = useMemo(() => {
     if (!lifecyclePlacement || !lifecycleRequireCoherency || lifecyclePlacementPreviews.length === 0) return []
     const placements = Object.fromEntries(lifecyclePlacementPreviews.map((preview) => [preview.model.id, preview.pose]))
     return derivePlacementCoherency(gameState, lifecyclePlacement.modelIds, placements, true)
   }, [gameState, lifecyclePlacement, lifecyclePlacementPreviews, lifecycleRequireCoherency])
+  const lifecycleFormationOptions = useMemo(() => {
+    if (!lifecyclePlacement || lifecyclePlacement.mode !== 'formation') return []
+    const movingModels = lifecyclePlacement.modelIds.flatMap((id) => {
+      const model = gameState.models.find((candidate) => candidate.id === id)
+      return model ? [model] : []
+    })
+    const unit = gameState.units.find((candidate) => candidate.id === movingModels[0]?.unitId)
+    const policy = unit ? getUnitCoherencyPolicy(gameState, unit)
+      ?? { distance: 0.25, requiredNeighbors: 0, requireConnected: false } : undefined
+    if (!unit || !policy) return []
+    const movingIds = new Set(lifecyclePlacement.modelIds)
+    const fixedModels = gameState.models.filter((model) => model.unitId === unit.id
+      && !movingIds.has(model.id) && modelPresence(model) === 'ON_BATTLEFIELD')
+    return formationPresetCandidates({
+      unit, movingModels, fixedModels, policy,
+      anchor: lifecyclePlacement.formationAnchor ?? { x: 0, y: 0 },
+      rotation: lifecyclePlacement.formationRotation,
+    })
+  }, [gameState, lifecyclePlacement])
   const restartSmartMoveAfterApplyRef = useRef(false)
   const smartMoveControllerRef = useRef<SmartMoveWorkerController | null>(null)
   const smartMoveResult = smartMoveAsync.result
@@ -834,8 +879,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       if (isEditableKeyboardTarget(event.target)) return
       if (isUndoMovementShortcut(event)) {
         event.preventDefault()
-        if (canUndoLastMovement(gameState)) {
-          dispatch({ type: 'movement/undoLastConfirmed' })
+        const latestOperation = gameState.committedOperations?.at(-1)
+        if (canUndoLastMovement(gameState) || latestOperation?.type === 'GAME_SYSTEM') {
+          dispatch({ type: 'history/undoLastCommitted' })
+          setDeploymentPlacement(null)
           setLifecyclePlacement(null)
           setLifecyclePlacementPreviews([])
           setLifecycleMessage('Last committed operation undone.')
@@ -866,6 +913,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       if (event.key.toLowerCase() === 'g' && gameplayImplemented) changeTool('smart-move')
       if (event.key.toLowerCase() === 'f') setResetCameraSignal((value) => value + 1)
       if (event.key === 'Escape') {
+        if (deploymentPlacement) {
+          setDeploymentPlacement(null)
+          return
+        }
         if (lifecyclePlacement) {
           setLifecyclePlacement(null)
           setLifecyclePlacementPreviews([])
@@ -896,7 +947,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, dispatch, gameState, gameplayImplemented, lifecyclePlacement, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
+  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, deploymentPlacement, dispatch, gameState, gameplayImplemented, lifecyclePlacement, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
 
   const handleEndTurn = useCallback(() => {
     if (gameState.movementSession) {
@@ -927,10 +978,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   }, [dispatch, gameState, lifecycleRejectionReason, loadedRuntime])
 
   const selectedLifecycleModels = useMemo(() => gameState.models
-    .filter((model) => lifecycleSelectedIds.has(model.id)), [gameState.models, lifecycleSelectedIds])
+    .filter((model) => selectedIds.has(model.id)), [gameState.models, selectedIds])
 
   const setDevelopmentPresence = useCallback((presence: 'OFF_BOARD' | 'DESTROYED') => {
-    const models = gameState.models.filter((model) => lifecycleSelectedIds.has(model.id))
+    const models = gameState.models.filter((model) => selectedIds.has(model.id))
     if (models.length === 0 || models.some((model) => modelPresence(model) !== 'ON_BATTLEFIELD')) {
       setLifecycleMessage('Lifecycle command rejected: select only models currently on the battlefield.')
       return
@@ -948,7 +999,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     if (visibilityViewerId && modelIds.includes(visibilityViewerId)) setVisibilityViewerId(null)
     if (visibilityTargetId && modelIds.includes(visibilityTargetId)) setVisibilityTargetId(null)
     if (smartMoveSession?.modelIds.some((modelId) => modelIds.includes(modelId))) cancelSmartMove()
-  }, [cancelSmartMove, dispatchLifecycleAction, gameState.models, lifecycleSelectedIds, smartMoveSession, visibilityTargetId, visibilityViewerId])
+  }, [cancelSmartMove, dispatchLifecycleAction, gameState.models, selectedIds, smartMoveSession, visibilityTargetId, visibilityViewerId])
 
   const cancelLifecyclePlacement = useCallback((message = 'Placement cancelled.') => {
     setLifecyclePlacement(null)
@@ -966,16 +1017,42 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       setLifecycleMessage('Placement cannot start during an active movement.')
       return
     }
+    const unitIds = new Set(selectedLifecycleModels.map((model) => model.unitId))
+    if (mode === 'formation' && unitIds.size !== 1) {
+      setLifecycleMessage('Formation placement requires models from one unit; use individual placement for a mixed selection.')
+      return
+    }
+    let initialPreset: FormationPresetId = 'compact'
+    if (mode === 'formation') {
+      const unit = gameState.units.find((candidate) => candidate.id === selectedLifecycleModels[0]?.unitId)
+      const policy = unit ? getUnitCoherencyPolicy(gameState, unit)
+        ?? { distance: 0.25, requiredNeighbors: 0, requireConnected: false } : undefined
+      if (unit && policy) {
+        const movingIds = new Set(selectedLifecycleModels.map((model) => model.id))
+        const fixedModels = gameState.models.filter((model) => model.unitId === unit.id
+          && !movingIds.has(model.id) && modelPresence(model) === 'ON_BATTLEFIELD')
+        initialPreset = formationPresetCandidates({
+          unit, movingModels: selectedLifecycleModels, fixedModels, policy, anchor: { x: 0, y: 0 },
+        }).find((candidate) => candidate.available)?.id ?? 'compact'
+      }
+    }
     cancelSmartMove()
     setActiveTool('select')
     setSelectedIds(new Set())
     setSelectedFeatureId(null)
-    setLifecyclePlacement({ mode, modelIds: selectedLifecycleModels.map((model) => model.id).sort(), stagedPoses: {} })
+    setLifecyclePlacement({
+      mode,
+      modelIds: selectedLifecycleModels.map((model) => model.id).sort(),
+      stagedPoses: {},
+      formationPreset: initialPreset,
+      formationAnchor: null,
+      formationRotation: 0,
+    })
     setLifecyclePlacementPreviews([])
     setLifecycleMessage(mode === 'formation'
       ? `Move the ${selectedLifecycleModels.length}-model formation, then click a legal position.`
       : `Place ${selectedLifecycleModels.length} model${selectedLifecycleModels.length === 1 ? '' : 's'} one at a time; nothing commits until the last model.`)
-  }, [cancelSmartMove, gameState.movementSession, selectedLifecycleModels])
+  }, [cancelSmartMove, gameState, selectedLifecycleModels])
 
   const placementsAtPoint = useCallback((position: { x: number; y: number }) => {
     if (!lifecyclePlacement) return null
@@ -984,12 +1061,31 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       return model ? [model] : []
     })
     if (models.length !== lifecyclePlacement.modelIds.length) return null
-    if (lifecyclePlacement.mode === 'formation') return formationPlacements(models, position)
+    if (lifecyclePlacement.mode === 'formation') {
+      const unit = gameState.units.find((candidate) => candidate.id === models[0]?.unitId)
+      const policy = unit ? getUnitCoherencyPolicy(gameState, unit)
+        ?? { distance: 0.25, requiredNeighbors: 0, requireConnected: false } : undefined
+      if (!unit || !policy) return null
+      if (lifecyclePlacement.formationPreset === 'custom' && Object.keys(lifecyclePlacement.stagedPoses).length > 0) {
+        const previousAnchor = lifecyclePlacement.formationAnchor ?? position
+        const offset = { x: position.x - previousAnchor.x, y: position.y - previousAnchor.y }
+        return Object.fromEntries(Object.entries(lifecyclePlacement.stagedPoses).map(([id, pose]) => [id, {
+          ...pose, position: { x: pose.position.x + offset.x, y: pose.position.y + offset.y },
+        }]))
+      }
+      const movingIds = new Set(lifecyclePlacement.modelIds)
+      const fixedModels = gameState.models.filter((model) => model.unitId === unit.id
+        && !movingIds.has(model.id) && modelPresence(model) === 'ON_BATTLEFIELD')
+      return formationPresetCandidates({
+        unit, movingModels: models, fixedModels, policy, anchor: position,
+        rotation: lifecyclePlacement.formationRotation,
+      }).find((candidate) => candidate.id === lifecyclePlacement.formationPreset)?.placements ?? null
+    }
     const currentId = nextUnplacedModelId(lifecyclePlacement.modelIds, lifecyclePlacement.stagedPoses)
     const current = models.find((model) => model.id === currentId)
     if (!current) return null
     return { ...lifecyclePlacement.stagedPoses, [current.id]: { position, rotation: current.rotation } }
-  }, [gameState.models, lifecyclePlacement])
+  }, [gameState, lifecyclePlacement])
 
   const validateLifecyclePlacements = useCallback((placements: Record<string, Pose>, final: boolean) =>
     validateModelPlacements({
@@ -1009,6 +1105,9 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       const model = gameState.models.find((candidate) => candidate.id === modelId)
       return model ? [{ model, pose, valid: validation.valid }] : []
     }))
+    if (lifecyclePlacement.mode === 'formation') {
+      setLifecyclePlacement((current) => current ? { ...current, stagedPoses: placements, formationAnchor: position } : current)
+    }
   }, [gameState.models, lifecyclePlacement, placementsAtPoint, validateLifecyclePlacements])
 
   const commitLifecyclePlacement = useCallback((position: { x: number; y: number }) => {
@@ -1038,14 +1137,267 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     setSelectedIds(new Set(lifecyclePlacement.modelIds))
   }, [dispatchLifecycleAction, lifecyclePlacement, lifecycleRequireCoherency, placementsAtPoint, previewLifecyclePlacement, validateLifecyclePlacements])
 
+  const deploymentValidation = useMemo(() => {
+    if (!deploymentPlacement || Object.keys(deploymentPlacement.placements).length === 0) return null
+    return validateAosDeploymentPlacements(gameState, deploymentPlacement.unitId, deploymentPlacement.placements)
+  }, [deploymentPlacement, gameState])
+  const deploymentFormationOptions = useMemo(() => {
+    if (!deploymentPlacement) return []
+    const unit = gameState.units.find((candidate) => candidate.id === deploymentPlacement.unitId)
+    const policy = unit ? getUnitCoherencyPolicy(gameState, unit) : undefined
+    if (!unit || !policy) return []
+    const movingModels = unit.modelIds.flatMap((id) => {
+      const model = gameState.models.find((candidate) => candidate.id === id)
+      return model ? [model] : []
+    })
+    return formationPresetCandidates({
+      unit, movingModels, policy,
+      anchor: deploymentPlacement.formationAnchor ?? { x: 0, y: 0 },
+      rotation: deploymentPlacement.formationRotation,
+    })
+  }, [deploymentPlacement, gameState])
+  const deploymentPlacementView = useMemo<DeploymentPlacementView | null>(() => {
+    if (!deploymentPlacement) return null
+    return {
+      ...deploymentPlacement,
+      valid: deploymentValidation?.valid ?? false,
+      reasons: [...new Set(deploymentValidation?.violations.map(describePlacementViolation) ?? [])],
+      formationOptions: deploymentFormationOptions.map(({ id, label, available, reason }) => ({ id, label, available, reason })),
+      formationValid: deploymentPlacement.formationPreset === 'custom'
+        ? !deploymentValidation?.violations.some((violation) => violation.type === 'COHERENCY_FAILED')
+        : Boolean(deploymentFormationOptions.find((option) => option.id === deploymentPlacement.formationPreset)?.available),
+    }
+  }, [deploymentFormationOptions, deploymentPlacement, deploymentValidation])
+  const deploymentPlacementPreviews = useMemo(() => {
+    if (!deploymentPlacement) return []
+    return Object.entries(deploymentPlacement.placements).flatMap(([modelId, pose]) => {
+      const model = gameState.models.find((candidate) => candidate.id === modelId)
+      return model ? [{ model, pose, valid: deploymentValidation?.valid ?? false }] : []
+    })
+  }, [deploymentPlacement, deploymentValidation, gameState.models])
+  const deploymentPlacementCoherency = useMemo(() => {
+    if (!deploymentPlacement || Object.keys(deploymentPlacement.placements).length === 0) return []
+    const unit = gameState.units.find((candidate) => candidate.id === deploymentPlacement.unitId)
+    return unit ? derivePlacementCoherency(gameState, unit.modelIds, deploymentPlacement.placements, true) : []
+  }, [deploymentPlacement, gameState])
+
+  const beginDeploymentUnit = useCallback((unitId: string) => {
+    const deployment = aosDeploymentState(gameState)
+    const unit = gameState.units.find((candidate) => candidate.id === unitId)
+    if (!deployment || deployment.phase !== 'DEPLOYING' || !unit
+      || unit.ownerId !== deployment.currentPlayerId) return
+    setActiveTool('select')
+    setSelectedIds(new Set(unit.modelIds))
+    const models = unit.modelIds.flatMap((id) => {
+      const model = gameState.models.find((candidate) => candidate.id === id)
+      return model ? [model] : []
+    })
+    const policy = getUnitCoherencyPolicy(gameState, unit)
+    const initialPreset = policy ? formationPresetCandidates({
+      unit, movingModels: models, policy, anchor: { x: 0, y: 0 },
+    }).find((candidate) => candidate.available)?.id ?? 'compact' : 'compact'
+    setDeploymentPlacement({
+      unitId, placements: {}, locked: false, adjustingModelId: null, hoveredModelId: null,
+      formationPreset: initialPreset, formationAnchor: null, formationRotation: 0,
+    })
+    setContextPanel('deployment')
+  }, [gameState])
+
+  const deploymentPlacementsAtPoint = useCallback((point: { x: number; y: number }) => {
+    if (!deploymentPlacement) return null
+    if (deploymentPlacement.adjustingModelId) {
+      const model = gameState.models.find((candidate) => candidate.id === deploymentPlacement.adjustingModelId)
+      if (!model) return null
+      return {
+        ...deploymentPlacement.placements,
+        [model.id]: { position: point, rotation: deploymentPlacement.placements[model.id]?.rotation ?? model.rotation },
+      }
+    }
+    if (deploymentPlacement.locked) return deploymentPlacement.placements
+    const unit = gameState.units.find((candidate) => candidate.id === deploymentPlacement.unitId)
+    const models = unit?.modelIds.flatMap((id) => {
+      const model = gameState.models.find((candidate) => candidate.id === id)
+      return model ? [model] : []
+    }) ?? []
+    const policy = unit ? getUnitCoherencyPolicy(gameState, unit) : undefined
+    if (!unit || !policy || deploymentPlacement.formationPreset === 'custom') return deploymentPlacement.placements
+    return formationPresetCandidates({
+      unit, movingModels: models, policy, anchor: point, rotation: deploymentPlacement.formationRotation,
+    }).find((candidate) => candidate.id === deploymentPlacement.formationPreset)?.placements ?? null
+  }, [deploymentPlacement, gameState])
+
+  const previewPlacement = useCallback((point: { x: number; y: number }) => {
+    if (deploymentPlacement) {
+      const placements = deploymentPlacementsAtPoint(point)
+      if (!placements || (deploymentPlacement.locked && !deploymentPlacement.adjustingModelId)) return
+      setDeploymentPlacement((current) => current ? {
+        ...current, placements,
+        formationAnchor: current.adjustingModelId ? current.formationAnchor : point,
+      } : current)
+      return
+    }
+    previewLifecyclePlacement(point)
+  }, [deploymentPlacement, deploymentPlacementsAtPoint, previewLifecyclePlacement])
+
+  const commitPlacementPointer = useCallback((point: { x: number; y: number }) => {
+    if (deploymentPlacement) {
+      const placements = deploymentPlacementsAtPoint(point)
+      if (!placements) return
+      setDeploymentPlacement({
+        ...deploymentPlacement,
+        placements,
+        locked: true,
+        adjustingModelId: null,
+        formationAnchor: deploymentPlacement.adjustingModelId ? deploymentPlacement.formationAnchor : point,
+        formationPreset: deploymentPlacement.adjustingModelId ? 'custom' : deploymentPlacement.formationPreset,
+      })
+      return
+    }
+    commitLifecyclePlacement(point)
+  }, [commitLifecyclePlacement, deploymentPlacement, deploymentPlacementsAtPoint])
+
+  const confirmDeploymentPlacement = useCallback(() => {
+    const deployment = aosDeploymentState(gameState)
+    if (!deploymentPlacement || !deploymentValidation?.valid || !deployment?.currentPlayerId) return
+    dispatch({
+      type: 'gameSystem/command',
+      command: {
+        type: 'aos/deployment/deploy-unit',
+        actorPlayerId: deployment.currentPlayerId,
+        payload: { unitId: deploymentPlacement.unitId, placements: deploymentPlacement.placements } as unknown as import('./domain/types').JsonValue,
+      },
+    })
+    setSelectedIds(new Set(Object.keys(deploymentPlacement.placements)))
+    setDeploymentPlacement(null)
+  }, [deploymentPlacement, deploymentValidation, dispatch, gameState])
+
+  const selectDeploymentFormationPreset = useCallback((preset: FormationPresetId) => {
+    setDeploymentPlacement((current) => {
+      if (!current) return current
+      const option = deploymentFormationOptions.find((candidate) => candidate.id === preset)
+      if (!option?.available) return current
+      return { ...current, formationPreset: preset, placements: option.placements, adjustingModelId: null }
+    })
+  }, [deploymentFormationOptions])
+
+  const rotateDeploymentFormation = useCallback((delta: number) => {
+    setDeploymentPlacement((current) => {
+      if (!current || !current.formationAnchor || Object.keys(current.placements).length === 0) return current
+      const nextRotation = current.formationRotation + delta
+      if (current.formationPreset === 'custom') return {
+        ...current,
+        formationRotation: nextRotation,
+        placements: rotateFormationPlacements(current.placements, current.formationAnchor, delta),
+      }
+      const unit = gameState.units.find((candidate) => candidate.id === current.unitId)
+      const policy = unit ? getUnitCoherencyPolicy(gameState, unit) : undefined
+      if (!unit || !policy) return current
+      const models = unit.modelIds.flatMap((id) => {
+        const model = gameState.models.find((candidate) => candidate.id === id)
+        return model ? [model] : []
+      })
+      const option = formationPresetCandidates({
+        unit, movingModels: models, policy, anchor: current.formationAnchor, rotation: nextRotation,
+      }).find((candidate) => candidate.id === current.formationPreset)
+      return option?.available ? { ...current, formationRotation: nextRotation, placements: option.placements } : current
+    })
+  }, [gameState])
+
+  const cycleDeploymentFormation = useCallback((direction: -1 | 1) => {
+    if (!deploymentPlacement) return
+    const available = deploymentFormationOptions.filter((option) => option.available)
+    if (available.length === 0) return
+    const currentIndex = available.findIndex((option) => option.id === deploymentPlacement.formationPreset)
+    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + direction + available.length) % available.length
+    selectDeploymentFormationPreset(available[nextIndex].id)
+  }, [deploymentFormationOptions, deploymentPlacement, selectDeploymentFormationPreset])
+
+  const updateDeploymentStagedModel = useCallback((modelId: string, point: { x: number; y: number }, commit: boolean) => {
+    setDeploymentPlacement((current) => {
+      const pose = current?.placements[modelId]
+      if (!current || !pose) return current
+      return {
+        ...current,
+        placements: { ...current.placements, [modelId]: { ...pose, position: point } },
+        formationPreset: 'custom',
+        adjustingModelId: commit ? null : modelId,
+      }
+    })
+  }, [])
+
+  const selectLifecycleFormationPreset = useCallback((preset: FormationPresetId) => {
+    const option = lifecycleFormationOptions.find((candidate) => candidate.id === preset)
+    if (!option?.available) return
+    setLifecyclePlacement((current) => current ? {
+      ...current, formationPreset: preset, stagedPoses: option.placements,
+    } : current)
+    setLifecyclePlacementPreviews(Object.entries(option.placements).flatMap(([modelId, pose]) => {
+      const model = gameState.models.find((candidate) => candidate.id === modelId)
+      return model ? [{ model, pose, valid: true }] : []
+    }))
+  }, [gameState.models, lifecycleFormationOptions])
+
+  const rotateLifecycleFormation = useCallback((delta: number) => {
+    setLifecyclePlacement((current) => {
+      if (!current || current.mode !== 'formation' || !current.formationAnchor) return current
+      const option = lifecycleFormationOptions.find((candidate) => candidate.id === current.formationPreset)
+      if (!option?.available) return current
+      const placements = rotateFormationPlacements(option.placements, current.formationAnchor, delta)
+      setLifecyclePlacementPreviews(Object.entries(placements).flatMap(([modelId, pose]) => {
+        const model = gameState.models.find((candidate) => candidate.id === modelId)
+        return model ? [{ model, pose, valid: true }] : []
+      }))
+      return { ...current, formationRotation: current.formationRotation + delta, stagedPoses: placements }
+    })
+  }, [gameState.models, lifecycleFormationOptions])
+
+  const cycleLifecycleFormation = useCallback((direction: -1 | 1) => {
+    if (!lifecyclePlacement || lifecyclePlacement.mode !== 'formation') return
+    const available = lifecycleFormationOptions.filter((option) => option.available)
+    if (available.length === 0) return
+    const currentIndex = available.findIndex((option) => option.id === lifecyclePlacement.formationPreset)
+    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + direction + available.length) % available.length
+    selectLifecycleFormationPreset(available[nextIndex].id)
+  }, [lifecycleFormationOptions, lifecyclePlacement, selectLifecycleFormationPreset])
+
+  useEffect(() => {
+    if (!deploymentPlacement && lifecyclePlacement?.mode !== 'formation') return
+    const onFormationShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isEditableKeyboardTarget(event.target)) return
+      const shortcut = formationShortcutForEvent(event)
+      if (!shortcut) return
+      event.preventDefault()
+      if (shortcut === 'previous') {
+        if (deploymentPlacement) cycleDeploymentFormation(-1)
+        else cycleLifecycleFormation(-1)
+      } else if (shortcut === 'next') {
+        if (deploymentPlacement) cycleDeploymentFormation(1)
+        else cycleLifecycleFormation(1)
+      } else if (shortcut === 'rotate-left') {
+        if (deploymentPlacement) rotateDeploymentFormation(-FORMATION_ROTATION_STEP)
+        else rotateLifecycleFormation(-FORMATION_ROTATION_STEP)
+      } else if (shortcut === 'rotate-right') {
+        if (deploymentPlacement) rotateDeploymentFormation(FORMATION_ROTATION_STEP)
+        else rotateLifecycleFormation(FORMATION_ROTATION_STEP)
+      }
+    }
+    window.addEventListener('keydown', onFormationShortcut)
+    return () => window.removeEventListener('keydown', onFormationShortcut)
+  }, [cycleDeploymentFormation, cycleLifecycleFormation, deploymentPlacement, lifecyclePlacement, rotateDeploymentFormation, rotateLifecycleFormation])
+
+  const placementActive = Boolean(lifecyclePlacement || deploymentPlacement)
+  const placementPreviews = deploymentPlacement ? deploymentPlacementPreviews : lifecyclePlacementPreviews
+  const placementCoherency = deploymentPlacement ? deploymentPlacementCoherency : lifecyclePlacementCoherency
+  const deploymentPlacementRules = deploymentPlacement
+    ? aosDeploymentPlacementRules(gameState, deploymentPlacement.unitId) : null
+
   const toggleLifecyclePanel = useCallback(() => {
     if (!lifecycleOpen) {
       setLifecycleOpen(true)
-      setLifecycleSelectedIds(new Set(selectedIds))
       setLifecycleMessage(null)
     }
     setContextPanel('lifecycle')
-  }, [lifecycleOpen, selectedIds])
+  }, [lifecycleOpen])
 
   return (
     <main className="app-shell">
@@ -1075,7 +1427,8 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         /> : <GameSystemStatusPanel ui={gameSystemRegistration.ui} gameState={gameState}
           onPrepare={gameSystemRegistration.prepareMatch
             ? () => onReplaceState(gameSystemRegistration.prepareMatch!(gameState))
-            : undefined} />}
+            : undefined}
+          onOpenDeployment={aosDeployment ? () => setContextPanel('deployment') : undefined} />}
         <MatchControls
           notice={matchNotice?.message}
           error={matchNotice?.error}
@@ -1095,6 +1448,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         diceOpen={diceOpen}
         lifecycleOpen={lifecycleOpen}
         gameplayToolsEnabled={gameplayImplemented}
+        diceEnabled={gameplayImplemented || gameState.matchLifecycle === 'DEPLOYMENT'}
         lifecycleEnabled={lifecycleAvailable}
         spatialPanelOpen={contextPanel === 'spatial'}
         dicePanelOpen={contextPanel === 'dice'}
@@ -1122,9 +1476,18 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           smartMoveRawTarget={smartMoveTargeting.target}
           smartMoveTargetLocked={smartMoveTargeting.mode === 'locked'}
           visibilityPickTarget={visibilityPickTarget}
-          lifecyclePlacementActive={Boolean(lifecyclePlacement)}
-          lifecyclePlacementPreviews={lifecyclePlacementPreviews}
-          lifecyclePlacementCoherency={lifecyclePlacementCoherency}
+          lifecyclePlacementActive={placementActive}
+          lifecyclePlacementPreviews={placementPreviews}
+          lifecyclePlacementCoherency={placementCoherency}
+          deploymentZoneHighlightRole={aosDeployment?.phase === 'DEPLOYING'
+            ? aosDeployment.currentPlayerId === aosDeployment.attackerPlayerId ? 'attacker' : 'defender'
+            : undefined}
+          deploymentZoneChoiceId={aosDeployment?.phase === 'CHOOSE_TERRITORY' ? deploymentTerritoryHoverId : null}
+          deploymentForbiddenRegion={deploymentPlacementRules ? {
+            areas: deploymentPlacementRules.enemyAreas,
+            distance: deploymentPlacementRules.enemyTerritoryExclusionDistance,
+          } : null}
+          placementHoveredModelId={deploymentPlacement?.hoveredModelId}
           resetCameraSignal={resetCameraSignal}
           movementPolicy={movementPolicy}
           onSelectionChange={handleSelectionChange}
@@ -1134,8 +1497,11 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           onSmartMoveTargetLock={lockSmartMoveTarget}
           onVisibilityPickModel={handleVisibilityPickModel}
           onVisibilityPickHover={setVisibilityPickHoverModelId}
-          onLifecyclePlacementPreview={previewLifecyclePlacement}
-          onLifecyclePlacementCommit={commitLifecyclePlacement}
+          onLifecyclePlacementPreview={previewPlacement}
+          onLifecyclePlacementCommit={commitPlacementPointer}
+          onPlacementModelHover={deploymentPlacement ? (modelId) => setDeploymentPlacement((current) => current
+            ? { ...current, hoveredModelId: modelId } : current) : undefined}
+          onPlacementModelDrag={deploymentPlacement?.locked ? updateDeploymentStagedModel : undefined}
             dispatch={dispatch}
           />
           {developmentControlsEnabled && (footprintDemoEnabled || orientationGapEnabled) && (
@@ -1147,6 +1513,56 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           )}
         </div>
         <aside className="context-panel-region" aria-label="Context panel">
+          {aosDeployment && (
+            <div className={`context-panel-view ${contextPanel === 'deployment' ? '' : 'hidden'}`}>
+              <DeploymentPanel
+                state={gameState}
+                deployment={aosDeployment}
+                playerLabels={gameSystemRegistration.ui.matchInfo?.playerLabels}
+                placement={deploymentPlacementView}
+                onRollOff={() => {
+                  const player1Roll = rollDice({ count: 1, sides: 6 }, systemRandomSource)
+                  const player2Roll = rollDice({ count: 1, sides: 6 }, systemRandomSource)
+                  const player1 = player1Roll.finalResults[0]
+                  const player2 = player2Roll.finalResults[0]
+                  if (gameState.players[0]) dispatch({ type: 'dice/rollRecorded', playerId: gameState.players[0].id, result: player1Roll })
+                  if (gameState.players[1]) dispatch({ type: 'dice/rollRecorded', playerId: gameState.players[1].id, result: player2Roll })
+                  dispatch({ type: 'gameSystem/command', command: {
+                    type: 'aos/deployment/roll-off', actorPlayerId: gameState.players[0]?.id ?? '',
+                    payload: { player1, player2 },
+                  } })
+                }}
+                onChooseAttacker={(attackerPlayerId) => dispatch({ type: 'gameSystem/command', command: {
+                  type: 'aos/deployment/choose-attacker', actorPlayerId: aosDeployment.rollWinnerPlayerId ?? '',
+                  payload: { attackerPlayerId },
+                } })}
+                onChooseTerritory={(zoneId) => dispatch({ type: 'gameSystem/command', command: {
+                  type: 'aos/deployment/choose-territory', actorPlayerId: aosDeployment.attackerPlayerId ?? '',
+                  payload: { zoneId },
+                } })}
+                onHoverTerritory={setDeploymentTerritoryHoverId}
+                onBeginUnit={beginDeploymentUnit}
+                onConfirmPlacement={confirmDeploymentPlacement}
+                onCancelPlacement={() => setDeploymentPlacement(null)}
+                onAdjustModel={(modelId) => setDeploymentPlacement((current) => current
+                  ? { ...current, adjustingModelId: modelId, formationPreset: 'custom' } : current)}
+                onHoverModel={(modelId) => setDeploymentPlacement((current) => current
+                  ? { ...current, hoveredModelId: modelId } : current)}
+                onSelectFormationPreset={selectDeploymentFormationPreset}
+                onRotateFormation={rotateDeploymentFormation}
+                onCycleFormation={cycleDeploymentFormation}
+                onMoveFormation={() => setDeploymentPlacement((current) => current
+                  ? { ...current, locked: false, adjustingModelId: null } : current)}
+                onUndo={gameState.lastCommittedOperationUndo
+                  && gameState.committedOperations?.at(-1)?.type === 'GAME_SYSTEM'
+                  ? () => {
+                      setDeploymentPlacement(null)
+                      dispatch({ type: 'history/undoLastCommitted' })
+                    }
+                  : undefined}
+              />
+            </div>
+          )}
           <div className={`context-panel-view ${contextPanel === 'inspector' ? '' : 'hidden'}`}>
             <DebugPanel
           model={selectedModel}
@@ -1178,7 +1594,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
             <div className={`context-panel-view ${contextPanel === 'lifecycle' ? '' : 'hidden'}`}>
               <LifecyclePanel
             entries={lifecycleEntries}
-            selectedIds={lifecycleSelectedIds}
+            selectedIds={selectedIds}
             placement={lifecyclePlacement ? {
               mode: lifecyclePlacement.mode,
               placedCount: Object.keys(lifecyclePlacement.stagedPoses).length,
@@ -1187,29 +1603,31 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
                 coherent: preview.result.coherent,
                 componentCount: preview.result.componentCount,
               })),
+              formationPreset: lifecyclePlacement.formationPreset,
+              formationRotation: lifecyclePlacement.formationRotation,
+              formationOptions: lifecycleFormationOptions.map(({ id, label, available, reason }) => ({ id, label, available, reason })),
             } : null}
             requireCoherency={lifecycleRequireCoherency}
             readOnly={!gameplayImplemented}
             message={lifecycleMessage ?? undefined}
             onClose={() => setContextPanel('inspector')}
-            onInspect={(modelId) => {
-              setSelectedIds(new Set([modelId]))
-              setSelectedFeatureId(null)
-            }}
-            onToggleModel={(modelId) => setLifecycleSelectedIds((current) => {
-              const next = new Set(current)
+            onInspect={(modelId) => handleSelectionChange(new Set([modelId]))}
+            onToggleModel={(modelId) => {
+              const next = new Set(selectedIds)
               if (next.has(modelId)) next.delete(modelId)
               else next.add(modelId)
-              return next
-            })}
-            onSelectModels={(modelIds) => setLifecycleSelectedIds(new Set(modelIds))}
-            onClearSelection={() => setLifecycleSelectedIds(new Set())}
+              handleSelectionChange(next)
+            }}
+            onSelectModels={(modelIds) => handleSelectionChange(new Set(modelIds))}
+            onClearSelection={() => handleSelectionChange(new Set())}
             onMoveOffBoard={() => setDevelopmentPresence('OFF_BOARD')}
             onDestroy={() => setDevelopmentPresence('DESTROYED')}
             onPlaceIndividually={() => beginLifecyclePlacement('individual')}
             onPlaceFormation={() => beginLifecyclePlacement('formation')}
             onCancelPlacement={cancelLifecyclePlacement}
             onRequireCoherencyChange={setLifecycleRequireCoherency}
+            onFormationPresetChange={selectLifecycleFormationPreset}
+            onFormationRotate={rotateLifecycleFormation}
               />
             </div>
           )}
@@ -1297,7 +1715,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
               />
             </div>
           )}
-          {gameplayImplemented && diceOpen && (
+          {diceOpen && (
             <div className={`context-panel-view ${contextPanel === 'dice' ? '' : 'hidden'}`}>
               <DicePanel
             players={gameState.players}
@@ -1398,4 +1816,18 @@ function startupGameState(): GameState {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'The match could not be loaded.'
+}
+
+function describePlacementViolation(violation: CandidateFormationViolation): string {
+  switch (violation.type) {
+    case 'OUTSIDE_REQUIRED_AREA': return 'Every model must be wholly within the assigned territory.'
+    case 'TOO_CLOSE_TO_AREA': return `Every model must be more than ${violation.minimumDistance}″ from enemy territory.`
+    case 'OUT_OF_BOUNDS': return 'A model is outside the battlefield.'
+    case 'COLLIDES_WITH_STATIONARY_MODEL': return 'A model overlaps a model already on the battlefield.'
+    case 'CANDIDATE_INTERNAL_OVERLAP': return 'Models in the formation overlap.'
+    case 'TERRAIN_FINISH_FORBIDDEN': return 'A model cannot finish on this terrain part.'
+    case 'COHERENCY_FAILED': return 'The complete unit is not coherent.'
+    case 'MODEL_NOT_FOUND': return 'Model data is incomplete.'
+    case 'MOVEMENT_ALLOWANCE_EXCEEDED': return 'Placement does not consume movement.'
+  }
 }

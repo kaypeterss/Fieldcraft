@@ -5,6 +5,7 @@ import type {
   JsonValue,
   MovementPolicyConfig,
   TerrainPolicyConfig,
+  CommittedOperation,
 } from '../domain/types'
 import type { VisibilityMode, VisibilityPolicy } from '../engine/visibility'
 
@@ -99,6 +100,19 @@ export interface GameSystemCommandPermissionRequest {
   gameSystemState: GameSystemOwnedState
 }
 
+/** Opaque adapter-owned command. Generic Fieldcraft only transports it. */
+export interface GameSystemCommand {
+  type: string
+  actorPlayerId: string
+  payload?: JsonValue
+}
+
+export interface GameSystemUndoPermissionRequest {
+  state: GameState
+  gameSystemState: GameSystemOwnedState
+  operation: CommittedOperation
+}
+
 /** Runtime-only schema boundary for the JSON stored in authoritative GameState. */
 export interface GameSystemStateAdapter {
   schemaId: string
@@ -129,4 +143,6 @@ export interface GameSystem {
   matchState: GameSystemStateAdapter
   /** Optional ruleset veto. Generic geometry and movement validation still run afterwards. */
   authorizeCommand?: (request: GameSystemCommandPermissionRequest) => boolean
+  /** Adapter-owned information-boundary gate for the one-level generic Undo slot. */
+  authorizeUndo?: (request: GameSystemUndoPermissionRequest) => boolean
 }

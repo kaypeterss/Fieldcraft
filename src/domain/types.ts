@@ -405,7 +405,7 @@ export interface DiceSequenceRecord extends DiceSequenceResolution {
 
 export type DiceHistoryEntry = DiceRollRecord | DiceSequenceRecord
 
-export type CommittedOperationType = 'MOVE' | 'SCORE' | 'MODEL_PRESENCE' | 'MODEL_PLACED'
+export type CommittedOperationType = 'MOVE' | 'SCORE' | 'MODEL_PRESENCE' | 'MODEL_PLACED' | 'GAME_SYSTEM'
 
 /** Ordered facts about committed mutations; current state remains authoritative. */
 export interface CommittedOperation {

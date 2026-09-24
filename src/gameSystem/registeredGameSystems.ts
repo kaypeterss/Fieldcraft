@@ -6,6 +6,7 @@ import {
   ageOfSigmarM91RequiredContentManifest,
 } from './ageOfSigmar/ageOfSigmarGameSystem'
 import { prepareAgeOfSigmarMatch } from './ageOfSigmar/prepareAgeOfSigmarMatch'
+import { executeAosCommand } from './ageOfSigmar/deployment'
 import {
   developmentContentManifest,
   developmentGameSystem,
@@ -46,6 +47,7 @@ export const ageOfSigmarGameSystemRegistration: RegisteredGameSystem = {
   defaultContentManifest: ageOfSigmarM91RequiredContentManifest,
   createMatch: createAgeOfSigmarAlphaMatch,
   prepareMatch: prepareAgeOfSigmarMatch,
+  executeCommand: executeAosCommand,
   ui: {
     description: 'Versioned runtime shell for the first real Fieldcraft GameSystem.',
     developmentControls: false,

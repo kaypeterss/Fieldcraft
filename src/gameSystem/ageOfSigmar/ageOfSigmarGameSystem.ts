@@ -3,6 +3,7 @@ import type { InstalledContentPackage } from '../registry'
 import type { GameSystem } from '../types'
 import { AOS_BATTLESCROLL_SNAPSHOT, AOS_RULES_SNAPSHOT } from './content/snapshot'
 import { aosSetupData } from './prepareAgeOfSigmarMatch'
+import { isAosMatchStateData } from './deployment'
 
 export const AGE_OF_SIGMAR_RULES_SNAPSHOT = AOS_RULES_SNAPSHOT
 
@@ -55,10 +56,8 @@ export const ageOfSigmarGameSystem: GameSystem = {
     schemaId: 'fieldcraft.age-of-sigmar.alpha-match-state',
     schemaVersion: 1,
     createInitialData: () => ({ status: 'setup', setup: aosSetupData() }),
-    validate: (data) => typeof data === 'object'
-      && data !== null
-      && !Array.isArray(data)
-      && (data.status === 'rules-not-implemented' || data.status === 'setup' || data.status === 'deployment'),
+    validate: isAosMatchStateData,
   },
   authorizeCommand: () => false,
+  authorizeUndo: ({ operation }) => operation.type === 'GAME_SYSTEM',
 }
