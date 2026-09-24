@@ -2,7 +2,7 @@ import type { GameSystemUiContribution } from '../gameSystem/registry'
 import type { GameState } from '../domain/types'
 import { Scoreboard } from './Scoreboard'
 
-export function GameSystemStatusPanel({ ui, gameState, onPrepare, onOpenDeployment, progression }: {
+export function GameSystemStatusPanel({ ui, gameState, onPrepare, onOpenDeployment, progression, playerMetrics }: {
   ui: GameSystemUiContribution
   gameState?: GameState
   onPrepare?: () => void
@@ -15,6 +15,7 @@ export function GameSystemStatusPanel({ ui, gameState, onPrepare, onOpenDeployme
     onAction?: () => void
     disabled?: boolean
   }
+  playerMetrics?: Readonly<Record<string, readonly { label: string; value: string | number }[]>>
 }) {
   const deploymentData = gameState?.gameSystemState?.data && typeof gameState.gameSystemState.data === 'object'
     && !Array.isArray(gameState.gameSystemState.data)
@@ -24,7 +25,7 @@ export function GameSystemStatusPanel({ ui, gameState, onPrepare, onOpenDeployme
   return (
     <section className="game-system-status" aria-label="GameSystem status">
       {gameState && <Scoreboard players={gameState.players} events={gameState.scoreHistory ?? []}
-        showControls={false} />}
+        playerMetrics={playerMetrics} showControls={false} />}
       <div className="shell-state-summary">
         <span>{progression?.lifecycle ?? gameState?.matchLifecycle ?? 'SETUP'}</span>
         <strong>{progression?.title ?? (gameState?.matchLifecycle === 'DEPLOYMENT'

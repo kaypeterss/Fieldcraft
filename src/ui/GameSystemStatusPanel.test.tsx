@@ -27,4 +27,17 @@ describe('GameSystemStatusPanel setup action', () => {
     fireEvent.click(screen.getByRole('button', { name: 'End Movement Phase' }))
     expect(onAction).toHaveBeenCalledOnce()
   })
+
+  it('shows compact adapter-derived player resource metrics without owning their state', () => {
+    render(<GameSystemStatusPanel ui={ageOfSigmarGameSystemRegistration.ui}
+      gameState={ageOfSigmarGameSystemRegistration.createMatch()}
+      playerMetrics={{
+        'player-1': [{ label: 'CP', value: 4 }, { label: 'Fury', value: 1 }],
+        'player-2': [{ label: 'CP', value: 5 }, { label: 'Fury', value: 2 }],
+      }} />)
+    expect(screen.getByText('CP 4')).toBeTruthy()
+    expect(screen.getByText('Fury 1')).toBeTruthy()
+    expect(screen.getByText('CP 5')).toBeTruthy()
+    expect(screen.getByText('Fury 2')).toBeTruthy()
+  })
 })

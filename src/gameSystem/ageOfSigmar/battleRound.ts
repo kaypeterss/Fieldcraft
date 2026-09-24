@@ -2,6 +2,16 @@ import type { GameState, JsonValue } from '../../domain/types'
 import { scoreTotals } from '../../game/scoring'
 import type { GameSystemCommand } from '../types'
 import type { AosMatchStateData } from './deployment'
+import { commitOperation, createCommittedOperation } from '../../game/committedOperations'
+import {
+  ensureAosRoundResources,
+  expireAosRoundResources,
+  generateAosRoundResources,
+  isAosRoundResources,
+  spendAosCommandPoints,
+  spendAosRageDice,
+  type AosRoundResources,
+} from './roundResources'
 
 export type AosPhaseId =
   | 'START_OF_TURN'
@@ -80,6 +90,12 @@ export function aosBattleState(state: GameState): AosBattleState | null {
   return data.battle
 }
 
+export function aosRoundResources(state: GameState): AosRoundResources | null {
+  const data = state.gameSystemState?.data
+  if (!isRecord(data) || !isAosRoundResources(data.resources)) return null
+  return data.resources
+}
+
 export function currentAosPhase(battle: AosBattleState): AosPhaseDefinition | null {
   return battle.stage === 'TURN_PHASE' && battle.phaseIndex !== undefined
     ? AOS_TURN_PHASES[battle.phaseIndex] ?? null
@@ -93,18 +109,39 @@ export function executeAosBattleCommand(
 ): GameState {
   if (command.type === 'aos/battle/start') return startBattle(state, data, command)
   if (data.status !== 'battle' || !data.battle) return state
+  const normalizedData = normalizeBattleResources(state, data)
   switch (command.type) {
     case 'aos/battle/priority-rolled':
-      return recordPriority(state, data, command)
+      return recordPriority(state, normalizedData, command)
     case 'aos/battle/choose-first-player':
-      return chooseFirstPlayer(state, data, command)
+      return chooseFirstPlayer(state, normalizedData, command)
     case 'aos/battle/continue':
-      return continueBattle(state, data, command)
+      return continueBattle(state, normalizedData, command)
     case 'aos/battle/end-phase':
-      return endPhase(state, data, command)
+      return endPhase(state, normalizedData, command)
+    case 'aos/resources/spend-command-points':
+      return spendResource(state, normalizedData, command, 'command-points')
+    case 'aos/resources/spend-rage-dice':
+      return spendResource(state, normalizedData, command, 'rage-dice')
     default:
       return state
   }
+}
+
+function normalizeBattleResources(state: GameState, data: AosMatchStateData): AosMatchStateData {
+  const battle = data.battle!
+  let resources = ensureAosRoundResources(data.resources, state.players.map((player) => player.id),
+    data.deployment?.attackerPlayerId, data.deployment?.defenderPlayerId)
+  const roundActive = ['START_OF_ROUND', 'TURN_PHASE'].includes(battle.stage)
+  if (roundActive && resources.generatedForRound !== battle.round) {
+    resources = generateAosRoundResources(resources, state.players.map((player) => player.id),
+      battle.round, battle.underdogPlayerId)
+  }
+  if (['END_OF_ROUND', 'BATTLE_COMPLETE'].includes(battle.stage)
+    && Object.values(resources.byPlayerId).some((entry) => entry.commandPoints > 0 || entry.rageDice.length > 0)) {
+    resources = expireAosRoundResources(resources)
+  }
+  return data.resources === resources ? data : { ...data, resources }
 }
 
 export function isAosBattleState(value: unknown): value is AosBattleState {
@@ -131,7 +168,9 @@ function startBattle(state: GameState, data: AosMatchStateData, command: GameSys
     completedRounds: [],
     doubleTurns: [],
   }
-  return replaceBattle(state, { ...data, status: 'battle', battle }, battle, {
+  const resources = ensureAosRoundResources(data.resources, state.players.map((player) => player.id),
+    deployment.attackerPlayerId, deployment.defenderPlayerId)
+  return replaceBattle(state, { ...data, status: 'battle', battle, resources }, battle, {
     activePlayerId: chooserPlayerId,
     turn: 0,
     phase: 'FIRST_PLAYER_CHOICE',
@@ -179,6 +218,12 @@ function chooseFirstPlayer(state: GameState, data: AosMatchStateData, command: G
   const previous = battle.completedRounds.at(-1)
   const doubleTurnTakenByPlayerId = previous?.secondPlayerId === firstPlayerId ? firstPlayerId : undefined
   const underdogPlayerId = determineUnderdog(state)
+  const resources = generateAosRoundResources(ensureAosRoundResources(
+    data.resources,
+    state.players.map((player) => player.id),
+    data.deployment?.attackerPlayerId,
+    data.deployment?.defenderPlayerId,
+  ), state.players.map((player) => player.id), battle.round, underdogPlayerId)
   const next: AosBattleState = {
     ...battle,
     stage: 'START_OF_ROUND',
@@ -191,7 +236,7 @@ function chooseFirstPlayer(state: GameState, data: AosMatchStateData, command: G
       ? [...battle.doubleTurns, { round: battle.round, playerId: doubleTurnTakenByPlayerId }]
       : battle.doubleTurns,
   }
-  return replaceBattle(state, { ...data, battle: next }, next, {
+  return replaceBattle(state, { ...data, battle: next, resources }, next, {
     activePlayerId: firstPlayerId,
     turn: 0,
     phase: 'START_OF_BATTLE_ROUND',
@@ -251,11 +296,41 @@ function endPhase(state: GameState, data: AosMatchStateData, command: GameSystem
   }
   if (battle.turnIndex === 0) return beginTurn(state, data, battle, 1)
   const next = { ...battle, stage: 'END_OF_ROUND' as const, phaseIndex: undefined }
-  return replaceBattle(state, { ...data, battle: next }, next, {
+  const resources = data.resources ? expireAosRoundResources(data.resources) : data.resources
+  return replaceBattle(state, { ...data, battle: next, ...(resources ? { resources } : {}) }, next, {
     activePlayerId: state.gameContext.activePlayerId,
     turn: 2,
     phase: 'END_OF_BATTLE_ROUND',
   })
+}
+
+function spendResource(
+  state: GameState,
+  data: AosMatchStateData,
+  command: GameSystemCommand,
+  type: 'command-points' | 'rage-dice',
+): GameState {
+  if (data.status !== 'battle' || !data.battle || !data.resources
+    || !state.players.some((player) => player.id === command.actorPlayerId)) return state
+  const amount = record(command.payload)?.amount
+  if (typeof amount !== 'number') return state
+  const resources = type === 'command-points'
+    ? spendAosCommandPoints(data.resources, command.actorPlayerId, amount)
+    : spendAosRageDice(data.resources, command.actorPlayerId, amount)
+  if (!resources) return state
+  const sequence = state.nextActionSequence
+  const after: GameState = {
+    ...state,
+    gameSystemState: { ...state.gameSystemState!, data: { ...data, resources } as unknown as JsonValue },
+    nextActionSequence: sequence + 1,
+  }
+  return commitOperation(state, after, createCommittedOperation({
+    sequence,
+    type: 'GAME_SYSTEM',
+    actorPlayerId: command.actorPlayerId,
+    state,
+    entityIds: [`aos:${type}:${command.actorPlayerId}`],
+  }))
 }
 
 function beginTurn(state: GameState, data: AosMatchStateData, battle: AosBattleState, turnIndex: 0 | 1): GameState {

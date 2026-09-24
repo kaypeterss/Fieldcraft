@@ -5,7 +5,7 @@ import { reduceGameCommand } from '../../state/commandBoundary'
 import { gameSystemRegistry } from '../registeredGameSystems'
 import { loadRegisteredMatchRuntime } from '../runtime'
 import { createAgeOfSigmarAlphaMatch } from './ageOfSigmarMatch'
-import { AOS_TURN_PHASES, aosBattleState, currentAosPhase } from './battleRound'
+import { AOS_TURN_PHASES, aosBattleState, aosRoundResources, currentAosPhase } from './battleRound'
 import { initialAosDeploymentState, type AosDeploymentFact } from './deployment'
 import { prepareAgeOfSigmarMatch } from './prepareAgeOfSigmarMatch'
 
@@ -115,6 +115,65 @@ describe('Age of Sigmar battle clock', () => {
     trailing = command(trailing, 'aos/battle/start', 'player-1')
     trailing = command(trailing, 'aos/battle/choose-first-player', 'player-1', { firstPlayerId: 'player-1' })
     expect(aosBattleState(trailing)?.underdogPlayerId).toBe('player-2')
+    expect(aosRoundResources(trailing)?.byPlayerId['player-1'].commandPoints).toBe(4)
+    expect(aosRoundResources(trailing)?.byPlayerId['player-2'].commandPoints).toBe(5)
+  })
+
+  it('initializes Fury from deployment roles and generates exact Round 1 Rage resources', () => {
+    const state = startRoundOne()
+    const resources = aosRoundResources(state)!
+    expect(resources.generatedForRound).toBe(1)
+    expect(resources.byPlayerId['player-1']).toMatchObject({ commandPoints: 4, fury: 1 })
+    expect(resources.byPlayerId['player-2']).toMatchObject({ commandPoints: 4, fury: 2 })
+    expect(resources.byPlayerId['player-1'].rageDice).toHaveLength(1)
+    expect(resources.byPlayerId['player-2'].rageDice).toHaveLength(2)
+  })
+
+  it('lazily upgrades an M9.4 battle save that predates resource state', () => {
+    let state = startRoundOne()
+    const legacyData = structuredClone(state.gameSystemState!.data) as Record<string, JsonValue>
+    delete legacyData.resources
+    state = { ...state, gameSystemState: { ...state.gameSystemState!, data: legacyData } }
+    state = command(state, 'aos/battle/continue', state.gameContext.activePlayerId)
+    expect(aosRoundResources(state)?.generatedForRound).toBe(1)
+    expect(aosRoundResources(state)?.byPlayerId['player-1'].commandPoints).toBe(4)
+    expect(aosRoundResources(state)?.byPlayerId['player-2'].fury).toBe(2)
+  })
+
+  it('spends resources authoritatively, rejects insufficient spending, and persists exact tokens', () => {
+    let state = startRoundOne()
+    state = command(state, 'aos/resources/spend-command-points', 'player-1', { amount: 2 })
+    state = command(state, 'aos/resources/spend-rage-dice', 'player-2', { amount: 1 })
+    expect(aosRoundResources(state)?.byPlayerId['player-1'].commandPoints).toBe(2)
+    expect(aosRoundResources(state)?.byPlayerId['player-2'].rageDice).toHaveLength(1)
+    const rejected = command(state, 'aos/resources/spend-command-points', 'player-1', { amount: 3 })
+    expect(rejected).toBe(state)
+    const restored = JSON.parse(JSON.stringify(state)) as GameState
+    expect(() => loadRegisteredMatchRuntime(restored, gameSystemRegistry)).not.toThrow()
+    expect(aosRoundResources(restored)).toEqual(aosRoundResources(state))
+  })
+
+  it('undoes spending by restoring exact resource tokens without regenerating them', () => {
+    let state = startRoundOne()
+    const original = structuredClone(aosRoundResources(state))
+    state = command(state, 'aos/resources/spend-rage-dice', 'player-2', { amount: 1 })
+    expect(aosRoundResources(state)?.byPlayerId['player-2'].rageDice).toHaveLength(1)
+    state = reduceGameCommand(loadRegisteredMatchRuntime(state, gameSystemRegistry), state, {
+      type: 'history/undoLastCommitted',
+    })
+    expect(aosRoundResources(state)).toEqual(original)
+  })
+
+  it('expires CP and Rage at round end, preserves Fury, and regenerates for Round 2', () => {
+    let state = finishRound(startRoundOne())
+    expect(aosRoundResources(state)?.byPlayerId['player-1']).toMatchObject({ commandPoints: 0, fury: 1, rageDice: [] })
+    expect(aosRoundResources(state)?.byPlayerId['player-2']).toMatchObject({ commandPoints: 0, fury: 2, rageDice: [] })
+    state = command(state, 'aos/battle/continue', state.gameContext.activePlayerId)
+    state = command(state, 'aos/battle/priority-rolled', 'player-1', { 'player-1': 6, 'player-2': 2 })
+    state = command(state, 'aos/battle/choose-first-player', 'player-1', { firstPlayerId: 'player-1' })
+    expect(aosRoundResources(state)?.generatedForRound).toBe(2)
+    expect(aosRoundResources(state)?.byPlayerId['player-1'].rageDice[0].id).toBe('rage-r2-player-1-1')
+    expect(aosRoundResources(state)?.byPlayerId['player-2'].rageDice).toHaveLength(2)
   })
 
   it('completes after Round 5 without inventing final scoring', () => {

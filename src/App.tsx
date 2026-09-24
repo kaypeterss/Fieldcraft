@@ -86,7 +86,7 @@ import { MatchInfoPanel } from './ui/MatchInfoPanel'
 import { DeploymentPanel, type DeploymentPlacementView } from './ui/DeploymentPanel'
 import { aosDeploymentPlacementRules, aosDeploymentState, validateAosDeploymentPlacements } from './gameSystem/ageOfSigmar/deployment'
 import { rollDice, systemRandomSource } from './engine/dice'
-import { aosBattleState, currentAosPhase } from './gameSystem/ageOfSigmar/battleRound'
+import { aosBattleState, aosRoundResources, currentAosPhase } from './gameSystem/ageOfSigmar/battleRound'
 import { AosBattleRoundPanel } from './ui/AosBattleRoundPanel'
 
 interface SmartMoveSessionState {
@@ -372,6 +372,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const [deploymentTerritoryHoverId, setDeploymentTerritoryHoverId] = useState<string | null>(null)
   const aosDeployment = useMemo(() => aosDeploymentState(gameState), [gameState])
   const aosBattle = useMemo(() => aosBattleState(gameState), [gameState])
+  const aosResources = useMemo(() => aosRoundResources(gameState), [gameState])
   const lifecyclePlacementCoherency = useMemo(() => {
     if (!lifecyclePlacement || !lifecycleRequireCoherency || lifecyclePlacementPreviews.length === 0) return []
     const placements = Object.fromEntries(lifecyclePlacementPreviews.map((preview) => [preview.model.id, preview.pose]))
@@ -1423,6 +1424,14 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     dispatch({ type: 'gameSystem/command', command: { type, actorPlayerId, payload } })
   }, [dispatch])
 
+  const spendAosCommandPoint = useCallback((playerId: string) => {
+    dispatchAosBattleCommand('aos/resources/spend-command-points', playerId, { amount: 1 })
+  }, [dispatchAosBattleCommand])
+
+  const spendAosRageDie = useCallback((playerId: string) => {
+    dispatchAosBattleCommand('aos/resources/spend-rage-dice', playerId, { amount: 1 })
+  }, [dispatchAosBattleCommand])
+
   const startAosBattle = useCallback(() => {
     dispatchAosBattleCommand('aos/battle/start', gameState.players[0]?.id ?? '')
     setContextPanel('battle-round')
@@ -1514,6 +1523,14 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     ]
   }, [aosBattle, aosDeployment, gameState.gameContext.activePlayerId, gameState.gameContext.phase, gameState.players])
 
+  const aosHeaderMetrics = useMemo(() => aosResources ? Object.fromEntries(gameState.players.map((player) => {
+    const resources = aosResources.byPlayerId[player.id]
+    return [player.id, resources ? [
+      { label: 'CP', value: resources.commandPoints },
+      { label: 'Fury', value: resources.fury },
+    ] : []]
+  })) : undefined, [aosResources, gameState.players])
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1540,6 +1557,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
             setLifecycleMessage('Last committed operation undone.')
           }}
         /> : <GameSystemStatusPanel ui={gameSystemRegistration.ui} gameState={gameState}
+          playerMetrics={aosHeaderMetrics}
           progression={aosProgression}
           onPrepare={gameSystemRegistration.prepareMatch
             ? () => onReplaceState(gameSystemRegistration.prepareMatch!(gameState))
@@ -1692,6 +1710,8 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
                 onChooseFirstPlayer={chooseAosFirstPlayer}
                 onContinue={continueAosBattle}
                 onEndPhase={endAosPhase}
+                onSpendCommandPoint={spendAosCommandPoint}
+                onSpendRageDie={spendAosRageDie}
               />
             </div>
           )}

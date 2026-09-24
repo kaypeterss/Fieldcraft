@@ -59,6 +59,8 @@ button { font: inherit; }
 .scoreboard-totals small { color: #75857d; font-size: 7px; white-space: nowrap; }
 .scoreboard-totals strong { margin-top: 2px; color: var(--accent); font: 600 13px 'Barlow Condensed', sans-serif; }
 .scoreboard-totals em { color: #8fe0b4; font-size: 7px; font-style: normal; }
+.scoreboard-player-metrics { display: flex; gap: 5px; margin-top: 2px; color: #96a59e; font-size: 7px; }
+.scoreboard-player-metrics b { color: inherit; font-weight: 600; white-space: nowrap; }
 .score-controls { position: relative; }
 .score-popover { width: 270px; }
 .score-popover label { display: grid; grid-template-columns: 78px 1fr; align-items: center; gap: 7px; margin-top: 8px; color: #829088; font-size: 8px; }
@@ -654,6 +656,15 @@ button { font: inherit; }
 .battle-flow-facts > div:last-child { border-bottom: 0; }
 .battle-flow-facts dt { color: #718079; }
 .battle-flow-facts dd { margin: 0; color: #d8e3de; font-weight: 700; text-align: right; }
+.aos-resource-panel { display: grid; gap: 6px; padding: 9px; border: 1px solid rgba(241,201,105,.18); border-radius: 5px; background: rgba(241,201,105,.025); }
+.aos-resource-player { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 6px; padding: 7px; border: 1px solid var(--line); border-radius: 4px; color: #84928b; font-size: 8px; }
+.aos-resource-player > strong { min-width: 0; color: #dce7e2; font: 600 11px 'Barlow Condensed', sans-serif; }
+.aos-resource-player > span { white-space: nowrap; }
+.aos-resource-player > span b { color: #f1c969; }
+.aos-resource-qa { grid-column: 1 / -1; display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.aos-resource-qa small { margin-right: auto; color: #59675f; font-size: 7px; text-transform: uppercase; }
+.aos-resource-qa button { padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px; color: #9aa8a1; background: rgba(255,255,255,.025); cursor: pointer; font-size: 7px; }
+.aos-resource-qa button:disabled { cursor: default; opacity: .3; }
 .battle-complete-note { padding: 12px; border: 1px solid rgba(114,214,161,.3); border-radius: 5px; background: rgba(114,214,161,.055); }
 .battle-complete-note strong { color: #8fe0b4; text-transform: uppercase; }
 .context-panel-region .smart-move-panel { display: flex; }

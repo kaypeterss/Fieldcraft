@@ -5,6 +5,11 @@ import { modelPresence } from '../../game/modelPresence'
 import type { GameSystemCommand } from '../types'
 import { aosSetupData } from './prepareAgeOfSigmarMatch'
 import { executeAosBattleCommand, isAosBattleState, type AosBattleState } from './battleRound'
+import {
+  initialAosRoundResources,
+  isAosRoundResources,
+  type AosRoundResources,
+} from './roundResources'
 
 export type AosDeploymentPhase = 'ROLL_OFF' | 'CHOOSE_ROLES' | 'CHOOSE_TERRITORY' | 'DEPLOYING' | 'READY_FOR_BATTLE'
 
@@ -40,6 +45,7 @@ export interface AosMatchStateData {
   setup: ReturnType<typeof aosSetupData>
   deployment?: AosDeploymentState
   battle?: AosBattleState
+  resources?: AosRoundResources
 }
 
 export interface AosDeploymentPlacementRules {
@@ -75,7 +81,9 @@ export function aosDeploymentState(state: GameState): AosDeploymentState | null 
 export function executeAosCommand(state: GameState, command: GameSystemCommand): GameState {
   const data = aosMatchStateData(state)
   if (!data) return state
-  if (command.type.startsWith('aos/battle/')) return executeAosBattleCommand(state, data, command)
+  if (command.type.startsWith('aos/battle/') || command.type.startsWith('aos/resources/')) {
+    return executeAosBattleCommand(state, data, command)
+  }
   if (data.status !== 'deployment') return state
   const normalizedData: AosMatchStateData = { ...data, deployment: data.deployment ?? initialAosDeploymentState() }
   switch (command.type) {
@@ -139,6 +147,7 @@ export function isAosMatchStateData(value: unknown): value is AosMatchStateData 
   if (value.status === 'rules-not-implemented') return true
   if (!isRecord(value.setup)) return false
   if (value.status === 'setup') return true
+  if (value.resources !== undefined && !isAosRoundResources(value.resources)) return false
   if (value.status === 'battle') return isAosBattleState(value.battle)
   if (value.status !== 'deployment') return false
   if (value.deployment === undefined) return true
@@ -175,7 +184,10 @@ function chooseAttacker(state: GameState, data: AosMatchStateData, command: Game
   if (typeof chosen !== 'string' || !state.players.some((player) => player.id === chosen)) return state
   const defender = state.players.find((player) => player.id !== chosen)?.id
   if (!defender) return state
-  return replaceDeployment(state, data, {
+  return replaceDeployment(state, {
+    ...data,
+    resources: initialAosRoundResources(state.players.map((player) => player.id), chosen, defender),
+  }, {
     ...deployment,
     phase: 'CHOOSE_TERRITORY',
     attackerPlayerId: chosen,

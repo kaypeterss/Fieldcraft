@@ -6,6 +6,7 @@ import { compactFormationPlacements } from '../../tools/lifecyclePlacement'
 import { gameSystemRegistry } from '../registeredGameSystems'
 import { loadRegisteredMatchRuntime } from '../runtime'
 import { createAgeOfSigmarAlphaMatch } from './ageOfSigmarMatch'
+import { aosRoundResources } from './battleRound'
 import { aosDeploymentPlacementRules, aosDeploymentState, validateAosDeploymentPlacements } from './deployment'
 import { prepareAgeOfSigmarMatch } from './prepareAgeOfSigmarMatch'
 
@@ -62,6 +63,8 @@ describe('Age of Sigmar deployment adapter', () => {
     expect(aosDeploymentState(state)).toMatchObject({
       phase: 'CHOOSE_TERRITORY', attackerPlayerId: 'player-1', defenderPlayerId: 'player-2',
     })
+    expect(aosRoundResources(state)?.byPlayerId['player-1'].fury).toBe(1)
+    expect(aosRoundResources(state)?.byPlayerId['player-2'].fury).toBe(2)
     state = command(state, 'aos/deployment/choose-territory', 'player-1', { zoneId: 'defender-territory' })
     expect(aosDeploymentState(state)).toMatchObject({
       phase: 'DEPLOYING', currentPlayerId: 'player-1',

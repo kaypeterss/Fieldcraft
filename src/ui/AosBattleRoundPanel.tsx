@@ -1,9 +1,9 @@
 import type { GameState } from '../domain/types'
 import type { AosDeploymentState } from '../gameSystem/ageOfSigmar/deployment'
-import { currentAosPhase, type AosBattleState } from '../gameSystem/ageOfSigmar/battleRound'
+import { aosRoundResources, currentAosPhase, type AosBattleState } from '../gameSystem/ageOfSigmar/battleRound'
 
 export function AosBattleRoundPanel({ state, deployment, battle, onClose, onStart, onRollPriority,
-  onChooseFirstPlayer, onContinue, onEndPhase }: {
+  onChooseFirstPlayer, onContinue, onEndPhase, onSpendCommandPoint, onSpendRageDie }: {
   state: GameState
   deployment: AosDeploymentState
   battle: AosBattleState | null
@@ -13,11 +13,14 @@ export function AosBattleRoundPanel({ state, deployment, battle, onClose, onStar
   onChooseFirstPlayer: (playerId: string) => void
   onContinue: () => void
   onEndPhase: () => void
+  onSpendCommandPoint: (playerId: string) => void
+  onSpendRageDie: (playerId: string) => void
 }) {
   const playerName = (id?: string) => state.players.find((player) => player.id === id)?.displayName ?? id ?? '—'
   const phase = battle ? currentAosPhase(battle) : null
   const firstFinisher = deploymentFirstFinisher(state, deployment)
   const doubleTurn = battle?.doubleTurns.find((fact) => fact.round === battle.round)?.playerId
+  const resources = aosRoundResources(state)
 
   return <aside className="aos-round-panel" aria-label="Age of Sigmar battle round">
     <div className="context-panel-heading">
@@ -61,6 +64,27 @@ export function AosBattleRoundPanel({ state, deployment, battle, onClose, onStar
         {battle.turnIndex !== undefined && <div><dt>Turn</dt><dd>{battle.turnIndex + 1} · {playerName(state.gameContext.activePlayerId)}</dd></div>}
         {phase && <div><dt>Phase</dt><dd>{phase.name}</dd></div>}
       </dl>
+      {resources && <section className="aos-resource-panel" aria-label="Round resources">
+        <span className="panel-section-label">ROUND RESOURCES</span>
+        {state.players.map((player) => {
+          const current = resources.byPlayerId[player.id]
+          if (!current) return null
+          return <div className="aos-resource-player" key={player.id}>
+            <strong>{player.displayName}{battle.underdogPlayerId === player.id ? ' · Underdog' : ''}</strong>
+            <span>CP <b>{current.commandPoints}</b></span>
+            <span>Fury <b>{current.fury}</b></span>
+            <span>Rage <b>{current.rageDice.length}D6</b></span>
+            <div className="aos-resource-qa">
+              <small>QA spend</small>
+              <button type="button" disabled={current.commandPoints < 1}
+                onClick={() => onSpendCommandPoint(player.id)}>−1 CP</button>
+              <button type="button" disabled={current.rageDice.length < 1}
+                onClick={() => onSpendRageDie(player.id)}>−1 Rage</button>
+            </div>
+          </div>
+        })}
+        <small className="battle-note">Rage dice are unrolled D6 resources and expire with unused CP at round end. Fury persists.</small>
+      </section>}
       {battle.stage === 'START_OF_ROUND' && <>
         <p>Start of Battle Round window. No supported Alpha abilities are available yet.</p>
         <button type="button" className="primary-panel-action" onClick={onContinue}>Continue to First Turn</button>

@@ -9,12 +9,13 @@ interface ScoreboardProps {
   onUndoLast?: () => void
   canUndo?: boolean
   projectedScores?: Readonly<Record<string, number | undefined>>
+  playerMetrics?: Readonly<Record<string, readonly { label: string; value: string | number }[]>>
   showTotals?: boolean
   showControls?: boolean
 }
 
 export function Scoreboard({ players, events, onRecord, onUndoLast, canUndo = events.length > 0,
-  projectedScores, showTotals = true, showControls = Boolean(onRecord) }: ScoreboardProps) {
+  projectedScores, playerMetrics, showTotals = true, showControls = Boolean(onRecord) }: ScoreboardProps) {
   const [playerId, setPlayerId] = useState(players[0]?.id ?? '')
   const [pointsDraft, setPointsDraft] = useState('1')
   const [reason, setReason] = useState('Manual adjustment')
@@ -31,6 +32,9 @@ export function Scoreboard({ players, events, onRecord, onUndoLast, canUndo = ev
         {projectedScores?.[player.id] !== undefined && <em>
           {projectedScores[player.id]! >= 0 ? '+' : ''}{projectedScores[player.id]} projected
         </em>}
+        {playerMetrics?.[player.id]?.length ? <span className="scoreboard-player-metrics">
+          {playerMetrics[player.id].map((metric) => <b key={metric.label}>{metric.label} {metric.value}</b>)}
+        </span> : null}
       </span>)}
     </div>}
     {showControls && onRecord && onUndoLast && <details className="score-controls">
