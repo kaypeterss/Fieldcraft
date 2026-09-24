@@ -78,6 +78,9 @@ import { GameSystemStatusPanel } from './ui/GameSystemStatusPanel'
 import { MatchControls } from './ui/MatchControls'
 import { LoadMatchDialog } from './ui/LoadMatchDialog'
 import { UnsavedChangesDialog } from './ui/UnsavedChangesDialog'
+import { MatchIdentityHeader } from './ui/MatchIdentityHeader'
+import { SaveAsDialog } from './ui/SaveAsDialog'
+import { MatchInfoPanel } from './ui/MatchInfoPanel'
 
 interface SmartMoveSessionState {
   modelIds: string[]
@@ -90,6 +93,8 @@ interface LifecyclePlacementSession {
   stagedPoses: Record<string, Pose>
 }
 
+type ContextPanelId = 'inspector' | 'spatial' | 'lifecycle' | 'dice' | 'smart-move' | 'movement' | 'match-info'
+
 export default function App() {
   const [session, setSession] = useState(() => ({ gameState: startupGameState(), key: 0 }))
   const [newMatchOpen, setNewMatchOpen] = useState(false)
@@ -97,6 +102,7 @@ export default function App() {
   const [matchNotice, setMatchNotice] = useState<{ message: string; error: boolean } | null>(null)
   const [dirty, setDirty] = useState(false)
   const [pendingLeave, setPendingLeave] = useState<'new' | 'load' | null>(null)
+  const [saveAsState, setSaveAsState] = useState<GameState | null>(null)
   const currentStateRef = useRef(session.gameState)
 
   const performLeave = useCallback((action: 'new' | 'load') => {
@@ -163,15 +169,12 @@ export default function App() {
           }
         }}
         onLoad={() => requestLeave('load')}
-        onSaveAs={(state) => {
-          const name = window.prompt('Save match as', state.matchIdentity?.matchName ?? 'Copy')
-          if (name?.trim()) {
-            const copy = saveMatchAsToStorage(window.localStorage, state, name)
-            setSession((current) => ({ gameState: copy, key: current.key + 1 }))
-            currentStateRef.current = copy
-            setDirty(false)
-            setMatchNotice({ message: `Saved a new match as “${name.trim()}”.`, error: false })
-          }
+        onSaveAs={setSaveAsState}
+        onReplaceState={(state) => {
+          setSession((current) => ({ gameState: state, key: current.key + 1 }))
+          currentStateRef.current = state
+          setDirty(true)
+          setMatchNotice({ message: 'Match prepared. Both armies remain off board for deployment.', error: false })
         }}
         onStateChange={(state, revision) => { currentStateRef.current = state; if (revision > 0) setDirty(true) }}
       />
@@ -187,6 +190,20 @@ export default function App() {
       onCancel={() => setPendingLeave(null)}
       onDiscard={() => { setDirty(false); performLeave(pendingLeave) }}
       onSave={() => { saveMatchToStorage(window.localStorage, currentStateRef.current); setDirty(false); performLeave(pendingLeave) }} />}
+    {saveAsState && <SaveAsDialog initialName={`${saveAsState.matchIdentity?.matchName ?? 'Match'} Copy`}
+      onCancel={() => setSaveAsState(null)}
+      onConfirm={(name) => {
+        try {
+          const copy = saveMatchAsToStorage(window.localStorage, saveAsState, name)
+          setSession((current) => ({ gameState: copy, key: current.key + 1 }))
+          currentStateRef.current = copy
+          setDirty(false)
+          setSaveAsState(null)
+          setMatchNotice({ message: `Saved a new match as “${name}”.`, error: false })
+        } catch (error) {
+          setMatchNotice({ message: errorMessage(error), error: true })
+        }
+      }} />}
   </>
 }
 
@@ -240,9 +257,10 @@ interface MatchWorkspaceProps {
   onLoad: () => void
   onSaveAs: (state: GameState) => void
   onStateChange: (state: GameState, revision: number) => void
+  onReplaceState: (state: GameState) => void
 }
 
-function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad, onSaveAs, onStateChange }: MatchWorkspaceProps) {
+function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad, onSaveAs, onStateChange, onReplaceState }: MatchWorkspaceProps) {
   const footprintDemoEnabled = new URLSearchParams(window.location.search).has('footprints')
   const orientationGapEnabled = new URLSearchParams(window.location.search).has('orientationGap')
   const battlefieldFeatureDemoEnabled = new URLSearchParams(window.location.search).has('battlefieldFeatures')
@@ -256,6 +274,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const [spatialEnabled, setSpatialEnabled] = useState(false)
   const [diceOpen, setDiceOpen] = useState(false)
   const [lifecycleOpen, setLifecycleOpen] = useState(false)
+  const [contextPanel, setContextPanel] = useState<ContextPanelId>('inspector')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null)
   const [selectedObjectiveId, setSelectedObjectiveId] = useState<string | null>(
@@ -277,7 +296,13 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const [analysisCoherencyPolicy, setAnalysisCoherencyPolicy] = useState<CoherencyPolicy>({ distance: 1, requiredNeighbors: 1, requireConnected: false })
   const [blockedMovementSessionId, setBlockedMovementSessionId] = useState<string | null>(null)
   const [movementPolicy, setMovementPolicy] = useState<MovementPolicyConfig>(initialRegistration.gameSystem.movement.cost)
-  const dispatch = useCallback((action: GameStateAction) => rawDispatch({ action, movementPolicy }), [movementPolicy])
+  const dispatch = useCallback((action: GameStateAction) => {
+    if (action.type === 'movement/sessionStarted') setContextPanel('movement')
+    if (action.type === 'movement/confirmed' || action.type === 'movement/cancelled') {
+      setContextPanel((current) => current === 'movement' ? 'inspector' : current)
+    }
+    rawDispatch({ action, movementPolicy })
+  }, [movementPolicy])
   const loadedRuntime = useMemo(
     () => loadRegisteredMatchRuntime(gameState, gameSystemRegistry, { movementPolicy }),
     [gameState, movementPolicy],
@@ -285,6 +310,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const gameSystemRegistration = loadedRuntime.registration!
   const developmentControlsEnabled = gameSystemRegistration.ui.developmentControls
   const gameplayImplemented = gameSystemRegistration.ui.gameplayImplemented
+  const lifecycleAvailable = gameplayImplemented || (gameState.matchLifecycle === 'DEPLOYMENT' && gameState.units.length > 0)
   const activeModels = useMemo(() => activeBattlefieldModels(gameState), [gameState])
   const battlefieldGameState = useMemo(() => ({ ...gameState, models: activeModels }), [activeModels, gameState])
   const lifecycleEntries = useMemo<LifecyclePanelEntry[]>(() => gameState.models.map((model) => {
@@ -755,6 +781,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   }, [activeModels, cancelSmartMove, dispatch, gameState, smartMoveAuthorization, smartMovePolicy, smartMoveSession, smartMoveUnit])
 
   const changeTool = useCallback((tool: ActiveTool) => {
+    if (tool === activeTool) {
+      setContextPanel(tool === 'smart-move' ? 'smart-move' : 'inspector')
+      return
+    }
     if (lifecyclePlacement) {
       setLifecyclePlacement(null)
       setLifecyclePlacementPreviews([])
@@ -772,6 +802,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         .filter((model) => selectedIds.has(model.id))
       const sortedModels = models.sort((a, b) => a.id.localeCompare(b.id))
       setActiveTool('smart-move')
+      setContextPanel('smart-move')
       smartMoveControllerRef.current?.cancelSession()
       setSmartMoveTargeting(initialSmartMoveTargetState())
       beginSmartMoveForSelection(sortedModels, gameState, gameStateRevision)
@@ -779,25 +810,14 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     }
     cancelSmartMove()
     setActiveTool(tool)
+    setContextPanel('inspector')
     if (tool !== 'measure') setMeasurementStartTarget(null)
-  }, [activeModels, beginSmartMoveForSelection, cancelSmartMove, gameState, gameStateRevision, gameplayImplemented, lifecyclePlacement, selectedIds])
+  }, [activeModels, activeTool, beginSmartMoveForSelection, cancelSmartMove, gameState, gameStateRevision, gameplayImplemented, lifecyclePlacement, selectedIds])
 
   const toggleSpatialOverlay = useCallback(() => {
-    if (lifecyclePlacement) {
-      setLifecyclePlacement(null)
-      setLifecyclePlacementPreviews([])
-      setLifecycleMessage('Placement cancelled because the active tool changed.')
-    }
-    setVisibilityPickTarget(null)
-    setVisibilityPickHoverModelId(null)
-    if (!spatialEnabled) {
-      // Opening analysis returns the pointer to ordinary tabletop manipulation.
-      cancelSmartMove()
-      setActiveTool('select')
-      setMeasurementStartTarget(null)
-    }
-    setSpatialEnabled((enabled) => !enabled)
-  }, [cancelSmartMove, lifecyclePlacement, spatialEnabled])
+    if (!spatialEnabled) setSpatialEnabled(true)
+    setContextPanel('spatial')
+  }, [spatialEnabled])
 
   const handleMeasureTarget = useCallback((target: MeasurementTarget) => {
     if (!measurementStartTarget || measurementPair) {
@@ -1019,15 +1039,13 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   }, [dispatchLifecycleAction, lifecyclePlacement, lifecycleRequireCoherency, placementsAtPoint, previewLifecyclePlacement, validateLifecyclePlacements])
 
   const toggleLifecyclePanel = useCallback(() => {
-    if (lifecycleOpen) {
-      cancelLifecyclePlacement('Lifecycle panel closed.')
-      setLifecycleOpen(false)
-      return
+    if (!lifecycleOpen) {
+      setLifecycleOpen(true)
+      setLifecycleSelectedIds(new Set(selectedIds))
+      setLifecycleMessage(null)
     }
-    setLifecycleOpen(true)
-    setLifecycleSelectedIds(new Set(selectedIds))
-    setLifecycleMessage(null)
-  }, [cancelLifecyclePlacement, lifecycleOpen, selectedIds])
+    setContextPanel('lifecycle')
+  }, [lifecycleOpen, selectedIds])
 
   return (
     <main className="app-shell">
@@ -1036,6 +1054,8 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           <div className="brand-title">FIELDCRAFT</div>
           <div className="brand-subtitle">COMPETITIVE TABLETOP LAB</div>
         </div>
+        <MatchIdentityHeader gameSystemName={loadedRuntime.gameSystem.name}
+          matchName={gameState.matchIdentity?.matchName} ui={gameSystemRegistration.ui} />
         {gameplayImplemented ? <GameStatusPanel
           gameState={battlefieldGameState}
           blockedMessage={gameState.movementSession?.id === blockedMovementSessionId
@@ -1052,7 +1072,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
             setLifecyclePlacementPreviews([])
             setLifecycleMessage('Last committed operation undone.')
           }}
-        /> : <GameSystemStatusPanel ui={gameSystemRegistration.ui} gameState={gameState} />}
+        /> : <GameSystemStatusPanel ui={gameSystemRegistration.ui} gameState={gameState}
+          onPrepare={gameSystemRegistration.prepareMatch
+            ? () => onReplaceState(gameSystemRegistration.prepareMatch!(gameState))
+            : undefined} />}
         <MatchControls
           notice={matchNotice?.message}
           error={matchNotice?.error}
@@ -1060,12 +1083,11 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           onSave={() => onSave(gameState)}
           onLoad={onLoad}
           onSaveAs={() => onSaveAs(gameState)}
+          matchName={gameState.matchIdentity?.matchName}
+          gameSystemName={loadedRuntime.gameSystem.name}
+          missionName={gameSystemRegistration.ui.shell?.missionName}
+          onMatchInfo={() => setContextPanel('match-info')}
         />
-        <div className="session-info">
-          <span className="status-dot" /> {loadedRuntime.gameSystem.name.toUpperCase()}
-          <span className="divider" />
-          <strong>{gameState.battlefield.width} × {gameState.battlefield.height}</strong>
-        </div>
       </header>
       <Toolbar
         activeTool={activeTool}
@@ -1073,14 +1095,19 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         diceOpen={diceOpen}
         lifecycleOpen={lifecycleOpen}
         gameplayToolsEnabled={gameplayImplemented}
+        lifecycleEnabled={lifecycleAvailable}
+        spatialPanelOpen={contextPanel === 'spatial'}
+        dicePanelOpen={contextPanel === 'dice'}
+        lifecyclePanelOpen={contextPanel === 'lifecycle'}
         onToolChange={changeTool}
         onSpatialToggle={toggleSpatialOverlay}
-        onDiceToggle={() => setDiceOpen((open) => !open)}
+        onDiceToggle={() => { setDiceOpen(true); setContextPanel('dice') }}
         onLifecycleToggle={toggleLifecyclePanel}
         onResetCamera={() => setResetCameraSignal((value) => value + 1)}
       />
       <section className="workspace">
-        <TabletopCanvas
+        <div className="battlefield-region">
+          <TabletopCanvas
           gameState={battlefieldGameState}
           spatialModels={spatialModels}
           activeTool={activeTool}
@@ -1109,16 +1136,19 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           onVisibilityPickHover={setVisibilityPickHoverModelId}
           onLifecyclePlacementPreview={previewLifecyclePlacement}
           onLifecyclePlacementCommit={commitLifecyclePlacement}
-          dispatch={dispatch}
-        />
-        {developmentControlsEnabled && (footprintDemoEnabled || orientationGapEnabled) && (
-          <MovementCostPolicyPanel
-            policy={movementPolicy}
-            disabled={Boolean(gameState.movementSession)}
-            onChange={setMovementPolicy}
+            dispatch={dispatch}
           />
-        )}
-        <DebugPanel
+          {developmentControlsEnabled && (footprintDemoEnabled || orientationGapEnabled) && (
+            <MovementCostPolicyPanel
+              policy={movementPolicy}
+              disabled={Boolean(gameState.movementSession)}
+              onChange={setMovementPolicy}
+            />
+          )}
+        </div>
+        <aside className="context-panel-region" aria-label="Context panel">
+          <div className={`context-panel-view ${contextPanel === 'inspector' ? '' : 'hidden'}`}>
+            <DebugPanel
           model={selectedModel}
           feature={selectedFeature}
           terrainRelationships={gameState.terrainPolicy ? selectedTerrainRelationships : undefined}
@@ -1139,12 +1169,14 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           movementRemaining={selectedModelMovement?.remaining}
           coherencyPolicy={selectedUnitPolicy}
           coherency={selectedUnitCoherency}
-          coherencyValid={selectedUnitPolicy && selectedUnitCoherency
-            ? isCoherencyResultValid(selectedUnitCoherency, selectedUnitPolicy)
-              : undefined}
-        />
-        {gameplayImplemented && lifecycleOpen && (
-          <LifecyclePanel
+              coherencyValid={selectedUnitPolicy && selectedUnitCoherency
+                ? isCoherencyResultValid(selectedUnitCoherency, selectedUnitPolicy)
+                : undefined}
+            />
+          </div>
+          {lifecycleAvailable && lifecycleOpen && (
+            <div className={`context-panel-view ${contextPanel === 'lifecycle' ? '' : 'hidden'}`}>
+              <LifecyclePanel
             entries={lifecycleEntries}
             selectedIds={lifecycleSelectedIds}
             placement={lifecyclePlacement ? {
@@ -1157,8 +1189,9 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
               })),
             } : null}
             requireCoherency={lifecycleRequireCoherency}
+            readOnly={!gameplayImplemented}
             message={lifecycleMessage ?? undefined}
-            onClose={toggleLifecyclePanel}
+            onClose={() => setContextPanel('inspector')}
             onInspect={(modelId) => {
               setSelectedIds(new Set([modelId]))
               setSelectedFeatureId(null)
@@ -1177,10 +1210,12 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
             onPlaceFormation={() => beginLifecyclePlacement('formation')}
             onCancelPlacement={cancelLifecyclePlacement}
             onRequireCoherencyChange={setLifecycleRequireCoherency}
-          />
-        )}
-        {spatialEnabled && (
-          <SpatialPanel
+              />
+            </div>
+          )}
+          {(spatialEnabled || contextPanel === 'spatial') && (
+            <div className={`context-panel-view ${contextPanel === 'spatial' ? '' : 'hidden'}`}>
+              <SpatialPanel
             mode={spatialMode}
             range={rangeInches}
             requiredSeparation={requiredSeparation}
@@ -1218,18 +1253,29 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
             onRangeChange={setRangeInches}
             onRequiredSeparationChange={setRequiredSeparation}
             onCoherencyAnalysisModeChange={setCoherencyAnalysisMode}
-            onCoherencyPolicyChange={setAnalysisCoherencyPolicy}
-          />
-        )}
-        {gameplayImplemented && movementSummary && (
-          <MovementPanel
-            summary={movementSummary}
-            onConfirm={() => dispatch({ type: 'movement/confirmed' })}
-            onCancel={() => dispatch({ type: 'movement/cancelled' })}
-          />
-        )}
-        {gameplayImplemented && activeTool === 'smart-move' && (
-          <SmartMovePanel
+                onCoherencyPolicyChange={setAnalysisCoherencyPolicy}
+                onClosePanel={() => setContextPanel('inspector')}
+                onDisableOverlay={() => {
+                  setSpatialEnabled(false)
+                  setVisibilityPickTarget(null)
+                  setVisibilityPickHoverModelId(null)
+                  setContextPanel('inspector')
+                }}
+              />
+            </div>
+          )}
+          {gameplayImplemented && movementSummary && (
+            <div className={`context-panel-view ${contextPanel === 'movement' ? '' : 'hidden'}`}>
+              <MovementPanel
+                summary={movementSummary}
+                onConfirm={() => dispatch({ type: 'movement/confirmed' })}
+                onCancel={() => dispatch({ type: 'movement/cancelled' })}
+              />
+            </div>
+          )}
+          {gameplayImplemented && activeTool === 'smart-move' && (
+            <div className={`context-panel-view ${contextPanel === 'smart-move' ? '' : 'hidden'}`}>
+              <SmartMovePanel
             selectedCount={smartMoveSession?.modelIds.length ?? 0}
             unitSize={smartMoveUnit?.modelIds.length ?? 0}
             unitName={smartMoveDefinition?.name}
@@ -1242,18 +1288,22 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
             errorMessage={smartMoveAsync.errorMessage ?? undefined}
             message={smartMoveMessage ?? undefined}
             onApply={applySmartMove}
-            onCancel={() => {
-              cancelSmartMove()
-              setActiveTool('select')
-            }}
-          />
-        )}
-        {gameplayImplemented && diceOpen && (
-          <DicePanel
+                onCancel={() => {
+                  cancelSmartMove()
+                  setActiveTool('select')
+                  setContextPanel('inspector')
+                }}
+                onClosePanel={() => setContextPanel('inspector')}
+              />
+            </div>
+          )}
+          {gameplayImplemented && diceOpen && (
+            <div className={`context-panel-view ${contextPanel === 'dice' ? '' : 'hidden'}`}>
+              <DicePanel
             players={gameState.players}
             activePlayerId={gameState.gameContext.activePlayerId}
             history={gameState.diceHistory ?? []}
-            onClose={() => setDiceOpen(false)}
+            onClose={() => setContextPanel('inspector')}
             onRecord={(playerId: string, result: DicePoolResult) => {
               const rollId = `dice-${gameState.nextActionSequence}`
               dispatch({ type: 'dice/rollRecorded', playerId, result })
@@ -1263,8 +1313,20 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
             onRecordSequence={(playerId, resolution) => dispatch({
               type: 'dice/sequenceRecorded', playerId, resolution,
             })}
-          />
-        )}
+              />
+            </div>
+          )}
+          {contextPanel === 'match-info' && (
+            <div className="context-panel-view">
+              <MatchInfoPanel
+                gameSystemName={loadedRuntime.gameSystem.name}
+                gameState={gameState}
+                ui={gameSystemRegistration.ui}
+                onClose={() => setContextPanel('inspector')}
+              />
+            </div>
+          )}
+        </aside>
       </section>
       <footer className="statusbar">
         <span><i className="legend-swatch player-1" /> PLAYER 1</span>

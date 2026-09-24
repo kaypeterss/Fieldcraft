@@ -6,16 +6,18 @@ import {
   ageOfSigmarContentManifest,
   ageOfSigmarGameSystem,
 } from './ageOfSigmarGameSystem'
+import { whatsYoursIsOurs } from './content/battleplans/whatsYoursIsOurs'
 
 export const ageOfSigmarAlphaIdentity: MatchIdentity = {
   gameSystem: { id: ageOfSigmarGameSystem.id, version: ageOfSigmarGameSystem.version },
   contentManifest: ageOfSigmarContentManifest.map((entry) => ({ ...entry })),
   format: { id: 'generals-handbook', version: '2026-27' },
+  mission: { id: 'whats-yours-is-ours', version: '2026-27' },
 }
 
 export const ageOfSigmarAlphaConfiguration: ResolvedMatchConfiguration = {
-  id: 'aos-alpha-runtime-shell',
-  version: 'm9.1',
+  id: 'aos-controlled-setup',
+  version: 'm9.2',
   roundLimit: 5,
   objectiveFeatureIds: [],
   deploymentZones: [],
@@ -25,10 +27,11 @@ export const ageOfSigmarAlphaConfiguration: ResolvedMatchConfiguration = {
 export function createAgeOfSigmarAlphaMatch(options?: MatchCreationOptions): GameState {
   return withMatchIdentity({
     schemaVersion: 5,
+    matchLifecycle: 'SETUP',
     matchIdentity: structuredClone(ageOfSigmarAlphaIdentity),
     resolvedMatchConfiguration: structuredClone(ageOfSigmarAlphaConfiguration),
     gameSystemState: initialGameSystemOwnedState(ageOfSigmarGameSystem),
-    battlefield: { width: 60, height: 44 },
+    battlefield: { ...whatsYoursIsOurs.battlefield },
     players: [
       { id: 'player-1', displayName: 'Player 1' },
       { id: 'player-2', displayName: 'Player 2' },

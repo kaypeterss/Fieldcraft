@@ -22,6 +22,27 @@ describe('Toolbar interaction layers', () => {
     expect(screen.getByRole('button', { name: /Spatial/ }).getAttribute('aria-pressed')).toBe('true')
   })
 
+  it('represents Smart Move, Spatial overlay state, and the viewed panel independently', () => {
+    render(<Toolbar
+      activeTool="smart-move"
+      spatialEnabled
+      spatialPanelOpen
+      diceOpen={false}
+      lifecycleOpen={false}
+      onToolChange={vi.fn()}
+      onSpatialToggle={vi.fn()}
+      onDiceToggle={vi.fn()}
+      onLifecycleToggle={vi.fn()}
+      onResetCamera={vi.fn()}
+    />)
+
+    const spatial = screen.getByRole('button', { name: /Spatial/ })
+    expect(screen.getByRole('button', { name: /Smart Move/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(spatial.getAttribute('aria-pressed')).toBe('true')
+    expect(spatial.classList.contains('panel-open')).toBe(true)
+    expect(spatial.classList.contains('state-active')).toBe(true)
+  })
+
   it('toggles Spatial without replacing the primary pointer tool', () => {
     const onToolChange = vi.fn()
     const onSpatialToggle = vi.fn()
@@ -77,5 +98,15 @@ describe('Toolbar interaction layers', () => {
     expect(screen.queryByRole('button', { name: /Smart Move/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /Dice/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /Lifecycle/ })).toBeNull()
+  })
+
+  it('can expose Lifecycle without exposing gameplay tools', () => {
+    render(<Toolbar activeTool="select" spatialEnabled={false} diceOpen={false} lifecycleOpen={false}
+      gameplayToolsEnabled={false} lifecycleEnabled
+      onToolChange={vi.fn()} onSpatialToggle={vi.fn()} onDiceToggle={vi.fn()}
+      onLifecycleToggle={vi.fn()} onResetCamera={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /Smart Move/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Dice/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /Lifecycle/ })).toBeTruthy()
   })
 })

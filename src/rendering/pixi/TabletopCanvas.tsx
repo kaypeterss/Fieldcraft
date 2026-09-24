@@ -34,7 +34,8 @@ import type { ModelPickerTarget } from '../../tools/modelPicker'
 import { shortestSignedAngularDelta } from '../../engine/rotation'
 import { resolveModelPointerDown, resolveTabletopPointerDown } from '../../tools/pointerInput'
 import { deriveSmartMoveGhosts } from '../../tools/smartMoveGhosts'
-import { featureObjectiveArea } from '../../engine/battlefieldFeatures'
+import { BattlefieldSizeBadge } from '../../ui/BattlefieldSizeBadge'
+import { objectiveControlAreaPresentation } from '../../tools/battlefieldPresentation'
 
 interface TabletopCanvasProps {
   gameState: GameState
@@ -374,7 +375,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
 
   return (
     <div className="canvas-host" ref={hostRef}>
-      <div className="board-size-badge"><strong>{props.gameState.battlefield.width}</strong> × <strong>{props.gameState.battlefield.height}</strong> IN</div>
+      <BattlefieldSizeBadge battlefield={props.gameState.battlefield} />
       <div className="interaction-hint">
         {props.lifecyclePlacementActive
           ? 'Placement mode · click a legal position · middle-drag pans · Esc cancels'
@@ -432,6 +433,8 @@ function drawScene(
   grid.stroke({ color: 0xb1c5b8, alpha: 0.09, width: 0.045 })
   grid.eventMode = 'none'
   world.addChild(grid)
+
+  drawDeploymentZones(world, props.gameState)
 
   for (const feature of props.gameState.battlefieldFeatures ?? []) {
     drawBattlefieldFeature(world, feature, props, propsRef, panRef, cameraRef)
@@ -759,6 +762,21 @@ function drawScene(
   if (selectionBox?.active) drawSelectionBox(world, selectionBox.start, selectionBox.current)
 }
 
+function drawDeploymentZones(world: Container, gameState: GameState) {
+  for (const zone of gameState.resolvedMatchConfiguration?.deploymentZones ?? []) {
+    const color = zone.ownerRole === 'attacker' ? 0xd76565 : 0x6397dc
+    for (const area of zone.areas ?? []) {
+      if (area.vertices.length < 3) continue
+      const graphic = new Graphics()
+        .poly(area.vertices.flatMap((point) => [point.x, point.y]))
+        .fill({ color, alpha: 0.075 })
+        .stroke({ color, alpha: 0.62, width: 0.12 })
+      graphic.eventMode = 'none'
+      world.addChild(graphic)
+    }
+  }
+}
+
 function drawBattlefieldFeature(
   world: Container,
   feature: BattlefieldFeature,
@@ -767,6 +785,16 @@ function drawBattlefieldFeature(
   panRef: React.MutableRefObject<{ start: Point; camera: Point } | null>,
   cameraRef: React.MutableRefObject<CameraState>,
 ) {
+  const permanentObjectiveArea = objectiveControlAreaPresentation(feature)
+  if (permanentObjectiveArea) {
+    const controlZone = drawLocalFootprint(new Graphics(), permanentObjectiveArea.footprint)
+      .fill({ color: 0xf1c969, alpha: permanentObjectiveArea.fillAlpha })
+      .stroke({ color: 0xf1c969, width: 0.09, alpha: permanentObjectiveArea.strokeAlpha })
+    controlZone.position.set(permanentObjectiveArea.pose.position.x, permanentObjectiveArea.pose.position.y)
+    controlZone.rotation = permanentObjectiveArea.pose.rotation
+    controlZone.eventMode = 'none'
+    world.addChild(controlZone)
+  }
   const root = new Container()
   root.position.set(feature.pose.position.x, feature.pose.position.y)
   root.rotation = feature.pose.rotation
@@ -825,12 +853,11 @@ function drawBattlefieldFeature(
   })
   world.addChild(root)
   if (props.spatialOverlay?.mode === 'objectives' && feature.capabilities.objective) {
-    const area = featureObjectiveArea(feature)
+    const area = objectiveControlAreaPresentation(feature, true, props.selectedObjectiveId === feature.id)
     if (area) {
-      const chosen = props.selectedObjectiveId === feature.id
       const objectiveOutline = drawLocalFootprint(new Graphics(), area.footprint)
-        .fill({ color: 0xf1c969, alpha: chosen ? 0.08 : 0.035 })
-        .stroke({ color: 0xffd779, width: chosen ? 0.22 : 0.13, alpha: chosen ? 0.95 : 0.65 })
+        .fill({ color: 0xf1c969, alpha: area.fillAlpha })
+        .stroke({ color: 0xffd779, width: area.strokeWidth, alpha: area.strokeAlpha })
       objectiveOutline.position.set(area.pose.position.x, area.pose.position.y)
       objectiveOutline.rotation = area.pose.rotation
       objectiveOutline.eventMode = 'none'

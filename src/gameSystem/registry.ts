@@ -18,6 +18,16 @@ export interface GameSystemUiContribution {
   description: string
   developmentControls: boolean
   gameplayImplemented: boolean
+  /** Compact, presentation-only labels consumed by the generic match shell. */
+  shell?: {
+    shortName?: string
+    missionName?: string
+    formatName?: string
+  }
+  matchInfo?: {
+    facts: GameSystemSetupSummaryItem[]
+    playerLabels?: Record<string, string>
+  }
   setupSummary: GameSystemSetupSummaryItem[]
   status: {
     eyebrow: string
@@ -32,6 +42,8 @@ export interface RegisteredGameSystem {
   installedContent: readonly InstalledContentPackage[]
   defaultContentManifest: readonly ContentManifestEntry[]
   createMatch: (options?: MatchCreationOptions) => GameState
+  /** Optional adapter-owned setup transition; generic Fieldcraft does not interpret its content. */
+  prepareMatch?: (state: GameState) => GameState
   ui: GameSystemUiContribution
 }
 

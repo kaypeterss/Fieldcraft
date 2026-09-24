@@ -25,6 +25,7 @@ interface LifecyclePanelProps {
   selectedIds: ReadonlySet<string>
   placement: LifecyclePlacementStatus | null
   requireCoherency: boolean
+  readOnly?: boolean
   message?: string
   onClose: () => void
   onInspect: (modelId: string) => void
@@ -53,11 +54,11 @@ export function LifecyclePanel(props: LifecyclePanelProps) {
       <div><span className="eyebrow">M9 QA TOOL</span><h2>Lifecycle</h2></div>
       <button type="button" className="panel-close" aria-label="Close Lifecycle" onClick={props.onClose}>×</button>
     </div>
-    <div className="lifecycle-selection-summary">
+    {!props.readOnly && <div className="lifecycle-selection-summary">
       <strong>{selected.length} selected</strong>
       <button type="button" onClick={props.onClearSelection} disabled={selected.length === 0}>Clear</button>
-    </div>
-    <div className="lifecycle-actions">
+    </div>}
+    {!props.readOnly && <div className="lifecycle-actions">
       <button type="button" onClick={props.onMoveOffBoard} disabled={selectedActive === 0}>
         Move Off Board ({selected.length})
       </button>
@@ -70,12 +71,12 @@ export function LifecyclePanel(props: LifecyclePanelProps) {
       <button type="button" onClick={props.onPlaceFormation} disabled={selectedInactive === 0}>
         Place as Formation ({selected.length})
       </button>
-    </div>
-    <label className="lifecycle-coherency-toggle">
+    </div>}
+    {!props.readOnly && <label className="lifecycle-coherency-toggle">
       <input type="checkbox" checked={props.requireCoherency}
         onChange={(event) => props.onRequireCoherencyChange(event.target.checked)} />
       Require final unit coherency
-    </label>
+    </label>}
     {props.placement && <div className="lifecycle-placement-mode">
       <strong>{props.placement.mode === 'formation' ? 'Formation placement' : 'Individual placement'}</strong>
       <span>{props.placement.mode === 'formation'
@@ -178,10 +179,10 @@ function UnitRow({ unit, expandedUnits, setExpandedUnits, props }: {
         <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
         <span><strong>{unit.unitName}</strong><small>{unit.entries.length} models · {presenceSummary(counts)}</small></span>
       </button>
-      <button type="button" className="lifecycle-unit-select" onClick={() => props.onSelectModels(unit.entries.map((entry) => entry.modelId))}>Select Unit</button>
+      {!props.readOnly && <button type="button" className="lifecycle-unit-select" onClick={() => props.onSelectModels(unit.entries.map((entry) => entry.modelId))}>Select Unit</button>}
     </div>
     {expanded && <div className="lifecycle-unit-models">{unit.entries.map((entry) => <article className="lifecycle-entry" key={entry.modelId}>
-      <input type="checkbox" aria-label={`Select ${entry.label}`} checked={props.selectedIds.has(entry.modelId)} onChange={() => props.onToggleModel(entry.modelId)} />
+      {!props.readOnly && <input type="checkbox" aria-label={`Select ${entry.label}`} checked={props.selectedIds.has(entry.modelId)} onChange={() => props.onToggleModel(entry.modelId)} />}
       <button type="button" className="lifecycle-entry-identity" onClick={() => props.onInspect(entry.modelId)}>
         <strong>{entry.label}</strong><span>{entry.modelId}</span><small>{entry.ownerName} · {presenceLabel(entry.presence)}</small>
       </button>

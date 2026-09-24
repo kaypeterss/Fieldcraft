@@ -17,18 +17,21 @@ export function GameStatusPanel({ gameState, blockedMessage, onEndTurn, onRecord
 
   return (
     <section className="game-status" aria-label="Game status">
+      <Scoreboard players={gameState.players} events={gameState.scoreHistory ?? []}
+        projectedScores={undefined} showControls={false} />
       <div className="turn-summary">
         <span>R{gameContext.round}/T{gameContext.turn}</span>
         <strong>{activePlayer?.displayName ?? gameContext.activePlayerId} TURN</strong>
         {gameContext.phase && <small>{gameContext.phase}</small>}
       </div>
       <button type="button" className="end-turn" onClick={onEndTurn}>End Turn</button>
-      <Scoreboard players={gameState.players} events={gameState.scoreHistory ?? []}
-        onRecord={onRecordScore ?? (() => undefined)} onUndoLast={onUndoLastScore ?? (() => undefined)}
-        canUndo={Boolean(gameState.lastCommittedOperationUndo)} />
-      <details className="unit-status-menu">
-        <summary>Units</summary>
-        <div className="status-popover">
+      <details className="more-menu">
+        <summary>More ▾</summary>
+        <div className="status-popover more-popover">
+          {onRecordScore && onUndoLastScore && <Scoreboard players={gameState.players}
+            events={gameState.scoreHistory ?? []} showTotals={false}
+            onRecord={onRecordScore} onUndoLast={onUndoLastScore}
+            canUndo={Boolean(gameState.lastCommittedOperationUndo)} />}
           <span className="popover-title">MOVEMENT · THIS TURN</span>
           {gameState.units.map((unit) => (
             <div className="unit-status-row" key={unit.id}>
@@ -41,12 +44,7 @@ export function GameStatusPanel({ gameState, blockedMessage, onEndTurn, onRecord
               </strong>
             </div>
           ))}
-        </div>
-      </details>
-      <details className="action-history-menu">
-        <summary>History {gameState.actionHistory.length}</summary>
-        <div className="status-popover action-history-list">
-          <span className="popover-title">CONFIRMED ACTIONS</span>
+          <span className="popover-title more-section-title">CONFIRMED ACTIONS · {gameState.actionHistory.length}</span>
           {gameState.actionHistory.length === 0 && <p>No confirmed actions yet.</p>}
           {[...gameState.actionHistory].reverse().map((action) => {
             const unitNames = action.payload.unitIds.map((unitId) => {

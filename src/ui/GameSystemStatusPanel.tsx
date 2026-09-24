@@ -1,19 +1,24 @@
 import type { GameSystemUiContribution } from '../gameSystem/registry'
 import type { GameState } from '../domain/types'
+import { Scoreboard } from './Scoreboard'
 
-export function GameSystemStatusPanel({ ui, gameState }: { ui: GameSystemUiContribution; gameState?: GameState }) {
+export function GameSystemStatusPanel({ ui, gameState, onPrepare }: {
+  ui: GameSystemUiContribution
+  gameState?: GameState
+  onPrepare?: () => void
+}) {
   return (
     <section className="game-system-status" aria-label="GameSystem status">
-      <div>
-        <span>{ui.status.eyebrow}</span>
-        <strong>{ui.status.title}</strong>
+      {gameState && <Scoreboard players={gameState.players} events={gameState.scoreHistory ?? []}
+        showControls={false} />}
+      <div className="shell-state-summary">
+        <span>{gameState?.matchLifecycle ?? 'SETUP'}</span>
+        <strong>{gameState?.matchLifecycle === 'DEPLOYMENT' ? 'Deployment setup ready' : ui.status.title}</strong>
       </div>
-      <dl>
-        {gameState?.matchIdentity?.matchName && <div><dt>Match</dt><dd>{gameState.matchIdentity.matchName}</dd></div>}
-        {gameState && <div><dt>Status</dt><dd>{gameState.matchLifecycle ?? 'SETUP'}</dd></div>}
-        {ui.status.details.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
-      </dl>
-      {ui.status.message && <p>{ui.status.message}</p>}
+      {gameState?.matchLifecycle === 'SETUP' && onPrepare
+        ? <button type="button" className="primary-progression" onClick={onPrepare}>Prepare Match</button>
+        : <button type="button" className="primary-progression" disabled title="Deployment begins in M9.3">Continue</button>}
+      {gameState?.matchLifecycle === 'DEPLOYMENT' && <small className="progression-hint">Deployment begins in M9.3.</small>}
     </section>
   )
 }

@@ -17,6 +17,7 @@ interface SmartMovePanelProps {
   message?: string
   onApply: () => void
   onCancel: () => void
+  onClosePanel?: () => void
 }
 
 export function SmartMovePanel(props: SmartMovePanelProps) {
@@ -28,7 +29,9 @@ export function SmartMovePanel(props: SmartMovePanelProps) {
     <aside className="smart-move-panel" aria-label="Smart Move preview">
       <div className="smart-move-panel-heading">
         <div><span className="eyebrow">FORMATION PREVIEW</span><h2>Smart Move</h2></div>
-        <span className={`smart-candidate ${badge.tone}`}>{badge.label}</span>
+        <div className="smart-heading-actions"><span className={`smart-candidate ${badge.tone}`}>{badge.label}</span>
+          {props.onClosePanel && <button type="button" className="panel-close" aria-label="Close Smart Move panel"
+            onClick={props.onClosePanel}>×</button>}</div>
       </div>
       <dl>
         <div><dt>Selected</dt><dd>{props.selectedCount} / {props.unitSize} models</dd></div>

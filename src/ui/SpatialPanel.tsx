@@ -49,6 +49,8 @@ interface SpatialPanelProps {
   onRequiredSeparationChange: (distance: number) => void
   onCoherencyAnalysisModeChange: (mode: CoherencyAnalysisMode) => void
   onCoherencyPolicyChange: (policy: CoherencyPolicy) => void
+  onClosePanel?: () => void
+  onDisableOverlay?: () => void
 }
 
 export function SpatialPanel(props: SpatialPanelProps) {
@@ -60,8 +62,13 @@ export function SpatialPanel(props: SpatialPanelProps) {
         <div className="spatial-heading-status">
           {props.previewActive && <span className="spatial-preview-badge">SMART MOVE PREVIEW</span>}
           <span className="spatial-source-count">{props.sourceCount}</span>
+          {props.onClosePanel && <button type="button" className="panel-close" aria-label="Close Spatial panel"
+            onClick={props.onClosePanel}>×</button>}
         </div>
       </div>
+
+      {props.onDisableOverlay && <button type="button" className="context-secondary-action"
+        onClick={props.onDisableOverlay}>Disable Spatial overlay</button>}
 
       <div className="segmented-control" aria-label="Spatial visualization mode">
         {(['range', 'exclusion', 'coherency', 'objectives', 'visibility'] as const).map((mode) => (

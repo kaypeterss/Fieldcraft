@@ -5,12 +5,16 @@ import { scoreTotalForPlayer } from '../game/scoring'
 interface ScoreboardProps {
   players: readonly Player[]
   events: readonly ScoreEvent[]
-  onRecord: (playerId: string, pointsDelta: number, reason: string) => void
-  onUndoLast: () => void
+  onRecord?: (playerId: string, pointsDelta: number, reason: string) => void
+  onUndoLast?: () => void
   canUndo?: boolean
+  projectedScores?: Readonly<Record<string, number | undefined>>
+  showTotals?: boolean
+  showControls?: boolean
 }
 
-export function Scoreboard({ players, events, onRecord, onUndoLast, canUndo = events.length > 0 }: ScoreboardProps) {
+export function Scoreboard({ players, events, onRecord, onUndoLast, canUndo = events.length > 0,
+  projectedScores, showTotals = true, showControls = Boolean(onRecord) }: ScoreboardProps) {
   const [playerId, setPlayerId] = useState(players[0]?.id ?? '')
   const [pointsDraft, setPointsDraft] = useState('1')
   const [reason, setReason] = useState('Manual adjustment')
@@ -21,12 +25,15 @@ export function Scoreboard({ players, events, onRecord, onUndoLast, canUndo = ev
   ])), [events, players])
 
   return <div className="scoreboard" aria-label="Scoreboard">
-    <div className="scoreboard-totals">
+    {showTotals && <div className="scoreboard-totals">
       {players.map((player) => <span key={player.id}>
         <small>{player.displayName}</small><strong>{totals.get(player.id) ?? 0} VP</strong>
+        {projectedScores?.[player.id] !== undefined && <em>
+          {projectedScores[player.id]! >= 0 ? '+' : ''}{projectedScores[player.id]} projected
+        </em>}
       </span>)}
-    </div>
-    <details className="score-controls">
+    </div>}
+    {showControls && onRecord && onUndoLast && <details className="score-controls">
       <summary>Score</summary>
       <div className="status-popover score-popover">
         <span className="popover-title">MANUAL SCORE ADJUSTMENT</span>
@@ -54,6 +61,6 @@ export function Scoreboard({ players, events, onRecord, onUndoLast, canUndo = ev
           })}
         </div>
       </div>
-    </details>
+    </details>}
   </div>
 }

@@ -37,6 +37,9 @@ export interface DeploymentZoneDefinition {
   id: string
   name: string
   areaReference?: string
+  /** Optional authored tabletop polygons used for setup/deployment visualization. */
+  areas?: Array<{ vertices: Point[] }>
+  ownerRole?: 'attacker' | 'defender'
 }
 
 /** Minimal resolved match data; interpretation remains with the loaded GameSystem. */
