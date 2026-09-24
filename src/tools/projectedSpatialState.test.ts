@@ -4,6 +4,7 @@ import type { TabletopModel, Unit } from '../domain/types'
 import { evaluateUnitCoherency } from '../engine/coherency'
 import { modelAreaRelationship, unitAreaSummary } from '../engine/areaRelationships'
 import { isPointWithinModelRangeArea, isTargetCenterWithinExclusionZone } from '../engine/spatial'
+import { measureBetweenTargets } from './measurement'
 import { displayedSmartMovePreview, projectModelsForSmartMove } from './projectedSpatialState'
 
 const circle = { shape: 'circle' as const, diameterMm: 25.4 }
@@ -30,6 +31,22 @@ describe('projected Spatial state', () => {
     expect(isPointWithinModelRangeArea(projected[0], { x: 9, y: 1 }, 1)).toBe(true)
     expect(isTargetCenterWithinExclusionZone(models[0], { x: 9, y: 1 }, circle, 1)).toBe(false)
     expect(isTargetCenterWithinExclusionZone(projected[0], { x: 9, y: 1 }, circle, 1)).toBe(true)
+  })
+
+  it('uses projected poses for model and point measurement', () => {
+    const projected = projectModelsForSmartMove(models, result)
+    const modelToModel = measureBetweenTargets(
+      { models: projected, units: [unit] },
+      { type: 'model', modelId: 'a' },
+      { type: 'model', modelId: 'c' },
+    )
+    const modelToPoint = measureBetweenTargets(
+      { models: projected, units: [unit] },
+      { type: 'model', modelId: 'a' },
+      { type: 'point', point: { x: 9, y: 1 } },
+    )
+    expect(modelToModel?.distanceInches).toBeCloseTo(1)
+    expect(modelToPoint?.distanceInches).toBeCloseTo(0.5)
   })
 
   it('evaluates complete-unit coherency from ghost and unchanged authoritative poses', () => {

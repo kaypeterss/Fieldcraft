@@ -4,6 +4,7 @@ import { commitOperation, createCommittedOperation } from '../../game/committedO
 import { modelPresence } from '../../game/modelPresence'
 import type { GameSystemCommand } from '../types'
 import { aosSetupData } from './prepareAgeOfSigmarMatch'
+import { executeAosBattleCommand, isAosBattleState, type AosBattleState } from './battleRound'
 
 export type AosDeploymentPhase = 'ROLL_OFF' | 'CHOOSE_ROLES' | 'CHOOSE_TERRITORY' | 'DEPLOYING' | 'READY_FOR_BATTLE'
 
@@ -35,9 +36,10 @@ export interface AosDeploymentState {
 }
 
 export interface AosMatchStateData {
-  status: 'setup' | 'deployment' | 'rules-not-implemented'
+  status: 'setup' | 'deployment' | 'battle' | 'rules-not-implemented'
   setup: ReturnType<typeof aosSetupData>
   deployment?: AosDeploymentState
+  battle?: AosBattleState
 }
 
 export interface AosDeploymentPlacementRules {
@@ -66,12 +68,15 @@ export function aosMatchStateData(state: GameState): AosMatchStateData | null {
 
 export function aosDeploymentState(state: GameState): AosDeploymentState | null {
   const data = aosMatchStateData(state)
-  return data?.status === 'deployment' ? data.deployment ?? initialAosDeploymentState() : null
+  return data && (data.status === 'deployment' || data.status === 'battle')
+    ? data.deployment ?? initialAosDeploymentState() : null
 }
 
 export function executeAosCommand(state: GameState, command: GameSystemCommand): GameState {
   const data = aosMatchStateData(state)
-  if (!data || data.status !== 'deployment') return state
+  if (!data) return state
+  if (command.type.startsWith('aos/battle/')) return executeAosBattleCommand(state, data, command)
+  if (data.status !== 'deployment') return state
   const normalizedData: AosMatchStateData = { ...data, deployment: data.deployment ?? initialAosDeploymentState() }
   switch (command.type) {
     case 'aos/deployment/roll-off':
@@ -134,6 +139,7 @@ export function isAosMatchStateData(value: unknown): value is AosMatchStateData 
   if (value.status === 'rules-not-implemented') return true
   if (!isRecord(value.setup)) return false
   if (value.status === 'setup') return true
+  if (value.status === 'battle') return isAosBattleState(value.battle)
   if (value.status !== 'deployment') return false
   if (value.deployment === undefined) return true
   if (!isRecord(value.deployment)) return false

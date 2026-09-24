@@ -189,7 +189,9 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
           return
         }
         if (route.kind === 'model-pick-wait') return
-        if (propsRef.current.lifecyclePlacementActive && event.button === 0) {
+        if (propsRef.current.lifecyclePlacementActive
+          && propsRef.current.activeTool !== 'measure'
+          && event.button === 0) {
           propsRef.current.onLifecyclePlacementCommit(screenToWorld(event.global, cameraRef.current))
           return
         }
@@ -223,7 +225,9 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
           applyCamera(world, cameraRef.current)
         }
 
-        if (propsRef.current.lifecyclePlacementActive && !pan) {
+        if (propsRef.current.lifecyclePlacementActive
+          && propsRef.current.activeTool !== 'measure'
+          && !pan) {
           const point = screenToWorld(event.global, cameraRef.current)
           if (placementDragRef.current && propsRef.current.onPlacementModelDrag) {
             propsRef.current.onPlacementModelDrag(placementDragRef.current.modelId, point, false)
@@ -403,14 +407,14 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
     <div className="canvas-host" ref={hostRef}>
       <BattlefieldSizeBadge battlefield={props.gameState.battlefield} />
       <div className="interaction-hint">
-        {props.lifecyclePlacementActive
-          ? 'Placement mode · click a legal position · middle-drag pans · Esc cancels'
-          : props.activeTool === 'measure'
+        {props.activeTool === 'measure'
           ? props.measurementTargetB
             ? 'Measurement complete · choose any target to start another'
             : props.measurementTargetA
               ? 'Choose a second model, unit, or battlefield point'
               : 'Click model or point · Ctrl/Cmd-click model for unit'
+          : props.lifecyclePlacementActive
+          ? 'Placement mode · click a legal position · middle-drag pans · Esc cancels'
           : props.activeTool === 'smart-move'
               ? props.smartMoveTargetLocked
                 ? 'Target locked · click battlefield to reposition · Enter or Apply Move'
@@ -568,6 +572,7 @@ function drawScene(
         currentProps.activeTool,
         event.button,
         Boolean(currentProps.visibilityPickTarget),
+        currentProps.lifecyclePlacementActive,
       )
       if (modelRoute === 'camera-pan') {
         panRef.current = {
@@ -580,15 +585,15 @@ function drawScene(
         currentProps.onVisibilityPickModel(model.id)
         return
       }
-      if (currentProps.lifecyclePlacementActive) {
-        currentProps.onLifecyclePlacementCommit(screenToWorld(event.global, cameraRef.current))
-        return
-      }
       const unit = currentProps.gameState.units.find((candidate) => candidate.id === model.unitId)
       if (modelRoute === 'measure') {
         currentProps.onMeasureTarget(event.ctrlKey || event.metaKey
           ? { type: 'unit', unitId: unit?.id ?? model.unitId }
           : { type: 'model', modelId: model.id })
+        return
+      }
+      if (modelRoute === 'placement') {
+        currentProps.onLifecyclePlacementCommit(screenToWorld(event.global, cameraRef.current))
         return
       }
       if (currentProps.activeTool === 'smart-move') {
@@ -780,25 +785,76 @@ function drawScene(
     preview.rotation = placement.pose.rotation
     const hovered = props.placementHoveredModelId === placement.model.id
     const color = hovered ? 0xf1c969 : placement.valid ? 0x72d6a1 : 0xff7d6d
-    preview.addChild(drawLocalFootprint(new Graphics(), placement.model.base)
+    const measuringA = props.activeTool === 'measure'
+      && measurementTargetIncludesModel(props.measurementTargetA, placement.model.id, props.gameState)
+    const measuringB = props.activeTool === 'measure'
+      && measurementTargetIncludesModel(props.measurementTargetB, placement.model.id, props.gameState)
+    const visibilityPickActive = Boolean(props.visibilityPickTarget)
+    const visibilityPickHover = visibilityPickActive
+      && props.spatialOverlay?.visibilityPickHoverModelId === placement.model.id
+    const visibilityRole = props.spatialOverlay?.mode === 'visibility'
+      ? props.spatialOverlay.visibilityViewerId === placement.model.id
+        ? 'viewer'
+        : props.spatialOverlay.visibilityTargetId === placement.model.id
+          ? 'target'
+          : null
+      : null
+    const outline = drawLocalFootprint(new Graphics(), placement.model.base)
       .fill({ color, alpha: 0.18 })
-      .stroke({ color, width: 0.18, alpha: 1 }))
-    preview.eventMode = props.onPlacementModelDrag ? 'static' : 'none'
-    preview.cursor = props.onPlacementModelDrag ? 'grab' : 'default'
-    if (props.onPlacementModelDrag) {
-      preview.on('pointerover', () => propsRef.current.onPlacementModelHover?.(placement.model.id))
-      preview.on('pointerout', () => propsRef.current.onPlacementModelHover?.(null))
+      .stroke({ color, width: 0.18, alpha: 1 })
+    if (measuringA || measuringB) {
+      outline.stroke({ color: measuringB ? 0x8bd4ee : 0xf1c969, width: 0.16, alpha: 0.98 })
+    }
+    if (visibilityRole || visibilityPickHover) {
+      outline.stroke({
+        color: visibilityPickHover ? 0xffffff : visibilityRole === 'viewer' ? 0x8bd4ee : 0xc8a8ff,
+        width: visibilityPickHover ? 0.22 : 0.16,
+        alpha: 0.98,
+      })
+    }
+    preview.addChild(outline)
+    const measureActive = props.activeTool === 'measure'
+    const pickerActive = measureActive || visibilityPickActive
+    preview.eventMode = pickerActive || props.onPlacementModelDrag ? 'static' : 'none'
+    preview.cursor = pickerActive ? 'crosshair' : props.onPlacementModelDrag ? 'grab' : 'default'
+    if (pickerActive || props.onPlacementModelDrag) {
+      preview.on('pointerover', () => {
+        const current = propsRef.current
+        if (current.visibilityPickTarget) current.onVisibilityPickHover(placement.model.id)
+        else current.onPlacementModelHover?.(placement.model.id)
+      })
+      preview.on('pointerout', () => {
+        const current = propsRef.current
+        if (current.visibilityPickTarget) current.onVisibilityPickHover(null)
+        else current.onPlacementModelHover?.(null)
+      })
       preview.on('pointerdown', (event: FederatedPointerEvent) => {
         event.stopPropagation()
-        if (event.button !== 0) {
+        const current = propsRef.current
+        const modelRoute = resolveModelPointerDown(
+          current.activeTool,
+          event.button,
+          Boolean(current.visibilityPickTarget),
+          current.lifecyclePlacementActive,
+        )
+        if (modelRoute === 'camera-pan') {
           panRef.current = {
             start: { x: event.global.x, y: event.global.y },
             camera: { x: cameraRef.current.x, y: cameraRef.current.y },
           }
           return
         }
+        if (modelRoute === 'pick-model') {
+          current.onVisibilityPickModel(placement.model.id)
+          return
+        }
+        if (modelRoute === 'measure') {
+          current.onMeasureTarget({ type: 'model', modelId: placement.model.id })
+          return
+        }
+        if (modelRoute !== 'placement') return
         placementDragRef.current = { modelId: placement.model.id }
-        propsRef.current.onPlacementModelHover?.(placement.model.id)
+        current.onPlacementModelHover?.(placement.model.id)
       })
     }
     world.addChild(preview)

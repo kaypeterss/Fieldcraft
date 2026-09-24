@@ -16,8 +16,14 @@ export function resolveTabletopPointerDown(
 }
 
 /** Model clicks select in Smart Move; empty-table clicks remain target locks. */
-export function resolveModelPointerDown(activeTool: ActiveTool, button: number, modelPickerActive = false) {
+export function resolveModelPointerDown(
+  activeTool: ActiveTool,
+  button: number,
+  modelPickerActive = false,
+  placementActive = false,
+) {
   if (button !== 0) return 'camera-pan' as const
   if (modelPickerActive) return 'pick-model' as const
-  return activeTool === 'measure' ? 'measure' as const : 'select-model' as const
+  if (activeTool === 'measure') return 'measure' as const
+  return placementActive ? 'placement' as const : 'select-model' as const
 }

@@ -2,7 +2,7 @@ import { Component, useCallback, useEffect, useMemo, useReducer, useRef, useStat
 import { footprintDemoGameState, initialGameState, orientationGapGameState } from './game/initialState'
 import { battlefieldFeatureDemoGameState } from './game/battlefieldFeatureDemo'
 import { lifecycleDemoGameState } from './game/lifecycleDemo'
-import type { DicePoolResult, GameState, MovementPolicyConfig, Pose } from './domain/types'
+import type { DicePoolResult, GameState, JsonValue, MovementPolicyConfig, Pose } from './domain/types'
 import {
   canUndoLastMovement,
   getMovementAllowance,
@@ -71,7 +71,7 @@ import { authorizeMovement, loadRegisteredMatchRuntime } from './gameSystem/runt
 import { reduceGameCommand } from './state/commandBoundary'
 import { validateModelPlacements } from './engine/placement'
 import { LifecyclePanel, type LifecyclePanelEntry } from './ui/LifecyclePanel'
-import { derivePlacementCoherency, nextUnplacedModelId } from './tools/lifecyclePlacement'
+import { derivePlacementCoherency, nextUnplacedModelId, projectModelsForPlacement } from './tools/lifecyclePlacement'
 import { formationPresetCandidates, rotateFormationPlacements, type FormationPresetId } from './tools/formationPresets'
 import { gameSystemRegistry } from './gameSystem/registeredGameSystems'
 import { listSavedMatches, loadMatchFromStorage, loadSavedMatch as loadSavedMatchRecord, saveMatchAsToStorage, saveMatchToStorage, deleteSavedMatch } from './game/matchPersistence'
@@ -86,6 +86,8 @@ import { MatchInfoPanel } from './ui/MatchInfoPanel'
 import { DeploymentPanel, type DeploymentPlacementView } from './ui/DeploymentPanel'
 import { aosDeploymentPlacementRules, aosDeploymentState, validateAosDeploymentPlacements } from './gameSystem/ageOfSigmar/deployment'
 import { rollDice, systemRandomSource } from './engine/dice'
+import { aosBattleState, currentAosPhase } from './gameSystem/ageOfSigmar/battleRound'
+import { AosBattleRoundPanel } from './ui/AosBattleRoundPanel'
 
 interface SmartMoveSessionState {
   modelIds: string[]
@@ -112,7 +114,7 @@ interface DeploymentPlacementSession {
   formationRotation: number
 }
 
-type ContextPanelId = 'inspector' | 'spatial' | 'lifecycle' | 'dice' | 'smart-move' | 'movement' | 'match-info' | 'deployment'
+type ContextPanelId = 'inspector' | 'spatial' | 'lifecycle' | 'dice' | 'smart-move' | 'movement' | 'match-info' | 'deployment' | 'battle-round'
 
 const FORMATION_ROTATION_STEP = Math.PI / 12
 
@@ -296,8 +298,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const [diceOpen, setDiceOpen] = useState(false)
   const [lifecycleOpen, setLifecycleOpen] = useState(false)
   const [contextPanel, setContextPanel] = useState<ContextPanelId>(() => (
-    initialState.matchIdentity?.gameSystem.id === 'age-of-sigmar' && initialState.matchLifecycle === 'DEPLOYMENT'
-      ? 'deployment' : 'inspector'
+    initialState.matchIdentity?.gameSystem.id === 'age-of-sigmar'
+      ? initialState.matchLifecycle === 'DEPLOYMENT' ? 'deployment'
+        : initialState.matchLifecycle === 'IN_PROGRESS' ? 'battle-round' : 'inspector'
+      : 'inspector'
   ))
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null)
@@ -367,6 +371,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const [deploymentPlacement, setDeploymentPlacement] = useState<DeploymentPlacementSession | null>(null)
   const [deploymentTerritoryHoverId, setDeploymentTerritoryHoverId] = useState<string | null>(null)
   const aosDeployment = useMemo(() => aosDeploymentState(gameState), [gameState])
+  const aosBattle = useMemo(() => aosBattleState(gameState), [gameState])
   const lifecyclePlacementCoherency = useMemo(() => {
     if (!lifecyclePlacement || !lifecycleRequireCoherency || lifecyclePlacementPreviews.length === 0) return []
     const placements = Object.fromEntries(lifecyclePlacementPreviews.map((preview) => [preview.model.id, preview.pose]))
@@ -395,9 +400,18 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const smartMoveControllerRef = useRef<SmartMoveWorkerController | null>(null)
   const smartMoveResult = smartMoveAsync.result
   const spatialPreviewResult = displayedSmartMovePreview(smartMoveResult)
+  const stagedPlacementPoses = deploymentPlacement?.placements
+    ?? lifecyclePlacement?.stagedPoses
+    ?? null
+  const placementProjectedModels = useMemo(
+    () => stagedPlacementPoses && Object.keys(stagedPlacementPoses).length > 0
+      ? projectModelsForPlacement(gameState, stagedPlacementPoses)
+      : activeModels,
+    [activeModels, gameState, stagedPlacementPoses],
+  )
   const spatialModels = useMemo(
-    () => projectModelsForSmartMove(activeModels, spatialPreviewResult),
-    [activeModels, spatialPreviewResult],
+    () => projectModelsForSmartMove(placementProjectedModels, spatialPreviewResult),
+    [placementProjectedModels, spatialPreviewResult],
   )
   const visibilityModelOptions = useMemo(() => spatialModels.map((model) => ({
     id: model.id,
@@ -472,8 +486,14 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
 
   const selectedWholeUnit = useMemo(() => gameState.units.find((unit) => {
     const activeIds = unit.modelIds.filter((id) => activeModels.some((model) => model.id === id))
-    return activeIds.length > 0 && activeIds.length === selectedIds.size && activeIds.every((id) => selectedIds.has(id))
-  }), [activeModels, gameState.units, selectedIds])
+    const selectedActiveUnit = activeIds.length > 0 && activeIds.length === selectedIds.size && activeIds.every((id) => selectedIds.has(id))
+    const placementUnit = deploymentPlacement?.unitId === unit.id
+      || lifecyclePlacement?.modelIds.includes(unit.modelIds[0] ?? '')
+    const selectedPlacementUnit = Boolean(placementUnit)
+      && unit.modelIds.length === selectedIds.size
+      && unit.modelIds.every((id) => selectedIds.has(id))
+    return selectedActiveUnit || selectedPlacementUnit
+  }), [activeModels, deploymentPlacement, gameState.units, lifecyclePlacement, selectedIds])
   const selectedWholeUnitName = selectedWholeUnit
     ? getUnitDefinition(gameState, selectedWholeUnit)?.name
     : undefined
@@ -612,8 +632,8 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
 
   const measurement = useMemo(() => {
     if (!measurementPair) return null
-    return measureBetweenTargets(battlefieldGameState, measurementPair.targetA, measurementPair.targetB)
-  }, [battlefieldGameState, measurementPair])
+    return measureBetweenTargets({ ...battlefieldGameState, models: spatialModels }, measurementPair.targetA, measurementPair.targetB)
+  }, [battlefieldGameState, measurementPair, spatialModels])
 
   const smartMoveUnit = useMemo(
     () => smartMoveSession
@@ -1399,6 +1419,101 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     setContextPanel('lifecycle')
   }, [lifecycleOpen])
 
+  const dispatchAosBattleCommand = useCallback((type: string, actorPlayerId: string, payload?: JsonValue) => {
+    dispatch({ type: 'gameSystem/command', command: { type, actorPlayerId, payload } })
+  }, [dispatch])
+
+  const startAosBattle = useCallback(() => {
+    dispatchAosBattleCommand('aos/battle/start', gameState.players[0]?.id ?? '')
+    setContextPanel('battle-round')
+  }, [dispatchAosBattleCommand, gameState.players])
+
+  const rollAosPriority = useCallback(() => {
+    if (!aosBattle || aosBattle.stage !== 'PRIORITY_ROLL' || gameState.players.length !== 2) return
+    const results: Record<string, number> = {}
+    for (const player of gameState.players) {
+      const roll = rollDice({ count: 1, sides: 6 }, systemRandomSource)
+      results[player.id] = roll.finalResults[0]
+      dispatch({ type: 'dice/rollRecorded', playerId: player.id, result: roll })
+    }
+    dispatchAosBattleCommand('aos/battle/priority-rolled', gameState.players[0].id, results as unknown as JsonValue)
+    setContextPanel('battle-round')
+  }, [aosBattle, dispatch, dispatchAosBattleCommand, gameState.players])
+
+  const chooseAosFirstPlayer = useCallback((firstPlayerId: string) => {
+    if (!aosBattle?.chooserPlayerId) return
+    dispatchAosBattleCommand('aos/battle/choose-first-player', aosBattle.chooserPlayerId, { firstPlayerId })
+    setContextPanel('battle-round')
+  }, [aosBattle, dispatchAosBattleCommand])
+
+  const continueAosBattle = useCallback(() => {
+    dispatchAosBattleCommand('aos/battle/continue', gameState.gameContext.activePlayerId)
+    setContextPanel('battle-round')
+  }, [dispatchAosBattleCommand, gameState.gameContext.activePlayerId])
+
+  const endAosPhase = useCallback(() => {
+    dispatchAosBattleCommand('aos/battle/end-phase', gameState.gameContext.activePlayerId)
+    setContextPanel('battle-round')
+  }, [dispatchAosBattleCommand, gameState.gameContext.activePlayerId])
+
+  const aosProgression = useMemo(() => {
+    if (!aosDeployment || aosDeployment.phase !== 'READY_FOR_BATTLE') return undefined
+    if (!aosBattle) return {
+      lifecycle: 'READY FOR BATTLE', title: 'Deployment complete',
+      detail: 'Round 1 uses deployment completion order — no priority roll.',
+      actionLabel: 'Start Battle Round 1', onAction: startAosBattle,
+    }
+    const phase = currentAosPhase(aosBattle)
+    const active = gameState.players.find((player) => player.id === gameState.gameContext.activePlayerId)?.displayName
+      ?? gameState.gameContext.activePlayerId
+    if (aosBattle.stage === 'FIRST_PLAYER_CHOICE') return {
+      lifecycle: 'ROUND 1', title: 'Choose first player', actionLabel: 'Choose First Player',
+      detail: `${active} finished deployment first.`, onAction: () => setContextPanel('battle-round'),
+    }
+    if (aosBattle.stage === 'PRIORITY_ROLL') return {
+      lifecycle: `ROUND ${aosBattle.round}`, title: 'Priority', actionLabel: 'Roll Priority',
+      detail: 'Roll one D6 for each player.', onAction: rollAosPriority,
+    }
+    if (aosBattle.stage === 'PRIORITY_CHOICE') return {
+      lifecycle: `ROUND ${aosBattle.round}`, title: 'Choose first player', actionLabel: 'Choose First Player',
+      detail: `${active} has the choice.`, onAction: () => setContextPanel('battle-round'),
+    }
+    if (aosBattle.stage === 'START_OF_ROUND') return {
+      lifecycle: `ROUND ${aosBattle.round}`, title: 'Start of Battle Round', actionLabel: 'Continue',
+      detail: `${active} takes the first turn.`, onAction: continueAosBattle,
+    }
+    if (aosBattle.stage === 'TURN_PHASE' && phase) return {
+      lifecycle: `ROUND ${aosBattle.round} · TURN ${(aosBattle.turnIndex ?? 0) + 1}`,
+      title: `${active} · ${phase.name}`,
+      actionLabel: phase.id === 'END_OF_TURN' ? 'End Turn' : `End ${phase.name}`,
+      onAction: endAosPhase,
+    }
+    if (aosBattle.stage === 'END_OF_ROUND') return {
+      lifecycle: `ROUND ${aosBattle.round}`, title: 'End of Battle Round', actionLabel: 'Continue',
+      detail: 'Future end-of-round abilities will resolve here.', onAction: continueAosBattle,
+    }
+    return {
+      lifecycle: 'BATTLE COMPLETE', title: 'Final resolution pending', actionLabel: 'Battle Complete',
+      detail: 'Final scoring and winner resolution are not implemented yet.', disabled: true,
+    }
+  }, [aosBattle, aosDeployment, continueAosBattle, endAosPhase, gameState.gameContext.activePlayerId, gameState.players, rollAosPriority, startAosBattle])
+
+  const aosRuntimeFacts = useMemo(() => {
+    if (!aosDeployment) return []
+    const playerName = (id?: string) => gameState.players.find((player) => player.id === id)?.displayName ?? id ?? '—'
+    return [
+      { label: 'Attacker', value: playerName(aosDeployment.attackerPlayerId) },
+      { label: 'Defender', value: playerName(aosDeployment.defenderPlayerId) },
+      ...(aosBattle ? [
+        { label: 'Battle Round', value: String(aosBattle.round) },
+        { label: 'Active Player', value: playerName(gameState.gameContext.activePlayerId) },
+        { label: 'Current Timing', value: currentAosPhase(aosBattle)?.name ?? gameState.gameContext.phase ?? aosBattle.stage },
+        { label: 'First Player', value: playerName(aosBattle.firstPlayerId) },
+        { label: 'Underdog', value: playerName(aosBattle.underdogPlayerId) },
+      ] : []),
+    ]
+  }, [aosBattle, aosDeployment, gameState.gameContext.activePlayerId, gameState.gameContext.phase, gameState.players])
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1425,10 +1540,11 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
             setLifecycleMessage('Last committed operation undone.')
           }}
         /> : <GameSystemStatusPanel ui={gameSystemRegistration.ui} gameState={gameState}
+          progression={aosProgression}
           onPrepare={gameSystemRegistration.prepareMatch
             ? () => onReplaceState(gameSystemRegistration.prepareMatch!(gameState))
             : undefined}
-          onOpenDeployment={aosDeployment ? () => setContextPanel('deployment') : undefined} />}
+          onOpenDeployment={aosDeployment && !aosBattle ? () => setContextPanel('deployment') : undefined} />}
         <MatchControls
           notice={matchNotice?.message}
           error={matchNotice?.error}
@@ -1448,7 +1564,8 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         diceOpen={diceOpen}
         lifecycleOpen={lifecycleOpen}
         gameplayToolsEnabled={gameplayImplemented}
-        diceEnabled={gameplayImplemented || gameState.matchLifecycle === 'DEPLOYMENT'}
+        diceEnabled={gameplayImplemented || gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar'
+          && gameState.matchLifecycle !== 'SETUP'}
         lifecycleEnabled={lifecycleAvailable}
         spatialPanelOpen={contextPanel === 'spatial'}
         dicePanelOpen={contextPanel === 'dice'}
@@ -1513,7 +1630,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           )}
         </div>
         <aside className="context-panel-region" aria-label="Context panel">
-          {aosDeployment && (
+          {aosDeployment && !aosBattle && (
             <div className={`context-panel-view ${contextPanel === 'deployment' ? '' : 'hidden'}`}>
               <DeploymentPanel
                 state={gameState}
@@ -1560,6 +1677,21 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
                       dispatch({ type: 'history/undoLastCommitted' })
                     }
                   : undefined}
+              />
+            </div>
+          )}
+          {aosDeployment && (aosBattle || aosDeployment.phase === 'READY_FOR_BATTLE') && (
+            <div className={`context-panel-view ${contextPanel === 'battle-round' ? '' : 'hidden'}`}>
+              <AosBattleRoundPanel
+                state={gameState}
+                deployment={aosDeployment}
+                battle={aosBattle}
+                onClose={() => setContextPanel('inspector')}
+                onStart={startAosBattle}
+                onRollPriority={rollAosPriority}
+                onChooseFirstPlayer={chooseAosFirstPlayer}
+                onContinue={continueAosBattle}
+                onEndPhase={endAosPhase}
               />
             </div>
           )}
@@ -1740,6 +1872,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
                 gameSystemName={loadedRuntime.gameSystem.name}
                 gameState={gameState}
                 ui={gameSystemRegistration.ui}
+                runtimeFacts={aosRuntimeFacts}
                 onClose={() => setContextPanel('inspector')}
               />
             </div>

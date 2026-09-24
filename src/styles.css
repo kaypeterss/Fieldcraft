@@ -638,6 +638,24 @@ button { font: inherit; }
 .deployment-complete span { color: #dff8ea; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .deployment-complete small, .deployment-rule-note { color: #68756f; font-size: 7px; line-height: 1.45; }
 .deployment-rule-note { margin: 12px 0 0; padding-top: 9px; border-top: 1px solid var(--line); }
+.context-panel-region .aos-round-panel { height: 100%; box-sizing: border-box; overflow-y: auto; padding: 16px; }
+.aos-round-panel { display: grid; align-content: start; gap: 12px; }
+.aos-round-panel p { margin: 0; color: #7d8b84; font-size: 9px; line-height: 1.5; }
+.battle-flow-card { display: grid; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 5px; background: rgba(255,255,255,.018); }
+.player-choice-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.player-choice-buttons button, .primary-panel-action { padding: 8px; border: 1px solid rgba(241,201,105,.3); border-radius: 4px; color: #fff2c8; background: rgba(151,116,39,.2); cursor: pointer; font-size: 8px; font-weight: 700; text-transform: uppercase; }
+.primary-panel-action { width: 100%; }
+.priority-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.priority-results > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 4px; color: #8b9992; font-size: 8px; }
+.priority-results strong { color: #f1c969; font: 600 18px 'Barlow Condensed', sans-serif; }
+.battle-note { padding: 7px 8px; border-left: 2px solid #f1c969; background: rgba(241,201,105,.055); }
+.battle-flow-facts { display: grid; margin: 0; border: 1px solid var(--line); border-radius: 5px; }
+.battle-flow-facts > div { display: flex; justify-content: space-between; gap: 12px; padding: 8px 9px; border-bottom: 1px solid var(--line); font-size: 8px; }
+.battle-flow-facts > div:last-child { border-bottom: 0; }
+.battle-flow-facts dt { color: #718079; }
+.battle-flow-facts dd { margin: 0; color: #d8e3de; font-weight: 700; text-align: right; }
+.battle-complete-note { padding: 12px; border: 1px solid rgba(114,214,161,.3); border-radius: 5px; background: rgba(114,214,161,.055); }
+.battle-complete-note strong { color: #8fe0b4; text-transform: uppercase; }
 .context-panel-region .smart-move-panel { display: flex; }
 .context-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .context-panel-heading h2 { margin: 6px 0 0; color: #edf2ef; font: 600 20px/1 'Barlow Condensed', sans-serif; letter-spacing: .04em; }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TabletopModel } from '../domain/types'
-import { derivePlacementCoherency, formationPlacements, nextUnplacedModelId, unitModelsFromPlacement } from './lifecyclePlacement'
+import { derivePlacementCoherency, formationPlacements, nextUnplacedModelId, projectModelsForPlacement, unitModelsFromPlacement } from './lifecyclePlacement'
 import { initialGameState } from '../game/initialState'
 
 const models: TabletopModel[] = [
@@ -30,6 +30,24 @@ describe('lifecycle placement helpers', () => {
     })
     expect(projected.map((model) => model.id).sort()).toEqual([...unit.modelIds].sort())
     expect(projected.find((model) => model.id === unit.modelIds[0])?.position).toEqual({ x: 10, y: 10 })
+  })
+
+  it('resolves staged poses as one deduplicated projected battlefield view', () => {
+    const state = structuredClone(initialGameState)
+    const active = state.models[0]
+    const staged = state.models[1]
+    staged.presence = 'OFF_BOARD'
+    const projected = projectModelsForPlacement(state, {
+      [active.id]: { position: { x: 12, y: 13 }, rotation: 0.7 },
+      [staged.id]: { position: { x: 14, y: 15 }, rotation: 1.1 },
+    })
+    expect(projected.filter((model) => model.id === active.id)).toHaveLength(1)
+    expect(projected.find((model) => model.id === active.id)).toMatchObject({
+      position: { x: 12, y: 13 }, rotation: 0.7, presence: 'ON_BATTLEFIELD',
+    })
+    expect(projected.find((model) => model.id === staged.id)).toMatchObject({
+      position: { x: 14, y: 15 }, rotation: 1.1, presence: 'ON_BATTLEFIELD',
+    })
   })
 
   it('only exposes a temporary coherency preview when the placement context requires it', () => {

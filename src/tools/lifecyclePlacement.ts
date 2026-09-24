@@ -73,11 +73,15 @@ export function projectModelsForPlacement(
   placements: Readonly<Record<string, Pose>>,
 ): TabletopModel[] {
   const placedIds = new Set(Object.keys(placements))
-  return [...activeBattlefieldModels(state), ...state.models.filter((model) => placedIds.has(model.id))]
-    .map((model) => {
-      const pose = placements[model.id]
-      return pose ? { ...model, position: { ...pose.position }, rotation: pose.rotation, presence: 'ON_BATTLEFIELD' as const } : model
-    })
+  const projected = new Map(activeBattlefieldModels(state).map((model) => [model.id, model]))
+  for (const model of state.models) {
+    if (!placedIds.has(model.id)) continue
+    const pose = placements[model.id]
+    projected.set(model.id, pose
+      ? { ...model, position: { ...pose.position }, rotation: pose.rotation, presence: 'ON_BATTLEFIELD' as const }
+      : model)
+  }
+  return [...projected.values()]
 }
 
 export function unitModelsFromPlacement(

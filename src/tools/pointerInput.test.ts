@@ -39,4 +39,14 @@ describe('tabletop pointer priority', () => {
     expect(resolveTabletopPointerDown('measure', 1, true)).toEqual({ kind: 'camera-pan' })
     expect(resolveModelPointerDown('smart-move', 1, true)).toBe('camera-pan')
   })
+
+  it('keeps Measure model clicks ahead of staged-placement commits', () => {
+    expect(resolveModelPointerDown('measure', 0, false, true)).toBe('measure')
+    expect(resolveModelPointerDown('select', 0, false, true)).toBe('placement')
+  })
+
+  it('keeps Visibility picking ahead of staged-placement commits', () => {
+    expect(resolveModelPointerDown('select', 0, true, true)).toBe('pick-model')
+    expect(resolveModelPointerDown('measure', 0, true, true)).toBe('pick-model')
+  })
 })

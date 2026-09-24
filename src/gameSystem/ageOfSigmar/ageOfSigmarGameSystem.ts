@@ -4,6 +4,7 @@ import type { GameSystem } from '../types'
 import { AOS_BATTLESCROLL_SNAPSHOT, AOS_RULES_SNAPSHOT } from './content/snapshot'
 import { aosSetupData } from './prepareAgeOfSigmarMatch'
 import { isAosMatchStateData } from './deployment'
+import { AOS_TURN_PHASES } from './battleRound'
 
 export const AGE_OF_SIGMAR_RULES_SNAPSHOT = AOS_RULES_SNAPSHOT
 
@@ -31,11 +32,8 @@ export const ageOfSigmarM91RequiredContentManifest = ageOfSigmarContentManifest.
 
 const blocked = { canEnter: false, canCross: false, canFinish: false }
 
-/**
- * Identity-only M9.1 shell. Every authoritative command is rejected until its
- * actual current AoS policy is implemented; these required contract values are
- * deliberately non-authoritative and cannot be exercised by this adapter.
- */
+/** The adapter owns AoS match timing while gameplay policies remain closed
+ * until their corresponding rules milestones are implemented. */
 export const ageOfSigmarGameSystem: GameSystem = {
   id: 'age-of-sigmar',
   name: 'Warhammer Age of Sigmar',
@@ -51,7 +49,11 @@ export const ageOfSigmarGameSystem: GameSystem = {
   terrain: { defaultBase: blocked, defaultObject: blocked, rules: [] },
   visibility: { mode: 'any-to-any', terrainPolicy: 'nothing-blocks' },
   objectives: { qualification: 'intersects' },
-  turns: { phases: [] },
+  turns: { phases: AOS_TURN_PHASES.map((phase) => ({
+    id: phase.id,
+    name: phase.name,
+    allowsMovement: phase.id === 'MOVEMENT_PHASE',
+  })) },
   matchState: {
     schemaId: 'fieldcraft.age-of-sigmar.alpha-match-state',
     schemaVersion: 1,
