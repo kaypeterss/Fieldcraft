@@ -6,6 +6,7 @@ interface ToolbarProps {
   spatialEnabled: boolean
   diceOpen: boolean
   lifecycleOpen: boolean
+  gameplayToolsEnabled?: boolean
   onToolChange: (tool: ActiveTool) => void
   onSpatialToggle: () => void
   onDiceToggle: () => void
@@ -78,7 +79,7 @@ function LifecycleIcon() {
   </svg>
 }
 
-export function Toolbar({ activeTool, spatialEnabled, diceOpen, lifecycleOpen, onToolChange, onSpatialToggle, onDiceToggle, onLifecycleToggle, onResetCamera }: ToolbarProps) {
+export function Toolbar({ activeTool, spatialEnabled, diceOpen, lifecycleOpen, gameplayToolsEnabled = true, onToolChange, onSpatialToggle, onDiceToggle, onLifecycleToggle, onResetCamera }: ToolbarProps) {
   return (
     <nav className="toolbar" aria-label="Tabletop tools">
       <div className="brand-mark" aria-hidden="true"><span /></div>
@@ -104,27 +105,29 @@ export function Toolbar({ activeTool, spatialEnabled, diceOpen, lifecycleOpen, o
         >
           <SpatialIcon /><span>Spatial</span><kbd>S</kbd>
         </button>
-        <button
-          className={activeTool === 'smart-move' ? 'tool-button active' : 'tool-button'}
-          onClick={() => onToolChange('smart-move')}
-          aria-pressed={activeTool === 'smart-move'}
-        >
-          <SmartMoveIcon /><span>Smart Move</span><kbd>G</kbd>
-        </button>
-        <button
-          className={diceOpen ? 'tool-button active' : 'tool-button'}
-          onClick={onDiceToggle}
-          aria-pressed={diceOpen}
-        >
-          <DiceIcon /><span>Dice</span>
-        </button>
-        <button
-          className={lifecycleOpen ? 'tool-button active' : 'tool-button'}
-          onClick={onLifecycleToggle}
-          aria-pressed={lifecycleOpen}
-        >
-          <LifecycleIcon /><span>Lifecycle</span>
-        </button>
+        {gameplayToolsEnabled && <>
+          <button
+            className={activeTool === 'smart-move' ? 'tool-button active' : 'tool-button'}
+            onClick={() => onToolChange('smart-move')}
+            aria-pressed={activeTool === 'smart-move'}
+          >
+            <SmartMoveIcon /><span>Smart Move</span><kbd>G</kbd>
+          </button>
+          <button
+            className={diceOpen ? 'tool-button active' : 'tool-button'}
+            onClick={onDiceToggle}
+            aria-pressed={diceOpen}
+          >
+            <DiceIcon /><span>Dice</span>
+          </button>
+          <button
+            className={lifecycleOpen ? 'tool-button active' : 'tool-button'}
+            onClick={onLifecycleToggle}
+            aria-pressed={lifecycleOpen}
+          >
+            <LifecycleIcon /><span>Lifecycle</span>
+          </button>
+        </>}
       </div>
       <div className="toolbar-spacer" />
       <button className="tool-button reset" onClick={onResetCamera}>

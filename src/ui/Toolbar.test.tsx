@@ -65,4 +65,17 @@ describe('Toolbar interaction layers', () => {
     expect(onLifecycleToggle).toHaveBeenCalledOnce()
     expect(onToolChange).not.toHaveBeenCalled()
   })
+
+  it('hides unsupported gameplay controls for an identity-only GameSystem shell', () => {
+    render(<Toolbar activeTool="select" spatialEnabled={false} diceOpen={false} lifecycleOpen={false}
+      gameplayToolsEnabled={false}
+      onToolChange={vi.fn()} onSpatialToggle={vi.fn()} onDiceToggle={vi.fn()}
+      onLifecycleToggle={vi.fn()} onResetCamera={vi.fn()} />)
+
+    expect(screen.getByRole('button', { name: /Select/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Spatial/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Smart Move/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Dice/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Lifecycle/ })).toBeNull()
+  })
 })

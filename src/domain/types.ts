@@ -12,12 +12,26 @@ export interface VersionedContentReference {
   version: string
 }
 
+/** One immutable, game-agnostic package pinned by a saved match. */
+export interface ContentManifestEntry extends VersionedContentReference {
+  kind: string
+  /** Optional integrity identity for packaged content with the same human version. */
+  hash?: string
+}
+
 /** Persisted identity of the rules and content used to create this match. */
 export interface MatchIdentity {
   gameSystem: VersionedContentReference
+  /** Stable identity and presentation metadata for multi-match persistence. */
+  matchId?: string
+  matchName?: string
+  /** Required for schema v5; omitted only by legacy Development saves. */
+  contentManifest?: ContentManifestEntry[]
   format?: VersionedContentReference
   mission?: VersionedContentReference
 }
+
+export type MatchLifecycleStatus = 'SETUP' | 'DEPLOYMENT' | 'IN_PROGRESS' | 'COMPLETED'
 
 export interface DeploymentZoneDefinition {
   id: string
@@ -408,9 +422,11 @@ export interface CommittedOperation {
 export type GameAction = MoveAction
 
 export interface GameState {
-  schemaVersion: 3 | 4
-  /** Required in schema v4; optional only while deterministically migrating v3 saves. */
+  schemaVersion: 3 | 4 | 5
+  /** Required in schema v4+; optional only while deterministically migrating v3 saves. */
   matchIdentity?: MatchIdentity
+  /** Generic lifecycle; absent only on legacy snapshots and treated as SETUP. */
+  matchLifecycle?: MatchLifecycleStatus
   resolvedMatchConfiguration?: ResolvedMatchConfiguration
   gameSystemState?: GameSystemOwnedState
   battlefield: Battlefield

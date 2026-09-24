@@ -37,6 +37,7 @@ interface SpatialPanelProps {
   visibilityPolicy?: VisibilityPolicy
   visibilityAnalysis?: VisibilityAnalysis | null
   previewActive?: boolean
+  developmentControlsEnabled?: boolean
   onObjectiveChange?: (id: string | null) => void
   onVisibilityViewerChange?: (id: string | null) => void
   onVisibilityTargetChange?: (id: string | null) => void
@@ -51,6 +52,7 @@ interface SpatialPanelProps {
 }
 
 export function SpatialPanel(props: SpatialPanelProps) {
+  const developmentControlsEnabled = props.developmentControlsEnabled ?? true
   return (
     <aside className="spatial-panel" aria-label="Spatial analysis tools">
       <div className="spatial-panel-heading">
@@ -95,7 +97,7 @@ export function SpatialPanel(props: SpatialPanelProps) {
         <>
           <div className="panel-section-label">COHERENCY POLICY</div>
           <GeometrySummary source={props.sourceGeometryLabel} />
-          <div className="segmented-control" aria-label="Coherency policy source">
+          {developmentControlsEnabled && <div className="segmented-control" aria-label="Coherency policy source">
             <button
               className={props.coherencyAnalysisMode === 'unit-policy' ? 'active' : ''}
               disabled={!props.unitPolicyAvailable}
@@ -105,8 +107,8 @@ export function SpatialPanel(props: SpatialPanelProps) {
               className={props.coherencyAnalysisMode === 'custom' ? 'active' : ''}
               onClick={() => props.onCoherencyAnalysisModeChange('custom')}
             >Custom Analysis</button>
-          </div>
-          {props.coherencyAnalysisMode === 'unit-policy' ? (
+          </div>}
+          {!developmentControlsEnabled || props.coherencyAnalysisMode === 'unit-policy' ? (
             <dl className="spatial-policy-summary">
               <div><dt>Neighbor distance</dt><dd>{props.coherencyPolicy.distance}″</dd></div>
               <div><dt>Required neighbors</dt><dd>{props.coherencyPolicy.requiredNeighbors}</dd></div>
@@ -156,22 +158,22 @@ export function SpatialPanel(props: SpatialPanelProps) {
               Pick {props.visibilityPickTarget} on the battlefield. Press Escape to cancel.
             </p>
           )}
-          <div className="segmented-control visibility-mode" aria-label="Visibility mode">
+          {developmentControlsEnabled && <div className="segmented-control visibility-mode" aria-label="Visibility mode">
             {(['any-to-any', 'any-to-all'] as const).map((mode) => (
               <button key={mode} className={props.visibilityMode === mode ? 'active' : ''}
                 onClick={() => props.onVisibilityModeChange?.(mode)}>
                 {visibilityModeLabel(mode)}
               </button>
             ))}
-          </div>
-          <div className="segmented-control visibility-policy" aria-label="Visibility policy">
+          </div>}
+          {developmentControlsEnabled && <div className="segmented-control visibility-policy" aria-label="Visibility policy">
             {(['base-blocks', 'objects-block', 'nothing-blocks'] as const).map((policy) => (
               <button key={policy} className={props.visibilityPolicy === policy ? 'active' : ''}
                 onClick={() => props.onVisibilityPolicyChange?.(policy)}>
                 {visibilityPolicyLabel(policy)}
               </button>
             ))}
-          </div>
+          </div>}
           {props.visibilityAnalysis ? <VisibilitySummary analysis={props.visibilityAnalysis} />
             : <p className="spatial-empty">Choose a viewer and target model to analyze visibility.</p>}
         </section>

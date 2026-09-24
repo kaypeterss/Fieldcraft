@@ -1,5 +1,5 @@
 import type { Footprint, GameState, MatchIdentity, ResolvedMatchConfiguration, TabletopModel, Unit } from '../domain/types'
-import { developmentGameSystem } from '../gameSystem/developmentGameSystem'
+import { developmentContentManifest, developmentGameSystem } from '../gameSystem/developmentGameSystem'
 import { turnConfigurationFor } from '../gameSystem/policies'
 import { initialGameSystemOwnedState } from '../gameSystem/runtime'
 
@@ -89,6 +89,7 @@ const units: Unit[] = [
 
 export const developmentMatchIdentity: MatchIdentity = {
   gameSystem: { id: developmentGameSystem.id, version: developmentGameSystem.version },
+  contentManifest: developmentContentManifest.map((entry) => ({ ...entry })),
   format: { id: 'development-open-play', version: '1' },
   mission: { id: 'development-sandbox-board', version: '1' },
 }
@@ -106,7 +107,7 @@ export const developmentMatchConfiguration: ResolvedMatchConfiguration = {
 }
 
 export const initialGameState: GameState = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   matchIdentity: developmentMatchIdentity,
   resolvedMatchConfiguration: developmentMatchConfiguration,
   gameSystemState: initialGameSystemOwnedState(developmentGameSystem),

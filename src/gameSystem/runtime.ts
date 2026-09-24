@@ -10,6 +10,7 @@ import { GEOMETRY_EPSILON } from '../engine/geometry/tolerance'
 import { getMovementAllowance } from '../game/selectors'
 import { activeBattlefieldModels } from '../game/modelPresence'
 import { movementPermissionForUnit } from './policies'
+import type { GameSystemRegistry, RegisteredGameSystem } from './registry'
 import type { GameSystem, MovementPermissionResult } from './types'
 
 export interface LoadedMatchRuntime {
@@ -18,6 +19,7 @@ export interface LoadedMatchRuntime {
   gameSystem: GameSystem
   gameSystemState: GameSystemOwnedState
   movementPolicy: MovementPolicyConfig
+  registration?: RegisteredGameSystem
 }
 
 export interface MovementAuthorization {
@@ -26,6 +28,22 @@ export interface MovementAuthorization {
   movementPolicy: MovementPolicyConfig
   remainingByModel: Record<string, number>
   unitPermissions: Record<string, MovementPermissionResult>
+}
+
+/** Normal application loader: identity and content are resolved exactly through the registry. */
+export function loadRegisteredMatchRuntime(
+  state: GameState,
+  registry: GameSystemRegistry,
+  developmentOverrides?: { movementPolicy?: MovementPolicyConfig },
+): LoadedMatchRuntime {
+  if (!state.matchIdentity) throw new Error('Saved match has no GameSystem identity')
+  const resolved = registry.resolveIdentity(state.matchIdentity)
+  const runtime = loadMatchRuntime(
+    state,
+    resolved.gameSystem,
+    resolved.registration.ui.developmentControls ? developmentOverrides : undefined,
+  )
+  return { ...runtime, registration: resolved.registration }
 }
 
 export function loadMatchRuntime(

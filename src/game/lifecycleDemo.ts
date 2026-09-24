@@ -1,6 +1,7 @@
 import type { BattlefieldFeature, GameState, TabletopModel, Unit } from '../domain/types'
 import { battlefieldFeatureDemoFeatures } from './battlefieldFeatureDemo'
 import { initialGameState } from './initialState'
+import { developmentContentManifest } from '../gameSystem/developmentGameSystem'
 
 function modelsForUnit(unitId: string): TabletopModel[] {
   return initialGameState.models
@@ -63,6 +64,7 @@ export const lifecycleDemoGameState: GameState = {
   ...initialGameState,
   matchIdentity: {
     ...initialGameState.matchIdentity!,
+    contentManifest: developmentContentManifest.map((entry) => ({ ...entry })),
     mission: { id: 'development-lifecycle-qa', version: '1' },
   },
   resolvedMatchConfiguration: {

@@ -113,6 +113,17 @@ describe('visibility analysis overlay', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pick Target' }))
     expect(onPick).toHaveBeenCalledWith('target')
   })
+
+  it('hides raw Development policy selectors for a production GameSystem', () => {
+    renderPanel({
+      mode: 'visibility',
+      developmentControlsEnabled: false,
+      visibilityMode: 'any-to-any',
+      visibilityPolicy: 'objects-block',
+    })
+    expect(screen.queryByRole('button', { name: 'Any → All' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Base Blocks' })).toBeNull()
+  })
 })
 
 describe('spatial numeric input editing', () => {

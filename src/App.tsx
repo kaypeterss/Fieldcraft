@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { Component, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import { footprintDemoGameState, initialGameState, orientationGapGameState } from './game/initialState'
 import { battlefieldFeatureDemoGameState } from './game/battlefieldFeatureDemo'
 import { lifecycleDemoGameState } from './game/lifecycleDemo'
@@ -63,15 +63,21 @@ import {
   type VisibilityMode,
   type VisibilityPolicy,
 } from './engine/visibility'
-import { developmentGameSystem } from './gameSystem/developmentGameSystem'
 import { evaluateObjectiveControl } from './engine/objectiveControl'
 import { DicePanel } from './ui/DicePanel'
 import { activeBattlefieldModels, modelPresence } from './game/modelPresence'
-import { authorizeMovement, loadMatchRuntime } from './gameSystem/runtime'
+import { authorizeMovement, loadRegisteredMatchRuntime } from './gameSystem/runtime'
 import { reduceGameCommand } from './state/commandBoundary'
 import { validateModelPlacements } from './engine/placement'
 import { LifecyclePanel, type LifecyclePanelEntry } from './ui/LifecyclePanel'
 import { derivePlacementCoherency, formationPlacements, nextUnplacedModelId } from './tools/lifecyclePlacement'
+import { gameSystemRegistry } from './gameSystem/registeredGameSystems'
+import { listSavedMatches, loadMatchFromStorage, loadSavedMatch as loadSavedMatchRecord, saveMatchAsToStorage, saveMatchToStorage, deleteSavedMatch } from './game/matchPersistence'
+import { NewMatchDialog } from './ui/NewMatchDialog'
+import { GameSystemStatusPanel } from './ui/GameSystemStatusPanel'
+import { MatchControls } from './ui/MatchControls'
+import { LoadMatchDialog } from './ui/LoadMatchDialog'
+import { UnsavedChangesDialog } from './ui/UnsavedChangesDialog'
 
 interface SmartMoveSessionState {
   modelIds: string[]
@@ -85,18 +91,167 @@ interface LifecyclePlacementSession {
 }
 
 export default function App() {
+  const [session, setSession] = useState(() => ({ gameState: startupGameState(), key: 0 }))
+  const [newMatchOpen, setNewMatchOpen] = useState(false)
+  const [loadMatchOpen, setLoadMatchOpen] = useState(false)
+  const [matchNotice, setMatchNotice] = useState<{ message: string; error: boolean } | null>(null)
+  const [dirty, setDirty] = useState(false)
+  const [pendingLeave, setPendingLeave] = useState<'new' | 'load' | null>(null)
+  const currentStateRef = useRef(session.gameState)
+
+  const performLeave = useCallback((action: 'new' | 'load') => {
+    if (action === 'new') setNewMatchOpen(true)
+    else setLoadMatchOpen(true)
+    setPendingLeave(null)
+  }, [])
+  const requestLeave = useCallback((action: 'new' | 'load') => {
+    if (dirty) setPendingLeave(action)
+    else performLeave(action)
+  }, [dirty, performLeave])
+
+  const createMatch = useCallback((gameSystemId: string, adapterVersion: string, matchName: string) => {
+    try {
+      const registration = gameSystemRegistry.resolve(gameSystemId, adapterVersion)
+      const gameState = registration.createMatch({ matchName })
+      loadRegisteredMatchRuntime(gameState, gameSystemRegistry)
+      setSession((current) => ({ gameState, key: current.key + 1 }))
+      setDirty(false)
+      setNewMatchOpen(false)
+      setMatchNotice({ message: `${registration.gameSystem.name} match created.`, error: false })
+    } catch (error) {
+      setMatchNotice({ message: errorMessage(error), error: true })
+    }
+  }, [])
+
+  const loadSavedMatch = useCallback(() => {
+    try {
+      const loaded = loadMatchFromStorage(window.localStorage, gameSystemRegistry)
+      setSession((current) => ({ gameState: loaded.state, key: current.key + 1 }))
+      setDirty(false)
+      setMatchNotice({ message: `${loaded.runtime.gameSystem.name} save loaded exactly.`, error: false })
+    } catch (error) {
+      setMatchNotice({ message: errorMessage(error), error: true })
+    }
+  }, [])
+
+  const loadSavedMatchById = useCallback((matchId: string) => {
+    try {
+      const loaded = loadSavedMatchRecord(window.localStorage, matchId, gameSystemRegistry)
+      setSession((current) => ({ gameState: loaded.state, key: current.key + 1 }))
+      setDirty(false)
+      setLoadMatchOpen(false)
+      setMatchNotice({ message: `${loaded.runtime.gameSystem.name} save loaded exactly.`, error: false })
+    } catch (error) { setMatchNotice({ message: errorMessage(error), error: true }) }
+  }, [])
+
+  return <>
+    <MatchRuntimeBoundary
+      key={session.key}
+      fallback={(error) => <MatchRecoveryShell error={error} onNewMatch={() => setNewMatchOpen(true)} onLoad={loadSavedMatch} />}
+    >
+      <MatchWorkspace
+        initialState={session.gameState}
+        matchNotice={matchNotice}
+        onNewMatch={() => requestLeave('new')}
+        onSave={(state) => {
+          try {
+            saveMatchToStorage(window.localStorage, state)
+            setDirty(false)
+            setMatchNotice({ message: 'Match saved locally with its exact rules identity.', error: false })
+          } catch (error) {
+            setMatchNotice({ message: errorMessage(error), error: true })
+          }
+        }}
+        onLoad={() => requestLeave('load')}
+        onSaveAs={(state) => {
+          const name = window.prompt('Save match as', state.matchIdentity?.matchName ?? 'Copy')
+          if (name?.trim()) {
+            const copy = saveMatchAsToStorage(window.localStorage, state, name)
+            setSession((current) => ({ gameState: copy, key: current.key + 1 }))
+            currentStateRef.current = copy
+            setDirty(false)
+            setMatchNotice({ message: `Saved a new match as “${name.trim()}”.`, error: false })
+          }
+        }}
+        onStateChange={(state, revision) => { currentStateRef.current = state; if (revision > 0) setDirty(true) }}
+      />
+    </MatchRuntimeBoundary>
+    {newMatchOpen && <NewMatchDialog registrations={gameSystemRegistry.list()}
+      onCreate={createMatch} onCancel={() => setNewMatchOpen(false)} />}
+    {loadMatchOpen && <LoadMatchDialog
+      matches={listSavedMatches(window.localStorage, gameSystemRegistry)}
+      onLoad={loadSavedMatchById}
+      onDelete={(matchId) => { if (window.confirm('Delete this saved match?')) { deleteSavedMatch(window.localStorage, matchId); setLoadMatchOpen(false); setLoadMatchOpen(true) } }}
+      onCancel={() => setLoadMatchOpen(false)} />}
+    {pendingLeave && <UnsavedChangesDialog
+      onCancel={() => setPendingLeave(null)}
+      onDiscard={() => { setDirty(false); performLeave(pendingLeave) }}
+      onSave={() => { saveMatchToStorage(window.localStorage, currentStateRef.current); setDirty(false); performLeave(pendingLeave) }} />}
+  </>
+}
+
+interface MatchRuntimeBoundaryProps {
+  children: ReactNode
+  fallback: (error: Error) => ReactNode
+}
+
+interface MatchRuntimeBoundaryState {
+  error: Error | null
+}
+
+class MatchRuntimeBoundary extends Component<MatchRuntimeBoundaryProps, MatchRuntimeBoundaryState> {
+  state: MatchRuntimeBoundaryState = { error: null }
+
+  static getDerivedStateFromError(error: Error): MatchRuntimeBoundaryState {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    // Runtime/load errors are surfaced by the recovery shell; React's normal error reporting remains intact.
+    void info
+    console.error('Match runtime failed to load', error)
+  }
+
+  render(): ReactNode {
+    return this.state.error ? this.props.fallback(this.state.error) : this.props.children
+  }
+}
+
+function MatchRecoveryShell({ error, onNewMatch, onLoad }: { error: Error; onNewMatch: () => void; onLoad: () => void }) {
+  return <main className="app-shell recovery-shell">
+    <section className="panel recovery-panel" role="alert">
+      <p className="eyebrow">FIELDCRAFT</p>
+      <h1>Match could not be loaded</h1>
+      <p>{errorMessage(error)}</p>
+      <p className="muted">The application is still running. Create a new match or load a different saved match.</p>
+      <div className="button-row">
+        <button type="button" onClick={onNewMatch}>New Match</button>
+        <button type="button" onClick={onLoad}>Load Match</button>
+      </div>
+    </section>
+  </main>
+}
+
+interface MatchWorkspaceProps {
+  initialState: GameState
+  matchNotice: { message: string; error: boolean } | null
+  onNewMatch: () => void
+  onSave: (state: GameState) => void
+  onLoad: () => void
+  onSaveAs: (state: GameState) => void
+  onStateChange: (state: GameState, revision: number) => void
+}
+
+function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad, onSaveAs, onStateChange }: MatchWorkspaceProps) {
   const footprintDemoEnabled = new URLSearchParams(window.location.search).has('footprints')
   const orientationGapEnabled = new URLSearchParams(window.location.search).has('orientationGap')
   const battlefieldFeatureDemoEnabled = new URLSearchParams(window.location.search).has('battlefieldFeatures')
-  const lifecycleDemoEnabled = new URLSearchParams(window.location.search).has('lifecycle')
-  const startupGameState = lifecycleDemoEnabled ? lifecycleDemoGameState
-    : battlefieldFeatureDemoEnabled ? battlefieldFeatureDemoGameState
-    : orientationGapEnabled ? orientationGapGameState
-    : footprintDemoEnabled ? footprintDemoGameState : initialGameState
   const [{ gameState, revision: gameStateRevision }, rawDispatch] = useReducer(
     versionedGameReducer,
-    { gameState: startupGameState, revision: 0 },
+    { gameState: initialState, revision: 0 },
   )
+  useEffect(() => onStateChange(gameState, gameStateRevision), [gameState, gameStateRevision, onStateChange])
+  const initialRegistration = useMemo(() => gameSystemRegistry.resolveIdentity(initialState.matchIdentity!).registration, [initialState])
   const [activeTool, setActiveTool] = useState<ActiveTool>('select')
   const [spatialEnabled, setSpatialEnabled] = useState(false)
   const [diceOpen, setDiceOpen] = useState(false)
@@ -116,17 +271,20 @@ export default function App() {
   const [visibilityTargetId, setVisibilityTargetId] = useState<string | null>(null)
   const [visibilityPickTarget, setVisibilityPickTarget] = useState<ModelPickerTarget | null>(null)
   const [visibilityPickHoverModelId, setVisibilityPickHoverModelId] = useState<string | null>(null)
-  const [visibilityMode, setVisibilityMode] = useState<VisibilityMode>(developmentGameSystem.visibility.mode)
-  const [visibilityPolicy, setVisibilityPolicy] = useState<VisibilityPolicy>(developmentGameSystem.visibility.terrainPolicy)
+  const [visibilityMode, setVisibilityMode] = useState<VisibilityMode>(initialRegistration.gameSystem.visibility.mode)
+  const [visibilityPolicy, setVisibilityPolicy] = useState<VisibilityPolicy>(initialRegistration.gameSystem.visibility.terrainPolicy)
   const [coherencyAnalysisMode, setCoherencyAnalysisMode] = useState<CoherencyAnalysisMode>('unit-policy')
   const [analysisCoherencyPolicy, setAnalysisCoherencyPolicy] = useState<CoherencyPolicy>({ distance: 1, requiredNeighbors: 1, requireConnected: false })
   const [blockedMovementSessionId, setBlockedMovementSessionId] = useState<string | null>(null)
-  const [movementPolicy, setMovementPolicy] = useState<MovementPolicyConfig>(developmentGameSystem.movement.cost)
+  const [movementPolicy, setMovementPolicy] = useState<MovementPolicyConfig>(initialRegistration.gameSystem.movement.cost)
   const dispatch = useCallback((action: GameStateAction) => rawDispatch({ action, movementPolicy }), [movementPolicy])
   const loadedRuntime = useMemo(
-    () => loadMatchRuntime(gameState, developmentGameSystem, { movementPolicy }),
+    () => loadRegisteredMatchRuntime(gameState, gameSystemRegistry, { movementPolicy }),
     [gameState, movementPolicy],
   )
+  const gameSystemRegistration = loadedRuntime.registration!
+  const developmentControlsEnabled = gameSystemRegistration.ui.developmentControls
+  const gameplayImplemented = gameSystemRegistration.ui.gameplayImplemented
   const activeModels = useMemo(() => activeBattlefieldModels(gameState), [gameState])
   const battlefieldGameState = useMemo(() => ({ ...gameState, models: activeModels }), [activeModels, gameState])
   const lifecycleEntries = useMemo<LifecyclePanelEntry[]>(() => gameState.models.map((model) => {
@@ -450,7 +608,7 @@ export default function App() {
     }
     const unit = state.units.find((candidate) => candidate.id === unitIds[0])
     const policy = unit ? getUnitCoherencyPolicy(state, unit) : undefined
-    const runtime = loadMatchRuntime(state, developmentGameSystem, { movementPolicy })
+    const runtime = loadRegisteredMatchRuntime(state, gameSystemRegistry, { movementPolicy })
     const permission = authorizeMovement(runtime, state, sortedModels.map((model) => model.id))
     if (!unit || !policy) {
       setSmartMoveSession(null)
@@ -605,6 +763,7 @@ export default function App() {
     setVisibilityPickTarget(null)
     setVisibilityPickHoverModelId(null)
     if (tool === 'smart-move') {
+      if (!gameplayImplemented) return
       if (gameState.movementSession) {
         setBlockedMovementSessionId(gameState.movementSession.id)
         return
@@ -621,7 +780,7 @@ export default function App() {
     cancelSmartMove()
     setActiveTool(tool)
     if (tool !== 'measure') setMeasurementStartTarget(null)
-  }, [activeModels, beginSmartMoveForSelection, cancelSmartMove, gameState, gameStateRevision, lifecyclePlacement, selectedIds])
+  }, [activeModels, beginSmartMoveForSelection, cancelSmartMove, gameState, gameStateRevision, gameplayImplemented, lifecyclePlacement, selectedIds])
 
   const toggleSpatialOverlay = useCallback(() => {
     if (lifecyclePlacement) {
@@ -684,7 +843,7 @@ export default function App() {
       if (event.key.toLowerCase() === 'v') changeTool('select')
       if (event.key.toLowerCase() === 'm') changeTool('measure')
       if (event.key.toLowerCase() === 's') toggleSpatialOverlay()
-      if (event.key.toLowerCase() === 'g') changeTool('smart-move')
+      if (event.key.toLowerCase() === 'g' && gameplayImplemented) changeTool('smart-move')
       if (event.key.toLowerCase() === 'f') setResetCameraSignal((value) => value + 1)
       if (event.key === 'Escape') {
         if (lifecyclePlacement) {
@@ -717,7 +876,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, dispatch, gameState, lifecyclePlacement, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
+  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, dispatch, gameState, gameplayImplemented, lifecyclePlacement, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
 
   const handleEndTurn = useCallback(() => {
     if (gameState.movementSession) {
@@ -877,7 +1036,7 @@ export default function App() {
           <div className="brand-title">FIELDCRAFT</div>
           <div className="brand-subtitle">COMPETITIVE TABLETOP LAB</div>
         </div>
-        <GameStatusPanel
+        {gameplayImplemented ? <GameStatusPanel
           gameState={battlefieldGameState}
           blockedMessage={gameState.movementSession?.id === blockedMovementSessionId
             ? 'Finish or cancel the current movement first.'
@@ -893,9 +1052,17 @@ export default function App() {
             setLifecyclePlacementPreviews([])
             setLifecycleMessage('Last committed operation undone.')
           }}
+        /> : <GameSystemStatusPanel ui={gameSystemRegistration.ui} gameState={gameState} />}
+        <MatchControls
+          notice={matchNotice?.message}
+          error={matchNotice?.error}
+          onNewMatch={onNewMatch}
+          onSave={() => onSave(gameState)}
+          onLoad={onLoad}
+          onSaveAs={() => onSaveAs(gameState)}
         />
         <div className="session-info">
-          <span className="status-dot" /> LOCAL SANDBOX
+          <span className="status-dot" /> {loadedRuntime.gameSystem.name.toUpperCase()}
           <span className="divider" />
           <strong>{gameState.battlefield.width} × {gameState.battlefield.height}</strong>
         </div>
@@ -905,6 +1072,7 @@ export default function App() {
         spatialEnabled={spatialEnabled}
         diceOpen={diceOpen}
         lifecycleOpen={lifecycleOpen}
+        gameplayToolsEnabled={gameplayImplemented}
         onToolChange={changeTool}
         onSpatialToggle={toggleSpatialOverlay}
         onDiceToggle={() => setDiceOpen((open) => !open)}
@@ -943,7 +1111,7 @@ export default function App() {
           onLifecyclePlacementCommit={commitLifecyclePlacement}
           dispatch={dispatch}
         />
-        {(footprintDemoEnabled || orientationGapEnabled) && (
+        {developmentControlsEnabled && (footprintDemoEnabled || orientationGapEnabled) && (
           <MovementCostPolicyPanel
             policy={movementPolicy}
             disabled={Boolean(gameState.movementSession)}
@@ -975,7 +1143,7 @@ export default function App() {
             ? isCoherencyResultValid(selectedUnitCoherency, selectedUnitPolicy)
               : undefined}
         />
-        {lifecycleOpen && (
+        {gameplayImplemented && lifecycleOpen && (
           <LifecyclePanel
             entries={lifecycleEntries}
             selectedIds={lifecycleSelectedIds}
@@ -1039,6 +1207,7 @@ export default function App() {
             visibilityPolicy={visibilityPolicy}
             visibilityAnalysis={spatialMode === 'visibility' ? visibilityAnalysis : null}
             previewActive={Boolean(spatialPreviewResult)}
+            developmentControlsEnabled={developmentControlsEnabled}
             onObjectiveChange={setSelectedObjectiveId}
             onVisibilityViewerChange={(id) => { setVisibilityPickTarget(null); setVisibilityViewerId(id) }}
             onVisibilityTargetChange={(id) => { setVisibilityPickTarget(null); setVisibilityTargetId(id) }}
@@ -1052,14 +1221,14 @@ export default function App() {
             onCoherencyPolicyChange={setAnalysisCoherencyPolicy}
           />
         )}
-        {movementSummary && (
+        {gameplayImplemented && movementSummary && (
           <MovementPanel
             summary={movementSummary}
             onConfirm={() => dispatch({ type: 'movement/confirmed' })}
             onCancel={() => dispatch({ type: 'movement/cancelled' })}
           />
         )}
-        {activeTool === 'smart-move' && (
+        {gameplayImplemented && activeTool === 'smart-move' && (
           <SmartMovePanel
             selectedCount={smartMoveSession?.modelIds.length ?? 0}
             unitSize={smartMoveUnit?.modelIds.length ?? 0}
@@ -1079,7 +1248,7 @@ export default function App() {
             }}
           />
         )}
-        {diceOpen && (
+        {gameplayImplemented && diceOpen && (
           <DicePanel
             players={gameState.players}
             activePlayerId={gameState.gameContext.activePlayerId}
@@ -1139,11 +1308,32 @@ function versionedGameReducer(
   current: { gameState: GameState; revision: number },
   envelope: { action: GameStateAction; movementPolicy: MovementPolicyConfig },
 ) {
-  const runtime = loadMatchRuntime(current.gameState, developmentGameSystem, {
+  const runtime = loadRegisteredMatchRuntime(current.gameState, gameSystemRegistry, {
     movementPolicy: envelope.movementPolicy,
   })
   const nextGameState = reduceGameCommand(runtime, current.gameState, envelope.action)
   return nextGameState === current.gameState
     ? current
     : { gameState: nextGameState, revision: current.revision + 1 }
+}
+
+function startupGameState(): GameState {
+  const query = new URLSearchParams(window.location.search)
+  const source = query.has('lifecycle') ? lifecycleDemoGameState
+    : query.has('battlefieldFeatures') ? battlefieldFeatureDemoGameState
+      : query.has('orientationGap') ? orientationGapGameState
+        : query.has('footprints') ? footprintDemoGameState : initialGameState
+  const routeId = query.has('lifecycle') ? 'development-lifecycle-preview'
+    : query.has('battlefieldFeatures') ? 'development-battlefield-preview'
+      : query.has('orientationGap') ? 'development-orientation-preview'
+        : query.has('footprints') ? 'development-footprint-preview' : 'development-sandbox-preview'
+  return {
+    ...structuredClone(source),
+    matchIdentity: { ...source.matchIdentity!, matchId: routeId, matchName: source.matchIdentity?.matchName ?? 'Development Preview' },
+    matchLifecycle: source.matchLifecycle ?? 'SETUP',
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'The match could not be loaded.'
 }
