@@ -1,5 +1,5 @@
 import type { Point } from '../engine/geometry/point'
-import type { DicePoolResult, DiceSequenceResolution, ModelPresence, MovementPolicyConfig, Pose, PoseTrajectory } from '../domain/types'
+import type { DicePoolResult, DiceSequenceResolution, ModelPresence, MovementPolicyConfig, Pose, PoseTrajectory, ResolvedMovementActionContext } from '../domain/types'
 import type { GameSystemCommand } from '../gameSystem/types'
 
 export interface StartMovementSessionAction {
@@ -10,6 +10,8 @@ export interface StartMovementSessionAction {
   movementPolicy?: MovementPolicyConfig
   /** Supplied only by the authoritative runtime command boundary. */
   movementAllowanceByModel?: Record<string, number>
+  /** Supplied only by the authoritative runtime command boundary. */
+  actionContext?: ResolvedMovementActionContext
 }
 
 export interface RequestRigidMovementAction {
@@ -38,6 +40,8 @@ export interface ApplyValidatedCandidateMovementAction {
   movementUsed: Record<string, number>
   /** Optional accepted center paths; omission means a direct fixed-orientation path. */
   paths?: Record<string, Point[]>
+  /** Supplied only by the authoritative runtime command boundary. */
+  actionContext?: ResolvedMovementActionContext
 }
 export interface EndTurnAction { type: 'game/turnEnded' }
 export interface RecordScoreEventAction {
@@ -74,6 +78,7 @@ export interface RecordDiceRollAction {
   type: 'dice/rollRecorded'
   playerId: string
   result: DicePoolResult
+  label?: string
 }
 export interface UpdateDiceRollAction {
   type: 'dice/rollUpdated'

@@ -10,6 +10,12 @@ import {
   isAosRoundResources,
   type AosRoundResources,
 } from './roundResources'
+import {
+  declareAosMovementAction,
+  isAosMovementState,
+  type AosMovementActionId,
+  type AosMovementState,
+} from './movement'
 
 export type AosDeploymentPhase = 'ROLL_OFF' | 'CHOOSE_ROLES' | 'CHOOSE_TERRITORY' | 'DEPLOYING' | 'READY_FOR_BATTLE'
 
@@ -46,6 +52,7 @@ export interface AosMatchStateData {
   deployment?: AosDeploymentState
   battle?: AosBattleState
   resources?: AosRoundResources
+  movement?: AosMovementState
 }
 
 export interface AosDeploymentPlacementRules {
@@ -83,6 +90,16 @@ export function executeAosCommand(state: GameState, command: GameSystemCommand):
   if (!data) return state
   if (command.type.startsWith('aos/battle/') || command.type.startsWith('aos/resources/')) {
     return executeAosBattleCommand(state, data, command)
+  }
+  if (command.type === 'aos/movement/declare') {
+    const payload = record(command.payload)
+    const unitId = payload?.unitId
+    const actionId = payload?.actionId
+    const rollRecordId = payload?.rollRecordId
+    if (typeof unitId !== 'string' || !isMovementActionId(actionId)
+      || (rollRecordId !== undefined && typeof rollRecordId !== 'string')) return state
+    return declareAosMovementAction(state, data, unitId, actionId,
+      typeof rollRecordId === 'string' ? rollRecordId : undefined)
   }
   if (data.status !== 'deployment') return state
   const normalizedData: AosMatchStateData = { ...data, deployment: data.deployment ?? initialAosDeploymentState() }
@@ -148,6 +165,7 @@ export function isAosMatchStateData(value: unknown): value is AosMatchStateData 
   if (!isRecord(value.setup)) return false
   if (value.status === 'setup') return true
   if (value.resources !== undefined && !isAosRoundResources(value.resources)) return false
+  if (value.movement !== undefined && !isAosMovementState(value.movement)) return false
   if (value.status === 'battle') return isAosBattleState(value.battle)
   if (value.status !== 'deployment') return false
   if (value.deployment === undefined) return true
@@ -159,6 +177,10 @@ export function isAosMatchStateData(value: unknown): value is AosMatchStateData 
     && isRecord(deployment.territoryByPlayerId)
     && Array.isArray(deployment.deployedUnitIds)
     && Array.isArray(deployment.facts)
+}
+
+function isMovementActionId(value: unknown): value is AosMovementActionId {
+  return value === 'NORMAL_MOVE' || value === 'RUN' || value === 'RETREAT'
 }
 
 function recordRollOff(state: GameState, data: AosMatchStateData, command: GameSystemCommand): GameState {

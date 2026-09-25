@@ -11,6 +11,7 @@ import {
 import { formatNumericValue, normalizeNumericDraft } from './numberInput'
 import { AreaSummary, type ObjectiveDisplayAnalysis } from './DebugPanel'
 import type { ModelPickerTarget } from '../tools/modelPicker'
+import type { BoardOverlayPreferences } from '../tools/battlefieldPresentation'
 
 const RANGE_PRESETS = [3, 6, 9, 12, 18]
 
@@ -38,6 +39,8 @@ interface SpatialPanelProps {
   visibilityAnalysis?: VisibilityAnalysis | null
   previewActive?: boolean
   developmentControlsEnabled?: boolean
+  boardOverlays?: BoardOverlayPreferences
+  deploymentActive?: boolean
   onObjectiveChange?: (id: string | null) => void
   onVisibilityViewerChange?: (id: string | null) => void
   onVisibilityTargetChange?: (id: string | null) => void
@@ -51,26 +54,28 @@ interface SpatialPanelProps {
   onCoherencyPolicyChange: (policy: CoherencyPolicy) => void
   onClosePanel?: () => void
   onDisableOverlay?: () => void
+  onBoardOverlayChange?: (key: keyof BoardOverlayPreferences, enabled: boolean) => void
 }
 
 export function SpatialPanel(props: SpatialPanelProps) {
   const developmentControlsEnabled = props.developmentControlsEnabled ?? true
   return (
-    <aside className="spatial-panel" aria-label="Spatial analysis tools">
+    <aside className="spatial-panel" aria-label="Analysis tools">
       <div className="spatial-panel-heading">
-        <div><span className="eyebrow">ANALYSIS OVERLAY</span><h2>Spatial Tools</h2></div>
+        <div><span className="eyebrow">BATTLEFIELD</span><h2>Analysis</h2></div>
         <div className="spatial-heading-status">
           {props.previewActive && <span className="spatial-preview-badge">SMART MOVE PREVIEW</span>}
           <span className="spatial-source-count">{props.sourceCount}</span>
-          {props.onClosePanel && <button type="button" className="panel-close" aria-label="Close Spatial panel"
+          {props.onClosePanel && <button type="button" className="panel-close" aria-label="Close Analysis panel"
             onClick={props.onClosePanel}>×</button>}
         </div>
       </div>
 
       {props.onDisableOverlay && <button type="button" className="context-secondary-action"
-        onClick={props.onDisableOverlay}>Disable Spatial overlay</button>}
+        onClick={props.onDisableOverlay}>Disable Analysis overlay</button>}
 
-      <div className="segmented-control" aria-label="Spatial visualization mode">
+      <div className="panel-section-label">ANALYSIS TOOLS</div>
+      <div className="segmented-control" aria-label="Analysis visualization mode">
         {(['range', 'exclusion', 'coherency', 'objectives', 'visibility'] as const).map((mode) => (
           <button
             key={mode}
@@ -209,9 +214,43 @@ export function SpatialPanel(props: SpatialPanelProps) {
               controlPreview={props.objectiveAnalysis.controlPreview} />
           : <p className="spatial-empty">Select a model or unit to see live objective relationships.</p>}
       </section>}
+      {props.boardOverlays && <section className="board-overlays" aria-label="Board overlays">
+        <div className="panel-section-label">BOARD OVERLAYS</div>
+        <div className="board-overlay-grid">
+          <OverlayToggle label={props.deploymentActive ? 'Deployment Zones · automatic' : 'Deployment Zones'}
+            checked={props.deploymentActive || props.boardOverlays.deploymentZones}
+            disabled={props.deploymentActive}
+            onChange={(checked) => props.onBoardOverlayChange?.('deploymentZones', checked)} />
+          <OverlayToggle label="Objective Areas" checked={props.boardOverlays.objectiveAreas}
+            onChange={(checked) => props.onBoardOverlayChange?.('objectiveAreas', checked)} />
+          <OverlayToggle label="Terrain Labels" checked={props.boardOverlays.terrainLabels}
+            onChange={(checked) => props.onBoardOverlayChange?.('terrainLabels', checked)} />
+          <OverlayToggle label="Objective Labels" checked={props.boardOverlays.objectiveLabels}
+            onChange={(checked) => props.onBoardOverlayChange?.('objectiveLabels', checked)} />
+          <OverlayToggle label="Unit Labels" checked={props.boardOverlays.unitLabels}
+            onChange={(checked) => props.onBoardOverlayChange?.('unitLabels', checked)} />
+          <OverlayToggle label="Movement Status" checked={props.boardOverlays.movementStatus}
+            onChange={(checked) => props.onBoardOverlayChange?.('movementStatus', checked)} />
+          <OverlayToggle label="Automatic Rule Assistance" checked={props.boardOverlays.automaticRuleAssistance}
+            onChange={(checked) => props.onBoardOverlayChange?.('automaticRuleAssistance', checked)} />
+        </div>
+      </section>}
       <p className="spatial-note">Overlay only · movement remains permissive</p>
     </aside>
   )
+}
+
+function OverlayToggle({ label, checked, disabled = false, onChange }: {
+  label: string
+  checked: boolean
+  disabled?: boolean
+  onChange: (checked: boolean) => void
+}) {
+  return <label className="spatial-checkbox-field">
+    <input type="checkbox" checked={checked} disabled={disabled}
+      onChange={(event) => onChange(event.target.checked)} />
+    {label}
+  </label>
 }
 
 function ModelSelect(props: {

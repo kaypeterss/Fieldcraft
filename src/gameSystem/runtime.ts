@@ -3,6 +3,7 @@ import type {
   GameSystemOwnedState,
   MatchIdentity,
   MovementPolicyConfig,
+  ResolvedMovementActionContext,
   ResolvedMatchConfiguration,
   TabletopModel,
 } from '../domain/types'
@@ -28,6 +29,7 @@ export interface MovementAuthorization {
   movementPolicy: MovementPolicyConfig
   remainingByModel: Record<string, number>
   unitPermissions: Record<string, MovementPermissionResult>
+  actionContext?: ResolvedMovementActionContext
 }
 
 /** Normal application loader: identity and content are resolved exactly through the registry. */
@@ -115,6 +117,26 @@ export function authorizeMovement(
   }) === false) return denied(runtime, 'The loaded GameSystem does not permit this movement.')
 
   const unitIds = [...new Set(models.map((model) => model.unitId))]
+  if (unitIds.length === 1 && runtime.gameSystem.movement.resolveActionContext) {
+    const resolution = runtime.gameSystem.movement.resolveActionContext({
+      state,
+      gameSystemState: runtime.gameSystemState,
+      unitId: unitIds[0],
+      modelIds,
+    })
+    if (!resolution.allowed) return denied(runtime, resolution.reason)
+    const remainingByModel = { ...resolution.context.movementAllowanceByModel }
+    if (modelIds.some((id) => remainingByModel[id] <= GEOMETRY_EPSILON)) {
+      return denied(runtime, 'This unit has no movement allowance remaining under the active GameSystem.')
+    }
+    return {
+      allowed: true,
+      movementPolicy: runtime.movementPolicy,
+      remainingByModel,
+      unitPermissions: {},
+      actionContext: resolution.context,
+    }
+  }
   const unitPermissions: Record<string, MovementPermissionResult> = {}
   const remainingByModel: Record<string, number> = {}
   for (const unitId of unitIds) {

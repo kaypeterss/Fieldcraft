@@ -5,6 +5,7 @@ import { AOS_BATTLESCROLL_SNAPSHOT, AOS_RULES_SNAPSHOT } from './content/snapsho
 import { aosSetupData } from './prepareAgeOfSigmarMatch'
 import { isAosMatchStateData } from './deployment'
 import { AOS_TURN_PHASES } from './battleRound'
+import { commitAosMovementAction, resolveAosMovementContext } from './movement'
 
 export const AGE_OF_SIGMAR_RULES_SNAPSHOT = AOS_RULES_SNAPSHOT
 
@@ -32,20 +33,21 @@ export const ageOfSigmarM91RequiredContentManifest = ageOfSigmarContentManifest.
 
 const blocked = { canEnter: false, canCross: false, canFinish: false }
 
-/** The adapter owns AoS match timing while gameplay policies remain closed
- * until their corresponding rules milestones are implemented. */
+/** The adapter owns AoS timing and each implemented named-rules policy. */
 export const ageOfSigmarGameSystem: GameSystem = {
   id: 'age-of-sigmar',
   name: 'Warhammer Age of Sigmar',
   version: 'adapter-v1',
   movement: {
     permissions: {
-      actionLimit: { type: 'limited', maximumActions: 0, scope: 'turn' },
-      allowance: { type: 'shared', scope: 'turn' },
+      actionLimit: { type: 'limited', maximumActions: 1, scope: 'phase' },
+      allowance: { type: 'reset-per-action' },
     },
     cost: { type: 'movement-envelope' },
+    resolveActionContext: ({ state, unitId }) => resolveAosMovementContext(state, unitId),
+    commitAction: commitAosMovementAction,
   },
-  coherency: { type: 'game-system-default', policy: { distance: 0, requiredNeighbors: 0 } },
+  coherency: { type: 'unit-definition' },
   terrain: { defaultBase: blocked, defaultObject: blocked, rules: [] },
   visibility: { mode: 'any-to-any', terrainPolicy: 'nothing-blocks' },
   objectives: { qualification: 'intersects' },
@@ -60,6 +62,6 @@ export const ageOfSigmarGameSystem: GameSystem = {
     createInitialData: () => ({ status: 'setup', setup: aosSetupData() }),
     validate: isAosMatchStateData,
   },
-  authorizeCommand: () => false,
-  authorizeUndo: ({ operation }) => operation.type === 'GAME_SYSTEM',
+  authorizeCommand: ({ kind }) => kind === 'MOVE',
+  authorizeUndo: ({ operation }) => operation.type === 'GAME_SYSTEM' || operation.type === 'MOVE',
 }

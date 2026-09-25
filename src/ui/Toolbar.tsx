@@ -1,5 +1,5 @@
-/** Mutually exclusive primary pointer interactions. Spatial is an independent overlay. */
-export type ActiveTool = 'select' | 'measure' | 'smart-move'
+/** Mutually exclusive primary pointer interactions. Analysis is an independent overlay. */
+export type ActiveTool = 'select' | 'move' | 'measure' | 'smart-move'
 
 interface ToolbarProps {
   activeTool: ActiveTool
@@ -7,6 +7,10 @@ interface ToolbarProps {
   diceOpen: boolean
   lifecycleOpen: boolean
   gameplayToolsEnabled?: boolean
+  moveEnabled?: boolean
+  moveDisabledReason?: string
+  smartMoveEnabled?: boolean
+  smartMoveDisabledReason?: string
   diceEnabled?: boolean
   lifecycleEnabled?: boolean
   spatialPanelOpen?: boolean
@@ -34,6 +38,12 @@ function MeasureIcon() {
       <path d="m13.8 6.7 3.5 3.5M11 9.5l2 2M8.2 12.3l3.5 3.5" />
     </svg>
   )
+}
+
+function MoveIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 3v18M3 12h18M12 3l-3 3m3-3 3 3M21 12l-3-3m3 3-3 3M12 21l-3-3m3 3 3-3M3 12l3-3m-3 3 3 3" />
+  </svg>
 }
 
 function ResetIcon() {
@@ -85,6 +95,8 @@ function LifecycleIcon() {
 }
 
 export function Toolbar({ activeTool, spatialEnabled, diceOpen, lifecycleOpen, gameplayToolsEnabled = true,
+  moveEnabled = gameplayToolsEnabled, moveDisabledReason,
+  smartMoveEnabled = gameplayToolsEnabled, smartMoveDisabledReason,
   diceEnabled = gameplayToolsEnabled,
   lifecycleEnabled = gameplayToolsEnabled, spatialPanelOpen = false, dicePanelOpen = false,
   lifecyclePanelOpen = false, onToolChange, onSpatialToggle, onDiceToggle, onLifecycleToggle,
@@ -100,6 +112,15 @@ export function Toolbar({ activeTool, spatialEnabled, diceOpen, lifecycleOpen, g
         >
           <SelectIcon /><span>Select</span><kbd>V</kbd>
         </button>
+        {gameplayToolsEnabled && <button
+          className={activeTool === 'move' ? 'tool-button active' : 'tool-button'}
+          onClick={() => onToolChange('move')}
+          aria-pressed={activeTool === 'move'}
+          disabled={!moveEnabled}
+          title={!moveEnabled ? moveDisabledReason : undefined}
+        >
+          <MoveIcon /><span>Move</span><kbd>D</kbd>
+        </button>}
         <button
           className={activeTool === 'measure' ? 'tool-button active' : 'tool-button'}
           onClick={() => onToolChange('measure')}
@@ -112,13 +133,15 @@ export function Toolbar({ activeTool, spatialEnabled, diceOpen, lifecycleOpen, g
           onClick={onSpatialToggle}
           aria-pressed={spatialEnabled}
         >
-          <SpatialIcon /><span>Spatial</span><kbd>S</kbd>
+          <SpatialIcon /><span>Analysis</span><kbd>S</kbd>
         </button>
         {gameplayToolsEnabled &&
           <button
             className={activeTool === 'smart-move' ? 'tool-button active' : 'tool-button'}
             onClick={() => onToolChange('smart-move')}
             aria-pressed={activeTool === 'smart-move'}
+            disabled={!smartMoveEnabled}
+            title={!smartMoveEnabled ? smartMoveDisabledReason : undefined}
           >
             <SmartMoveIcon /><span>Smart Move</span><kbd>G</kbd>
           </button>}

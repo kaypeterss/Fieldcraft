@@ -1,7 +1,7 @@
-import type { Battlefield, BattlefieldFeature, TabletopModel, TerrainPolicyConfig, Unit } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, MovementSeparationConstraint, TabletopModel, TerrainPolicyConfig, Unit } from '../domain/types'
 import type { CoherencyPolicy } from './coherency'
 import { evaluateUnitCoherency, isCoherencyResultValid } from './coherency'
-import { footprintInsideBattlefield, footprintsOverlap, poseForModel } from './geometry/footprints'
+import { closestPointsBetweenFootprints, footprintInsideBattlefield, footprintsOverlap, poseForModel } from './geometry/footprints'
 import type { Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
 import { terrainDestinationLegal } from './terrainPolicy'
@@ -29,6 +29,7 @@ export interface CandidateFormationRequest {
   rotations?: Readonly<Record<string, number>>
   reachability?: CandidateReachabilityConstraint
   coherency?: CandidateCoherencyConstraint
+  separationConstraints?: ReadonlyArray<MovementSeparationConstraint>
 }
 
 export type CandidateFormationViolation =
@@ -41,6 +42,7 @@ export type CandidateFormationViolation =
   | { type: 'COHERENCY_FAILED'; modelIds: string[] }
   | { type: 'OUTSIDE_REQUIRED_AREA'; modelIds: [string]; constraintId: string }
   | { type: 'TOO_CLOSE_TO_AREA'; modelIds: [string]; constraintId: string; minimumDistance: number; actualDistance: number }
+  | { type: 'MODEL_SEPARATION_FAILED'; modelIds: [string, string]; minimumDistance: number; actualDistance: number }
 
 export interface CandidateFormationResult {
   valid: boolean
@@ -123,6 +125,27 @@ export function validateCandidateFormation(request: CandidateFormationRequest): 
       )) {
         violations.push({ type: 'CANDIDATE_INTERNAL_OVERLAP', modelIds: [source.id, target.id] })
       }
+    }
+  }
+
+  for (const constraint of request.separationConstraints ?? []) {
+    if (!constraint.atDestination || !candidateIdSet.has(constraint.movingModelId)) continue
+    const moving = byId.get(constraint.movingModelId)
+    const obstacle = byId.get(constraint.obstacleModelId)
+    if (!moving || !obstacle) continue
+    const distance = closestPointsBetweenFootprints(
+      moving.base,
+      poseForModel(moving, request.positions[moving.id]),
+      obstacle.base,
+      poseForModel(obstacle, request.positions[obstacle.id] ?? obstacle.position),
+    ).distance
+    if (distance + GEOMETRY_EPSILON < constraint.minimumDistance) {
+      violations.push({
+        type: 'MODEL_SEPARATION_FAILED',
+        modelIds: [moving.id, obstacle.id],
+        minimumDistance: constraint.minimumDistance,
+        actualDistance: distance,
+      })
     }
   }
 

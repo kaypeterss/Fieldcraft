@@ -4,6 +4,7 @@ import type { CoherencyPolicy } from '../engine/coherency'
 import { normalizeNumericDraft } from './numberInput'
 import { SpatialPanel } from './SpatialPanel'
 import { resolveSpatialCoherencyPolicy, resolveSpatialCoherencyUnit } from '../tools/spatialOverlay'
+import { defaultBoardOverlayPreferences } from '../tools/battlefieldPresentation'
 
 afterEach(() => cleanup())
 
@@ -32,6 +33,33 @@ function renderPanel(overrides: Partial<Parameters<typeof SpatialPanel>[0]> = {}
   render(<SpatialPanel {...props} />)
   return props
 }
+
+describe('Analysis board overlays', () => {
+  it('uses the player-facing Analysis name and updates independent overlay preferences', () => {
+    const onChange = vi.fn()
+    renderPanel({
+      boardOverlays: defaultBoardOverlayPreferences(false),
+      onBoardOverlayChange: onChange,
+    })
+    expect(screen.getByRole('heading', { name: 'Analysis' })).toBeTruthy()
+    expect(screen.getByText('ANALYSIS TOOLS')).toBeTruthy()
+    expect(screen.getByText('BOARD OVERLAYS')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Terrain Labels'))
+    expect(onChange).toHaveBeenCalledWith('terrainLabels', true)
+    fireEvent.click(screen.getByLabelText('Automatic Rule Assistance'))
+    expect(onChange).toHaveBeenCalledWith('automaticRuleAssistance', false)
+  })
+
+  it('shows deployment zones as automatic and non-editable during deployment', () => {
+    renderPanel({
+      boardOverlays: defaultBoardOverlayPreferences(false),
+      deploymentActive: true,
+    })
+    const toggle = screen.getByLabelText('Deployment Zones · automatic') as HTMLInputElement
+    expect(toggle.checked).toBe(true)
+    expect(toggle.disabled).toBe(true)
+  })
+})
 
 describe('objective analysis overlay', () => {
   it('shows independent area counts and offers a generic objective selector', () => {

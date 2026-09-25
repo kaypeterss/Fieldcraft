@@ -8,6 +8,8 @@ import {
   footprintsOverlap,
   poseForModel,
   sweepFootprintTranslation,
+  sweepFootprintTranslationWithClearance,
+  closestPointsBetweenFootprints,
 } from './geometry/footprints'
 import { distanceBetween, type Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
@@ -25,6 +27,8 @@ export interface ModelPathRequest {
   /** Optional reachability policy. With an allowance, omission uses the engine default policy. */
   movementPolicy?: MovementPolicyConfig
   movementAllowance?: number
+  traversalMinimumSeparation?: Readonly<Record<string, number>>
+  destinationMinimumSeparation?: Readonly<Record<string, number>>
 }
 
 export interface ModelPathResult {
@@ -53,8 +57,10 @@ export function findDirectModelPath(request: ModelPathRequest): ModelPathResult 
   const finishObstacles = destinationObstacles(request)
   const useCircleFastPath = allCircleGeometry(request.model, [...obstacles, ...finishObstacles])
   const destinationIsLegal = useCircleFastPath
-    ? circlePlacementIsLegal(request.model, destination, finishObstacles, request.battlefield)
-    : placementIsLegal(request.model, destination, finishObstacles, request.battlefield)
+    ? circlePlacementIsLegal(request.model, destination, finishObstacles, request.battlefield,
+      request.destinationMinimumSeparation)
+    : placementIsLegal(request.model, destination, finishObstacles, request.battlefield,
+      request.destinationMinimumSeparation)
   if (!destinationIsLegal) return null
   const distance = distanceBetween(start, destination)
   const result = distance <= GEOMETRY_EPSILON
@@ -62,8 +68,10 @@ export function findDirectModelPath(request: ModelPathRequest): ModelPathResult 
     : { path: [{ ...start }, { ...destination }], distance }
   if (distance > GEOMETRY_EPSILON
     && !(useCircleFastPath
-      ? circleSegmentIsClear(start, destination, baseRadiusInches(request.model.base), obstacles)
-      : segmentIsClearForModel(request.model, start, destination, obstacles))) return null
+      ? circleSegmentIsClear(start, destination, baseRadiusInches(request.model.base), obstacles,
+        request.traversalMinimumSeparation)
+      : segmentIsClearForModel(request.model, start, destination, obstacles,
+        request.traversalMinimumSeparation))) return null
   return isFixedOrientationPathWithinPolicy(request, result) ? result : null
 }
 
@@ -132,7 +140,8 @@ function findCircularRoutedPath(
     start,
     destination,
     obstacle.position,
-    modelRadius + baseRadiusInches(obstacle.base),
+    modelRadius + baseRadiusInches(obstacle.base)
+      + (request.traversalMinimumSeparation?.[obstacle.id] ?? 0),
   ) !== null)
   const graphKey = `circle:${directBlockers.map((obstacle) => obstacle.id).join('|')}`
   let baseGraph = planner?.visibilityGraphs.get(graphKey)
@@ -141,6 +150,7 @@ function findCircularRoutedPath(
     const baseNodes: Point[] = [{ ...start }]
     for (const obstacle of directBlockers) {
       const expandedRadius = modelRadius + baseRadiusInches(obstacle.base)
+        + (request.traversalMinimumSeparation?.[obstacle.id] ?? 0)
       const waypointRadius = (expandedRadius + CIRCLE_PATH_CLEARANCE)
         / Math.cos(Math.PI / CIRCLE_WAYPOINTS_PER_OBSTACLE)
       for (let index = 0; index < CIRCLE_WAYPOINTS_PER_OBSTACLE; index += 1) {
@@ -156,11 +166,13 @@ function findCircularRoutedPath(
       blockerCluster, modelRadius, request.model, request.battlefield,
     ))
     baseGraph = buildVisibilityGraph(baseNodes, (startPoint, endPoint) =>
-      circleSegmentIsClear(startPoint, endPoint, modelRadius, obstacles))
+      circleSegmentIsClear(startPoint, endPoint, modelRadius, obstacles,
+        request.traversalMinimumSeparation))
     planner?.visibilityGraphs.set(graphKey, baseGraph)
   }
   return routeToDestination(request, finishObstacles, baseGraph, (startPoint, endPoint) =>
-    circleSegmentIsClear(startPoint, endPoint, modelRadius, obstacles))
+    circleSegmentIsClear(startPoint, endPoint, modelRadius, obstacles,
+      request.traversalMinimumSeparation))
 }
 
 function findGenericRoutedPath(
@@ -174,6 +186,7 @@ function findGenericRoutedPath(
     request.model.position,
     request.destination,
     obstacle,
+    request.traversalMinimumSeparation?.[obstacle.id] ?? 0,
   ))
   if (directBlockers.length === 0) return null
 
@@ -191,13 +204,16 @@ function findGenericRoutedPath(
   // obstacle pose belongs in the cache identity even when bounded waypoint
   // generation only samples the relevant blocker cluster.
   const graphKey = genericGraphKey(request.model, [...obstacles, ...finishObstacles], request.battlefield)
-  const segmentIsClear = createGenericSegmentClearer(request.model, obstacles)
+  const segmentIsClear = createGenericSegmentClearer(request.model, obstacles,
+    request.traversalMinimumSeparation)
   let baseGraph = planner?.visibilityGraphs.get(graphKey)
   if (!baseGraph) {
     const baseNodes: Point[] = [{ ...request.model.position }]
     for (const obstacle of routingObstacles) {
-      baseNodes.push(...configurationSpaceWaypoints(request.model, obstacle)
-        .filter((point) => placementIsLegal(request.model, point, finishObstacles, request.battlefield)))
+      baseNodes.push(...configurationSpaceWaypoints(request.model, obstacle,
+        request.traversalMinimumSeparation?.[obstacle.id] ?? 0)
+        .filter((point) => placementIsLegal(request.model, point, finishObstacles, request.battlefield,
+          request.destinationMinimumSeparation)))
     }
     if (cluster.length > 1) baseNodes.push(...genericClusterEnvelopeWaypoints(
       request.model,
@@ -219,7 +235,8 @@ function routeToDestination(
   segmentIsClear: (start: Point, end: Point) => boolean,
 ): ModelPathResult | null {
   const destination = request.destination
-  if (!placementIsLegal(request.model, destination, obstacles, request.battlefield)) return null
+  if (!placementIsLegal(request.model, destination, obstacles, request.battlefield,
+    request.destinationMinimumSeparation)) return null
   const nodes: Point[] = [{ ...baseGraph.nodes[0] }, { ...destination }, ...baseGraph.nodes.slice(1)]
   const adjacency = nodes.map(() => [] as Array<{ index: number; distance: number }>)
   const mappedIndex = (baseIndex: number) => baseIndex === 0 ? 0 : baseIndex + 1
@@ -330,13 +347,13 @@ function buildBoundedVisibilityGraph(
   return { nodes: nodes.map((point) => ({ ...point })), adjacency }
 }
 
-function configurationSpaceWaypoints(moving: TabletopModel, obstacle: TabletopModel): Point[] {
+function configurationSpaceWaypoints(moving: TabletopModel, obstacle: TabletopModel, minimumDistance = 0): Point[] {
   const outline = footprintExclusionOutline(
     obstacle.base,
     poseForModel(obstacle),
     moving.base,
     moving.rotation,
-    0,
+    minimumDistance,
     GENERIC_WAYPOINTS_PER_OBSTACLE,
   )
   // The facade returns exact support points. Intersect adjacent outward
@@ -406,14 +423,16 @@ function placementIsLegal(
   position: Point,
   obstacles: ReadonlyArray<TabletopModel>,
   battlefield: Battlefield,
+  minimumSeparation?: Readonly<Record<string, number>>,
 ): boolean {
   if (!isModelPositionInsideBattlefield(position, model, battlefield)) return false
-  return obstacles.every((obstacle) => !footprintsOverlap(
-    model.base,
-    poseForModel(model, position),
-    obstacle.base,
-    poseForModel(obstacle),
-  ))
+  return obstacles.every((obstacle) => {
+    const minimum = minimumSeparation?.[obstacle.id] ?? 0
+    if (minimum > 0) return closestPointsBetweenFootprints(
+      model.base, poseForModel(model, position), obstacle.base, poseForModel(obstacle),
+    ).distance + GEOMETRY_EPSILON >= minimum
+    return !footprintsOverlap(model.base, poseForModel(model, position), obstacle.base, poseForModel(obstacle))
+  })
 }
 
 function circlePlacementIsLegal(
@@ -421,6 +440,7 @@ function circlePlacementIsLegal(
   position: Point,
   obstacles: ReadonlyArray<TabletopModel>,
   battlefield: Battlefield,
+  minimumSeparation?: Readonly<Record<string, number>>,
 ): boolean {
   if (!isModelPositionInsideBattlefield(position, model, battlefield)) return false
   const radius = baseRadiusInches(model.base)
@@ -428,7 +448,7 @@ function circlePlacementIsLegal(
     position,
     radius,
     obstacle.position,
-    baseRadiusInches(obstacle.base),
+    baseRadiusInches(obstacle.base) + (minimumSeparation?.[obstacle.id] ?? 0),
   ))
 }
 
@@ -437,6 +457,7 @@ function segmentIsClearForModel(
   start: Point,
   end: Point,
   obstacles: ReadonlyArray<TabletopModel>,
+  minimumSeparation?: Readonly<Record<string, number>>,
 ): boolean {
   const translation = subtract(end, start)
   const movingPose = poseForModel(model, start)
@@ -444,19 +465,24 @@ function segmentIsClearForModel(
   const endBounds = footprintBounds(model.base, poseForModel(model, end))
   return obstacles.every((obstacle) => {
     const obstaclePose = poseForModel(obstacle)
-    if (!sweptBoundsIntersect(startBounds, endBounds, footprintBounds(obstacle.base, obstaclePose))) return true
-    return sweepFootprintTranslation(
+    const minimum = minimumSeparation?.[obstacle.id] ?? 0
+    if (minimum <= 0
+      && !sweptBoundsIntersect(startBounds, endBounds, footprintBounds(obstacle.base, obstaclePose))) return true
+    return (minimum > 0 ? sweepFootprintTranslationWithClearance(
+      model.base, movingPose, translation, obstacle.base, obstaclePose, minimum,
+    ) : sweepFootprintTranslation(
       model.base,
       movingPose,
       translation,
       obstacle.base,
       obstaclePose,
-    ) === null
+    )) === null
   })
 }
 
 /** Visibility edges share stationary poses and bounds, but still use exact sweeps. */
-function createGenericSegmentClearer(model: TabletopModel, obstacles: ReadonlyArray<TabletopModel>) {
+function createGenericSegmentClearer(model: TabletopModel, obstacles: ReadonlyArray<TabletopModel>,
+  minimumSeparation?: Readonly<Record<string, number>>) {
   const stationary = obstacles.map((obstacle) => {
     const pose = poseForModel(obstacle)
     return { obstacle, pose, bounds: footprintBounds(obstacle.base, pose) }
@@ -467,9 +493,13 @@ function createGenericSegmentClearer(model: TabletopModel, obstacles: ReadonlyAr
     const endBounds = footprintBounds(model.base, poseForModel(model, end))
     const translation = subtract(end, start)
     return stationary.every(({ obstacle, pose, bounds }) =>
-      !sweptBoundsIntersect(startBounds, endBounds, bounds)
-      || sweepFootprintTranslation(model.base, movingPose, translation,
-        obstacle.base, pose) === null)
+      ((minimumSeparation?.[obstacle.id] ?? 0) <= 0
+        && !sweptBoundsIntersect(startBounds, endBounds, bounds))
+      || ((minimumSeparation?.[obstacle.id] ?? 0) > 0
+        ? sweepFootprintTranslationWithClearance(model.base, movingPose, translation,
+          obstacle.base, pose, minimumSeparation?.[obstacle.id] ?? 0)
+        : sweepFootprintTranslation(model.base, movingPose, translation,
+          obstacle.base, pose)) === null)
   }
 }
 
@@ -478,15 +508,19 @@ function segmentContactsObstacle(
   start: Point,
   end: Point,
   obstacle: TabletopModel,
+  minimumDistance = 0,
 ): boolean {
-  if (!sweptBoundsCouldIntersect(model, start, end, obstacle)) return false
-  return sweepFootprintTranslation(
+  if (minimumDistance <= 0 && !sweptBoundsCouldIntersect(model, start, end, obstacle)) return false
+  return (minimumDistance > 0 ? sweepFootprintTranslationWithClearance(
+    model.base, poseForModel(model, start), subtract(end, start), obstacle.base,
+    poseForModel(obstacle), minimumDistance,
+  ) : sweepFootprintTranslation(
     model.base,
     poseForModel(model, start),
     subtract(end, start),
     obstacle.base,
     poseForModel(obstacle),
-  ) !== null
+  )) !== null
 }
 
 function sweptBoundsCouldIntersect(
@@ -517,12 +551,13 @@ function circleSegmentIsClear(
   end: Point,
   modelRadius: number,
   obstacles: ReadonlyArray<TabletopModel>,
+  minimumSeparation?: Readonly<Record<string, number>>,
 ): boolean {
   return obstacles.every((obstacle) => firstCirclePathCollisionT(
     start,
     end,
     obstacle.position,
-    modelRadius + baseRadiusInches(obstacle.base),
+    modelRadius + baseRadiusInches(obstacle.base) + (minimumSeparation?.[obstacle.id] ?? 0),
   ) === null)
 }
 

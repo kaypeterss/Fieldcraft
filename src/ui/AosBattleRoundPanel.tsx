@@ -92,6 +92,8 @@ export function AosBattleRoundPanel({ state, deployment, battle, onClose, onStar
       {battle.stage === 'TURN_PHASE' && <>
         <p>{phase?.id === 'END_OF_TURN'
           ? 'Objective control and battleplan scoring are not implemented yet.'
+          : phase?.id === 'MOVEMENT_PHASE'
+            ? 'Select an active-player unit, then choose Normal Move, Run, or Retreat in the Movement panel.'
           : 'Active-player and opponent ability opportunities are reserved; no supported actions are available yet.'}</p>
         <button type="button" className="primary-panel-action" onClick={onEndPhase}>
           {phase?.id === 'END_OF_TURN' ? 'End Turn' : `End ${phase?.name}`}

@@ -266,6 +266,33 @@ export interface MovementSession {
   models: Record<string, ModelMovementState>
   referenceStart: Point
   referencePath: Point[]
+  /** Optional resolved rule context supplied by the loaded GameSystem. */
+  actionContext?: ResolvedMovementActionContext
+}
+
+/** A generic model-to-model clearance used by movement abilities such as combat-range avoidance. */
+export interface MovementSeparationConstraint {
+  movingModelId: string
+  obstacleModelId: string
+  minimumDistance: number
+  duringMovement: boolean
+  atDestination: boolean
+}
+
+/**
+ * JSON-safe physical consequences of one declared movement ability. Named
+ * rules stay in the adapter; generic movement consumes only these facts.
+ */
+export interface ResolvedMovementActionContext {
+  id: string
+  label: string
+  unitId: string
+  actorPlayerId: string
+  movementAllowanceByModel: Record<string, number>
+  passOverModelIds: string[]
+  separationConstraints: MovementSeparationConstraint[]
+  requireCoherency: boolean
+  details?: JsonValue
 }
 
 export interface MoveAction {
@@ -351,6 +378,8 @@ export interface DiceRollRecord extends DicePoolResult {
   turnSequence: number
   turnId: string
   phase?: string
+  /** Optional human-readable purpose supplied by the caller; never interpreted as a rule. */
+  label?: string
 }
 
 export type DiceContinuation = 'successes' | 'failures'

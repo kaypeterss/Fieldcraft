@@ -88,6 +88,21 @@ import { aosDeploymentPlacementRules, aosDeploymentState, validateAosDeploymentP
 import { rollDice, systemRandomSource } from './engine/dice'
 import { aosBattleState, aosRoundResources, currentAosPhase } from './gameSystem/ageOfSigmar/battleRound'
 import { AosBattleRoundPanel } from './ui/AosBattleRoundPanel'
+import { AosMovementPanel, type AosMovementMethod } from './ui/AosMovementPanel'
+import {
+  aosMovementRuleAssistance,
+  aosMovementAvailability,
+  aosMovementRevealedRoll,
+  aosUnitMovementStatus,
+  rollAosMovementActionDie,
+  type AosMovementActionId,
+} from './gameSystem/ageOfSigmar/movement'
+import {
+  defaultBoardOverlayPreferences,
+  deploymentZonesVisible,
+  deriveUnitBattlefieldPresentations,
+  type BoardOverlayPreferences,
+} from './tools/battlefieldPresentation'
 
 interface SmartMoveSessionState {
   modelIds: string[]
@@ -295,6 +310,8 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const initialRegistration = useMemo(() => gameSystemRegistry.resolveIdentity(initialState.matchIdentity!).registration, [initialState])
   const [activeTool, setActiveTool] = useState<ActiveTool>('select')
   const [spatialEnabled, setSpatialEnabled] = useState(false)
+  const [boardOverlays, setBoardOverlays] = useState<BoardOverlayPreferences>(() =>
+    defaultBoardOverlayPreferences(initialRegistration.ui.developmentControls))
   const [diceOpen, setDiceOpen] = useState(false)
   const [lifecycleOpen, setLifecycleOpen] = useState(false)
   const [contextPanel, setContextPanel] = useState<ContextPanelId>(() => (
@@ -369,6 +386,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     valid: boolean
   }>>([])
   const [deploymentPlacement, setDeploymentPlacement] = useState<DeploymentPlacementSession | null>(null)
+  const [aosMovementMessage, setAosMovementMessage] = useState<string | null>(null)
   const [deploymentTerritoryHoverId, setDeploymentTerritoryHoverId] = useState<string | null>(null)
   const aosDeployment = useMemo(() => aosDeploymentState(gameState), [gameState])
   const aosBattle = useMemo(() => aosBattleState(gameState), [gameState])
@@ -500,6 +518,29 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     : undefined
   const selectedUnit = selectedModel ? getUnitForModel(gameState, selectedModel.id) : undefined
   const selectedUnitDefinition = selectedUnit ? getUnitDefinition(gameState, selectedUnit) : undefined
+  const aosMovementPhaseActive = aosBattle ? currentAosPhase(aosBattle)?.id === 'MOVEMENT_PHASE' : false
+  const selectedAosMovement = selectedUnit && gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar'
+    ? aosMovementAvailability(gameState, selectedUnit.id) : null
+  const movementToolsEnabled = gameplayImplemented || aosMovementPhaseActive
+  const selectedMovementActionReady = Boolean(selectedAosMovement?.selected
+    && selectedAosMovement.available.includes(selectedAosMovement.selected.actionId))
+  const movementMethodEnabled = gameplayImplemented || selectedMovementActionReady
+  const movementMethodDisabledReason = selectedAosMovement?.reason
+    ?? (!selectedUnit ? 'Select a unit, then choose a movement action.' : 'Choose Normal Move, Run, or Retreat first.')
+  const aosMovementStatuses = useMemo(() => gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar'
+    ? gameState.units.flatMap((unit) => {
+      const status = aosUnitMovementStatus(gameState, unit.id)
+      return status ? [status] : []
+    }) : [], [gameState])
+  const unitBattlefieldPresentations = useMemo(
+    () => deriveUnitBattlefieldPresentations(
+      { ...battlefieldGameState, models: spatialModels },
+      aosMovementStatuses,
+    ),
+    [aosMovementStatuses, battlefieldGameState, spatialModels],
+  )
+  const deploymentActive = Boolean(aosDeployment && aosDeployment.phase !== 'READY_FOR_BATTLE')
+  const showDeploymentZones = deploymentZonesVisible(deploymentActive, boardOverlays.deploymentZones)
   const selectedObjective = gameState.battlefieldFeatures?.find((feature) => feature.id === selectedObjectiveId && feature.capabilities.objective)
   const selectedObjectiveArea = selectedObjective ? objectiveArea(selectedObjective) : null
   const spatialSelectedModel = selectedActiveModel ? spatialModels.find((model) => model.id === selectedActiveModel.id) : undefined
@@ -648,6 +689,9 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const smartMoveAuthorization = useMemo(() => smartMoveSession
     ? authorizeMovement(loadedRuntime, gameState, smartMoveSession.modelIds)
     : null, [gameState, loadedRuntime, smartMoveSession])
+  const movementRuleAssistance = useMemo(() => aosMovementRuleAssistance(
+    gameState.movementSession?.actionContext ?? smartMoveAuthorization?.actionContext,
+  ), [gameState.movementSession?.actionContext, smartMoveAuthorization?.actionContext])
   const smartMoveRequestFactory = useMemo(() => (
     smartMoveSession && smartMovePolicy && smartMoveAuthorization?.allowed
       ? createSmartMoveRequestFactory(
@@ -656,6 +700,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           smartMovePolicy,
           smartMoveAuthorization.movementPolicy,
           smartMoveAuthorization.remainingByModel,
+          smartMoveAuthorization.actionContext,
         )
       : null
   ), [battlefieldGameState, smartMoveAuthorization, smartMovePolicy, smartMoveSession])
@@ -723,6 +768,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         policy,
         permission.movementPolicy,
         permission.remainingByModel,
+        permission.actionContext,
       ),
     )
   }, [movementPolicy])
@@ -738,8 +784,19 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   }, [activeModels, activeTool, beginSmartMoveForSelection, gameState, gameStateRevision, selectedIds])
 
   const handleSelectionChange = useCallback((nextSelectedIds: Set<string>) => {
+    if (activeTool === 'move' && aosMovementPhaseActive) {
+      const nextModel = activeModels.find((model) => nextSelectedIds.has(model.id))
+      const nextUnit = nextModel ? getUnitForModel(gameState, nextModel.id) : undefined
+      const nextAvailability = nextUnit ? aosMovementAvailability(gameState, nextUnit.id) : null
+      if (!nextAvailability?.selected
+        || !nextAvailability.available.includes(nextAvailability.selected.actionId)) setActiveTool('select')
+    }
     setSelectedIds(nextSelectedIds)
     setSelectedFeatureId(null)
+    if (aosMovementPhaseActive && nextSelectedIds.size > 0 && activeTool !== 'smart-move') {
+      setContextPanel('movement')
+      setAosMovementMessage(null)
+    }
     if (spatialMode === 'visibility' && nextSelectedIds.size === 1) {
       const selectedId = [...nextSelectedIds][0]
       if (!visibilityViewerId) setVisibilityViewerId(selectedId)
@@ -759,7 +816,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     setSmartMoveTargeting(initialSmartMoveTargetState())
     const models = activeModels.filter((model) => nextSelectedIds.has(model.id))
     beginSmartMoveForSelection(models, gameState, gameStateRevision)
-  }, [activeModels, activeTool, beginSmartMoveForSelection, gameState, gameStateRevision, selectedObjectiveId, spatialMode, visibilityViewerId])
+  }, [activeModels, activeTool, aosMovementPhaseActive, beginSmartMoveForSelection, gameState, gameStateRevision, selectedObjectiveId, spatialMode, visibilityViewerId])
 
   const handleFeatureSelectionChange = useCallback((featureId: string) => {
     setSelectedFeatureId(featureId)
@@ -808,6 +865,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         })),
       },
       coherency: { unit: smartMoveUnit, policy: smartMovePolicy },
+      separationConstraints: smartMoveAuthorization?.actionContext?.separationConstraints,
     })
     if (!startsCurrent || !authoritativeValidation.valid) {
       setSmartMoveMessage('Smart Move is no longer current. Move or relock the target to recalculate.')
@@ -858,8 +916,14 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     }
     setVisibilityPickTarget(null)
     setVisibilityPickHoverModelId(null)
+    if (tool === 'move' || tool === 'smart-move') {
+      if (!movementToolsEnabled || !movementMethodEnabled) {
+        setAosMovementMessage(movementMethodDisabledReason)
+        if (aosMovementPhaseActive) setContextPanel('movement')
+        return
+      }
+    }
     if (tool === 'smart-move') {
-      if (!gameplayImplemented) return
       if (gameState.movementSession) {
         setBlockedMovementSessionId(gameState.movementSession.id)
         return
@@ -878,7 +942,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     setActiveTool(tool)
     setContextPanel('inspector')
     if (tool !== 'measure') setMeasurementStartTarget(null)
-  }, [activeModels, activeTool, beginSmartMoveForSelection, cancelSmartMove, gameState, gameStateRevision, gameplayImplemented, lifecyclePlacement, selectedIds])
+  }, [activeModels, activeTool, aosMovementPhaseActive, beginSmartMoveForSelection, cancelSmartMove, gameState, gameStateRevision, lifecyclePlacement, movementMethodDisabledReason, movementMethodEnabled, movementToolsEnabled, selectedIds])
 
   const toggleSpatialOverlay = useCallback(() => {
     if (!spatialEnabled) setSpatialEnabled(true)
@@ -912,7 +976,20 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       }
       if (event.key === 'Enter' && gameState.movementSession && !event.isComposing) {
         event.preventDefault()
+        const preview = reduceGameCommand(loadedRuntime, gameState, { type: 'movement/confirmed' })
+        if (preview === gameState) {
+          if (aosMovementPhaseActive) {
+            setAosMovementMessage('Confirm rejected: check coherency, movement allowance, collisions, and enemy combat range.')
+            setContextPanel('movement')
+          }
+          return
+        }
         dispatch({ type: 'movement/confirmed' })
+        if (aosMovementPhaseActive) {
+          setActiveTool('select')
+          setAosMovementMessage('Movement confirmed.')
+          setContextPanel('movement')
+        }
         return
       }
       if (event.key === 'Enter' && activeTool === 'smart-move' && !event.isComposing) {
@@ -929,9 +1006,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         return
       }
       if (event.key.toLowerCase() === 'v') changeTool('select')
+      if (event.key.toLowerCase() === 'd' && movementToolsEnabled) changeTool('move')
       if (event.key.toLowerCase() === 'm') changeTool('measure')
       if (event.key.toLowerCase() === 's') toggleSpatialOverlay()
-      if (event.key.toLowerCase() === 'g' && gameplayImplemented) changeTool('smart-move')
+      if (event.key.toLowerCase() === 'g' && movementToolsEnabled) changeTool('smart-move')
       if (event.key.toLowerCase() === 'f') setResetCameraSignal((value) => value + 1)
       if (event.key === 'Escape') {
         if (deploymentPlacement) {
@@ -951,6 +1029,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         }
         if (gameState.movementSession) {
           dispatch({ type: 'movement/cancelled' })
+          if (aosMovementPhaseActive) {
+            setAosMovementMessage('Movement cancelled. Any revealed roll remains available for this action.')
+            setContextPanel('movement')
+          }
           return
         }
         if (activeTool === 'smart-move') {
@@ -968,7 +1050,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeTool, applySmartMove, cancelSmartMove, changeTool, deploymentPlacement, dispatch, gameState, gameplayImplemented, lifecyclePlacement, measurementPair, measurementStartTarget, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
+  }, [activeTool, aosMovementPhaseActive, applySmartMove, cancelSmartMove, changeTool, deploymentPlacement, dispatch, gameState, lifecyclePlacement, loadedRuntime, measurementPair, measurementStartTarget, movementToolsEnabled, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
 
   const handleEndTurn = useCallback(() => {
     if (gameState.movementSession) {
@@ -1424,6 +1506,35 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     dispatch({ type: 'gameSystem/command', command: { type, actorPlayerId, payload } })
   }, [dispatch])
 
+  const chooseAosMovementAction = useCallback((actionId: AosMovementActionId) => {
+    if (!selectedUnit || !selectedAosMovement?.available.includes(actionId)) return
+    let rollRecordId: string | undefined
+    if (actionId === 'RUN' || actionId === 'RETREAT') {
+      const existing = aosMovementRevealedRoll(gameState, selectedUnit.id, actionId)
+      if (existing) rollRecordId = existing.rollRecordId
+      else {
+        const roll = rollAosMovementActionDie(actionId)
+        rollRecordId = `dice-${gameState.nextActionSequence}`
+        dispatch({
+          type: 'dice/rollRecorded',
+          playerId: selectedUnit.ownerId,
+          result: roll,
+          label: `${actionId === 'RUN' ? 'Run' : 'Retreat Damage'} — ${selectedUnitDefinition?.name ?? selectedUnit.id}`,
+        })
+      }
+    }
+    dispatchAosBattleCommand('aos/movement/declare', selectedUnit.ownerId, {
+      unitId: selectedUnit.id,
+      actionId,
+      ...(rollRecordId ? { rollRecordId } : {}),
+    })
+    setAosMovementMessage(actionId === 'NORMAL_MOVE'
+      ? 'Normal Move ready. Drag models or use Smart Move.'
+      : actionId === 'RUN' ? 'Run roll recorded. Drag models or use Smart Move.'
+        : 'Retreat damage recorded. Damage allocation is deferred; movement is ready.')
+    setContextPanel('movement')
+  }, [dispatch, dispatchAosBattleCommand, gameState, selectedAosMovement, selectedUnit, selectedUnitDefinition])
+
   const spendAosCommandPoint = useCallback((playerId: string) => {
     dispatchAosBattleCommand('aos/resources/spend-command-points', playerId, { amount: 1 })
   }, [dispatchAosBattleCommand])
@@ -1461,9 +1572,20 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   }, [dispatchAosBattleCommand, gameState.gameContext.activePlayerId])
 
   const endAosPhase = useCallback(() => {
+    if (gameState.movementSession) {
+      setBlockedMovementSessionId(gameState.movementSession.id)
+      setAosMovementMessage('Confirm or cancel the staged movement before ending the phase.')
+      setContextPanel('movement')
+      return
+    }
+    if (activeTool === 'smart-move' && spatialPreviewResult) {
+      setSmartMoveMessage('Apply or cancel the Smart Move preview before ending the phase.')
+      setContextPanel('smart-move')
+      return
+    }
     dispatchAosBattleCommand('aos/battle/end-phase', gameState.gameContext.activePlayerId)
     setContextPanel('battle-round')
-  }, [dispatchAosBattleCommand, gameState.gameContext.activePlayerId])
+  }, [activeTool, dispatchAosBattleCommand, gameState.gameContext.activePlayerId, gameState.movementSession, spatialPreviewResult])
 
   const aosProgression = useMemo(() => {
     if (!aosDeployment || aosDeployment.phase !== 'READY_FOR_BATTLE') return undefined
@@ -1581,7 +1703,11 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         spatialEnabled={spatialEnabled}
         diceOpen={diceOpen}
         lifecycleOpen={lifecycleOpen}
-        gameplayToolsEnabled={gameplayImplemented}
+        gameplayToolsEnabled={movementToolsEnabled}
+        moveEnabled={movementMethodEnabled}
+        moveDisabledReason={movementMethodDisabledReason}
+        smartMoveEnabled={movementMethodEnabled}
+        smartMoveDisabledReason={movementMethodDisabledReason}
         diceEnabled={gameplayImplemented || gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar'
           && gameState.matchLifecycle !== 'SETUP'}
         lifecycleEnabled={lifecycleAvailable}
@@ -1613,12 +1739,17 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           visibilityPickTarget={visibilityPickTarget}
           lifecyclePlacementActive={placementActive}
           lifecyclePlacementPreviews={placementPreviews}
-          lifecyclePlacementCoherency={placementCoherency}
+          lifecyclePlacementCoherency={boardOverlays.automaticRuleAssistance ? placementCoherency : []}
+          unitPresentations={unitBattlefieldPresentations}
+          boardOverlays={boardOverlays}
+          developmentPresentation={developmentControlsEnabled}
+          showDeploymentZones={showDeploymentZones}
+          movementRuleAssistance={movementRuleAssistance}
           deploymentZoneHighlightRole={aosDeployment?.phase === 'DEPLOYING'
             ? aosDeployment.currentPlayerId === aosDeployment.attackerPlayerId ? 'attacker' : 'defender'
             : undefined}
           deploymentZoneChoiceId={aosDeployment?.phase === 'CHOOSE_TERRITORY' ? deploymentTerritoryHoverId : null}
-          deploymentForbiddenRegion={deploymentPlacementRules ? {
+          deploymentForbiddenRegion={boardOverlays.automaticRuleAssistance && deploymentPlacementRules ? {
             areas: deploymentPlacementRules.enemyAreas,
             distance: deploymentPlacementRules.enemyTerritoryExclusionDistance,
           } : null}
@@ -1813,6 +1944,8 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
             visibilityAnalysis={spatialMode === 'visibility' ? visibilityAnalysis : null}
             previewActive={Boolean(spatialPreviewResult)}
             developmentControlsEnabled={developmentControlsEnabled}
+            boardOverlays={boardOverlays}
+            deploymentActive={deploymentActive}
             onObjectiveChange={setSelectedObjectiveId}
             onVisibilityViewerChange={(id) => { setVisibilityPickTarget(null); setVisibilityViewerId(id) }}
             onVisibilityTargetChange={(id) => { setVisibilityPickTarget(null); setVisibilityTargetId(id) }}
@@ -1824,6 +1957,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
             onRequiredSeparationChange={setRequiredSeparation}
             onCoherencyAnalysisModeChange={setCoherencyAnalysisMode}
                 onCoherencyPolicyChange={setAnalysisCoherencyPolicy}
+                onBoardOverlayChange={(key, enabled) => setBoardOverlays((current) => ({
+                  ...current,
+                  [key]: enabled,
+                }))}
                 onClosePanel={() => setContextPanel('inspector')}
                 onDisableOverlay={() => {
                   setSpatialEnabled(false)
@@ -1834,7 +1971,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
               />
             </div>
           )}
-          {gameplayImplemented && movementSummary && (
+          {movementToolsEnabled && movementSummary && gameState.matchIdentity?.gameSystem.id !== 'age-of-sigmar' && (
             <div className={`context-panel-view ${contextPanel === 'movement' ? '' : 'hidden'}`}>
               <MovementPanel
                 summary={movementSummary}
@@ -1843,7 +1980,41 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
               />
             </div>
           )}
-          {gameplayImplemented && activeTool === 'smart-move' && (
+          {gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar' && selectedUnit
+            && selectedUnitDefinition && selectedAosMovement && aosMovementPhaseActive && (
+            <div className={`context-panel-view ${contextPanel === 'movement' ? '' : 'hidden'}`}>
+              <AosMovementPanel
+                unitName={selectedUnitDefinition.name}
+                moveCharacteristic={selectedUnitDefinition.movementAllowance}
+                availability={selectedAosMovement}
+                summary={movementSummary}
+                status={aosUnitMovementStatus(gameState, selectedUnit.id)}
+                activeMethod={(activeTool === 'move' ? 'manual'
+                  : activeTool === 'smart-move' ? 'smart' : null) satisfies AosMovementMethod | null}
+                message={aosMovementMessage ?? undefined}
+                onChoose={chooseAosMovementAction}
+                onMethodChange={(method) => changeTool(method === 'manual' ? 'move' : 'smart-move')}
+                onConfirm={() => {
+                  const preview = reduceGameCommand(loadedRuntime, gameState, { type: 'movement/confirmed' })
+                  if (preview === gameState) {
+                    setAosMovementMessage('Confirm rejected: check coherency, movement allowance, collisions, and enemy combat range.')
+                    return
+                  }
+                  dispatch({ type: 'movement/confirmed' })
+                  setActiveTool('select')
+                  setAosMovementMessage('Movement confirmed.')
+                  setContextPanel('movement')
+                }}
+                onCancel={() => {
+                  dispatch({ type: 'movement/cancelled' })
+                  setAosMovementMessage('Movement cancelled. The revealed roll remains available for this action.')
+                  setContextPanel('movement')
+                }}
+                onClose={() => setContextPanel('inspector')}
+              />
+            </div>
+          )}
+          {movementToolsEnabled && activeTool === 'smart-move' && (
             <div className={`context-panel-view ${contextPanel === 'smart-move' ? '' : 'hidden'}`}>
               <SmartMovePanel
             selectedCount={smartMoveSession?.modelIds.length ?? 0}
@@ -1922,9 +2093,13 @@ function createSmartMoveRequestFactory(
   coherencyPolicy: CoherencyPolicy,
   movementPolicy: MovementPolicyConfig,
   movementRemaining: Record<string, number>,
+  actionContext?: import('./domain/types').ResolvedMovementActionContext,
 ): (target: SmartMoveRequest['target']) => SmartMoveRequest {
+  const passOver = new Set(actionContext?.passOverModelIds ?? [])
   return (target) => ({
-    allModels: gameState.models,
+    allModels: gameState.models.map((model) => passOver.has(model.id)
+      ? { ...model, canPassOverModels: true }
+      : model),
     units: gameState.units,
     battlefield: gameState.battlefield,
     terrainFeatures: gameState.battlefieldFeatures,
@@ -1934,6 +2109,7 @@ function createSmartMoveRequestFactory(
     movementRemaining,
     coherencyPolicy,
     movementPolicy,
+    separationConstraints: actionContext?.separationConstraints,
   })
 }
 
@@ -1982,5 +2158,6 @@ function describePlacementViolation(violation: CandidateFormationViolation): str
     case 'COHERENCY_FAILED': return 'The complete unit is not coherent.'
     case 'MODEL_NOT_FOUND': return 'Model data is incomplete.'
     case 'MOVEMENT_ALLOWANCE_EXCEEDED': return 'Placement does not consume movement.'
+    case 'MODEL_SEPARATION_FAILED': return `A model is within ${violation.minimumDistance}″ of an enemy model.`
   }
 }

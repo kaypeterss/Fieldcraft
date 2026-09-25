@@ -1,4 +1,4 @@
-import type { Battlefield, BattlefieldFeature, TabletopModel, TerrainPolicyConfig } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, MovementSeparationConstraint, TabletopModel, TerrainPolicyConfig } from '../domain/types'
 import {
   closestPointsBetweenFootprints,
   footprintBounds,
@@ -17,6 +17,7 @@ export interface RotationSweepRequest {
   battlefield: Battlefield
   terrainFeatures?: ReadonlyArray<BattlefieldFeature>
   terrainPolicy?: TerrainPolicyConfig
+  separationConstraints?: ReadonlyArray<MovementSeparationConstraint>
 }
 
 export interface RotationSweepResult {
@@ -63,7 +64,7 @@ export function resolveModelRotation(request: RotationSweepRequest): RotationSwe
   const direction = Math.sign(request.angularDelta)
   let travelled = 0
 
-  if (!rotationPoseLegal(model, model.rotation, obstacles, request.battlefield)) {
+  if (!rotationPoseLegal(model, model.rotation, obstacles, request.battlefield, request.separationConstraints)) {
     return { rotation: normalizeRotation(model.rotation), angularRotation: 0, blocked: true }
   }
 
@@ -78,7 +79,8 @@ export function resolveModelRotation(request: RotationSweepRequest): RotationSwe
     }
 
     const currentRotation = model.rotation + direction * travelled
-    const clearance = minimumRotationClearance(model, currentRotation, obstacles, request.battlefield)
+    const clearance = minimumRotationClearance(model, currentRotation, obstacles, request.battlefield,
+      request.separationConstraints)
     if (clearance <= CONTACT_DISTANCE_TOLERANCE) {
       const probe = Math.min(remaining, CONTACT_PROBE_ANGLE)
       const probeResult = advanceContactProbe(
@@ -87,6 +89,7 @@ export function resolveModelRotation(request: RotationSweepRequest): RotationSwe
         direction * probe,
         obstacles,
         request.battlefield,
+        request.separationConstraints,
       )
       travelled += probeResult.fraction * probe
       if (probeResult.fraction < 1) {
@@ -123,6 +126,7 @@ function minimumRotationClearance(
   rotation: number,
   obstacles: ReadonlyArray<TabletopModel>,
   battlefield: Battlefield,
+  separationConstraints?: ReadonlyArray<MovementSeparationConstraint>,
 ): number {
   const pose = poseForModel({ ...model, rotation })
   const bounds = footprintBounds(model.base, pose)
@@ -139,7 +143,10 @@ function minimumRotationClearance(
       obstacle.base,
       poseForModel(obstacle),
     )
-    clearance = Math.min(clearance, closest.distance)
+    const required = separationConstraints?.find((constraint) => constraint.duringMovement
+      && constraint.movingModelId === model.id
+      && constraint.obstacleModelId === obstacle.id)?.minimumDistance ?? 0
+    clearance = Math.min(clearance, closest.distance - required)
   }
   return Math.max(0, clearance)
 }
@@ -149,6 +156,7 @@ function rotationPoseLegal(
   rotation: number,
   obstacles: ReadonlyArray<TabletopModel>,
   battlefield: Battlefield,
+  separationConstraints?: ReadonlyArray<MovementSeparationConstraint>,
 ): boolean {
   const pose = poseForModel({ ...model, rotation })
   const bounds = footprintBounds(model.base, pose)
@@ -156,12 +164,15 @@ function rotationPoseLegal(
     || bounds.right > battlefield.width + GEOMETRY_EPSILON
     || bounds.top < -GEOMETRY_EPSILON
     || bounds.bottom > battlefield.height + GEOMETRY_EPSILON) return false
-  return obstacles.every((obstacle) => !footprintsOverlap(
-    model.base,
-    pose,
-    obstacle.base,
-    poseForModel(obstacle),
-  ))
+  return obstacles.every((obstacle) => {
+    const required = separationConstraints?.find((constraint) => constraint.duringMovement
+      && constraint.movingModelId === model.id
+      && constraint.obstacleModelId === obstacle.id)?.minimumDistance ?? 0
+    if (required > 0) return closestPointsBetweenFootprints(
+      model.base, pose, obstacle.base, poseForModel(obstacle),
+    ).distance + GEOMETRY_EPSILON >= required
+    return !footprintsOverlap(model.base, pose, obstacle.base, poseForModel(obstacle))
+  })
 }
 
 function advanceContactProbe(
@@ -170,6 +181,7 @@ function advanceContactProbe(
   angularDelta: number,
   obstacles: ReadonlyArray<TabletopModel>,
   battlefield: Battlefield,
+  separationConstraints?: ReadonlyArray<MovementSeparationConstraint>,
 ): { fraction: number } {
   let safeFraction = 0
   for (let index = 1; index <= CONTACT_PROBE_SUBDIVISIONS; index += 1) {
@@ -179,6 +191,7 @@ function advanceContactProbe(
       startRotation + angularDelta * fraction,
       obstacles,
       battlefield,
+      separationConstraints,
     )) {
       return { fraction: refineLegalRotationFraction(
         model,
@@ -186,6 +199,7 @@ function advanceContactProbe(
         angularDelta,
         obstacles,
         battlefield,
+        separationConstraints,
         safeFraction,
         fraction,
       ) }
@@ -201,6 +215,7 @@ function refineLegalRotationFraction(
   angularDelta: number,
   obstacles: ReadonlyArray<TabletopModel>,
   battlefield: Battlefield,
+  separationConstraints: ReadonlyArray<MovementSeparationConstraint> | undefined,
   safeFraction: number,
   illegalFraction: number,
 ): number {
@@ -213,6 +228,7 @@ function refineLegalRotationFraction(
       startRotation + angularDelta * middle,
       obstacles,
       battlefield,
+      separationConstraints,
     )) low = middle
     else high = middle
   }

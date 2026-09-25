@@ -284,7 +284,7 @@ function continueBattle(state: GameState, data: AosMatchStateData, command: Game
 function endPhase(state: GameState, data: AosMatchStateData, command: GameSystemCommand): GameState {
   const battle = data.battle!
   if (battle.stage !== 'TURN_PHASE' || battle.phaseIndex === undefined || battle.turnIndex === undefined
-    || command.actorPlayerId !== state.gameContext.activePlayerId) return state
+    || command.actorPlayerId !== state.gameContext.activePlayerId || state.movementSession) return state
   if (battle.phaseIndex < AOS_TURN_PHASES.length - 1) {
     const phaseIndex = battle.phaseIndex + 1
     const next = { ...battle, phaseIndex }

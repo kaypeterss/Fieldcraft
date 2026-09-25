@@ -25,9 +25,51 @@ export function reduceGameCommand(
       if (!authorization.allowed) return state
       return gameReducer(state, {
         ...action,
+        modelIds: authorization.actionContext
+          ? Object.keys(authorization.actionContext.movementAllowanceByModel)
+          : action.modelIds,
         movementPolicy: authorization.movementPolicy,
         movementAllowanceByModel: authorization.remainingByModel,
+        actionContext: authorization.actionContext,
       })
+    }
+    case 'movement/confirmed': {
+      const session = state.movementSession
+      if (!session) return state
+      const authorization = authorizeMovement(runtime, state, session.modelIds)
+      if (!authorization.allowed
+        || authorization.actionContext?.id !== session.actionContext?.id) return state
+      if (session.actionContext) {
+        const unit = state.units.find((candidate) => candidate.id === session.actionContext!.unitId)
+        const coherencyPolicy = unit
+          ? coherencyPolicyFor(runtime.gameSystem.coherency, getUnitCoherencyPolicy(state, unit))
+          : undefined
+        const validation = validateCandidateFormation({
+          allModels: activeBattlefieldModels(state),
+          battlefield: state.battlefield,
+          terrainFeatures: state.battlefieldFeatures,
+          terrainPolicy: state.terrainPolicy,
+          positions: Object.fromEntries(session.modelIds.map((id) => {
+            const model = state.models.find((candidate) => candidate.id === id)!
+            return [id, model.position]
+          })),
+          rotations: Object.fromEntries(session.modelIds.map((id) => {
+            const model = state.models.find((candidate) => candidate.id === id)!
+            return [id, model.rotation]
+          })),
+          separationConstraints: session.actionContext.separationConstraints,
+          ...(session.actionContext.requireCoherency && unit && coherencyPolicy
+            ? { coherency: { unit, policy: coherencyPolicy } } : {}),
+        })
+        if (!validation.valid) return state
+      }
+      const after = gameReducer(state, action)
+      if (after === state || after.actionHistory.length === state.actionHistory.length || !session.actionContext) return after
+      return runtime.gameSystem.movement.commitAction?.({
+        before: state,
+        after,
+        context: session.actionContext,
+      }) ?? after
     }
     case 'movement/validatedCandidateApplied': {
       const modelIds = Object.keys(action.finalPositions)
@@ -79,9 +121,20 @@ export function reduceGameCommand(
           movementAllowances: authorization.remainingByModel,
         },
         ...(unit && coherencyPolicy ? { coherency: { unit, policy: coherencyPolicy } } : {}),
+        separationConstraints: authorization.actionContext?.separationConstraints,
       })
       if (!validation.valid) return state
-      return gameReducer(state, { ...action, movementUsed })
+      const after = gameReducer(state, {
+        ...action,
+        movementUsed,
+        actionContext: authorization.actionContext,
+      })
+      if (after === state || after.actionHistory.length === state.actionHistory.length || !authorization.actionContext) return after
+      return runtime.gameSystem.movement.commitAction?.({
+        before: state,
+        after,
+        context: authorization.actionContext,
+      }) ?? after
     }
     case 'score/eventRecorded':
       return authorizeCommand(runtime, state, 'SCORE', [action.playerId]) ? gameReducer(state, action) : state

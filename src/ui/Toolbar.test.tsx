@@ -5,7 +5,7 @@ import { Toolbar } from './Toolbar'
 afterEach(() => cleanup())
 
 describe('Toolbar interaction layers', () => {
-  it('keeps Select active while Spatial is independently enabled', () => {
+  it('keeps Select active while Analysis is independently enabled', () => {
     render(<Toolbar
       activeTool="select"
       spatialEnabled
@@ -19,10 +19,10 @@ describe('Toolbar interaction layers', () => {
     />)
 
     expect(screen.getByRole('button', { name: /Select/ }).getAttribute('aria-pressed')).toBe('true')
-    expect(screen.getByRole('button', { name: /Spatial/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: /Analysis/ }).getAttribute('aria-pressed')).toBe('true')
   })
 
-  it('represents Smart Move, Spatial overlay state, and the viewed panel independently', () => {
+  it('represents Smart Move, Analysis overlay state, and the viewed panel independently', () => {
     render(<Toolbar
       activeTool="smart-move"
       spatialEnabled
@@ -36,14 +36,14 @@ describe('Toolbar interaction layers', () => {
       onResetCamera={vi.fn()}
     />)
 
-    const spatial = screen.getByRole('button', { name: /Spatial/ })
+    const spatial = screen.getByRole('button', { name: /Analysis/ })
     expect(screen.getByRole('button', { name: /Smart Move/ }).getAttribute('aria-pressed')).toBe('true')
     expect(spatial.getAttribute('aria-pressed')).toBe('true')
     expect(spatial.classList.contains('panel-open')).toBe(true)
     expect(spatial.classList.contains('state-active')).toBe(true)
   })
 
-  it('toggles Spatial without replacing the primary pointer tool', () => {
+  it('toggles Analysis without replacing the primary pointer tool', () => {
     const onToolChange = vi.fn()
     const onSpatialToggle = vi.fn()
     render(<Toolbar
@@ -58,7 +58,7 @@ describe('Toolbar interaction layers', () => {
       onResetCamera={vi.fn()}
     />)
 
-    fireEvent.click(screen.getByRole('button', { name: /Spatial/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Analysis/ }))
     expect(onSpatialToggle).toHaveBeenCalledOnce()
     expect(onToolChange).not.toHaveBeenCalled()
   })
@@ -94,7 +94,7 @@ describe('Toolbar interaction layers', () => {
       onLifecycleToggle={vi.fn()} onResetCamera={vi.fn()} />)
 
     expect(screen.getByRole('button', { name: /Select/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Spatial/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Analysis/ })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Smart Move/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /Dice/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /Lifecycle/ })).toBeNull()
@@ -108,5 +108,16 @@ describe('Toolbar interaction layers', () => {
     expect(screen.queryByRole('button', { name: /Smart Move/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /Dice/ })).toBeNull()
     expect(screen.getByRole('button', { name: /Lifecycle/ })).toBeTruthy()
+  })
+
+  it('keeps Move visible but explains when no movement action is ready', () => {
+    render(<Toolbar activeTool="select" spatialEnabled={false} diceOpen={false} lifecycleOpen={false}
+      gameplayToolsEnabled moveEnabled={false} moveDisabledReason="Choose an action first."
+      smartMoveEnabled={false} smartMoveDisabledReason="Choose an action first."
+      onToolChange={vi.fn()} onSpatialToggle={vi.fn()} onDiceToggle={vi.fn()}
+      onLifecycleToggle={vi.fn()} onResetCamera={vi.fn()} />)
+    const move = screen.getByRole('button', { name: /^Move/ })
+    expect(move.hasAttribute('disabled')).toBe(true)
+    expect(move.getAttribute('title')).toBe('Choose an action first.')
   })
 })

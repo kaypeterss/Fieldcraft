@@ -1,4 +1,4 @@
-import type { Battlefield, BattlefieldFeature, Pose, TabletopModel, TerrainPolicyConfig } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, MovementSeparationConstraint, Pose, TabletopModel, TerrainPolicyConfig } from '../domain/types'
 import { firstCirclePathCollisionT } from './geometry/circles'
 import {
   circleFootprintRadiusInches,
@@ -8,6 +8,8 @@ import {
   footprintsOverlap,
   poseForModel,
   sweepFootprintTranslation,
+  sweepFootprintTranslationWithClearance,
+  closestPointsBetweenFootprints,
 } from './geometry/footprints'
 import { distanceBetween, type Point } from './geometry/point'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
@@ -32,6 +34,7 @@ export interface RigidTranslationRequest {
   terrainPolicy?: TerrainPolicyConfig
   remainingMovement?: ReadonlyMap<string, number>
   movementEnvelopes?: ReadonlyMap<string, { startPose: Pose; allowance: number }>
+  separationConstraints?: ReadonlyArray<MovementSeparationConstraint>
 }
 
 interface ObstacleContact {
@@ -78,7 +81,8 @@ function resolveRigidTranslationForModels(
   let distanceUsed = 0
   const legalOffset = (offset: Point) => {
     const positions = positionsAtOffset(movingModels, offset)
-    return isProposedPlacementValid(allModels, positions, request.terrainFeatures, request.terrainPolicy)
+    return isProposedPlacementValid(allModels, positions, request.terrainFeatures, request.terrainPolicy,
+      request.separationConstraints)
       && isFormationInsideBattlefield(movingModels, positions, battlefield)
       && isFormationInsideMovementEnvelopes(movingModels, positions, movementEnvelopes)
   }
@@ -119,6 +123,7 @@ function resolveRigidTranslationForModels(
       allModels,
       request.terrainFeatures,
       request.terrainPolicy,
+      request.separationConstraints,
     )
     const contactFraction = Math.min(
       boundaryContacts[0]?.fraction ?? 1,
@@ -233,6 +238,7 @@ function obstacleContactCandidates(
   allModels: ReadonlyArray<TabletopModel>,
   terrainFeatures?: ReadonlyArray<BattlefieldFeature>,
   terrainPolicy?: TerrainPolicyConfig,
+  separationConstraints?: ReadonlyArray<MovementSeparationConstraint>,
 ): ObstacleContact[] {
   const candidates: ObstacleContact[] = []
 
@@ -253,10 +259,14 @@ function obstacleContactCandidates(
       )
       if (movingModel.canPassOverModels && obstacle.ownerId !== 'terrain' && !destinationOverlaps) continue
 
+      const minimumDistance = separationConstraints?.find((constraint) => constraint.duringMovement
+        && constraint.movingModelId === movingModel.id
+        && constraint.obstacleModelId === obstacle.id)?.minimumDistance ?? 0
       if (movingModel.base.shape === 'circle' && obstacle.base.shape === 'circle') {
         const radius = circleFootprintRadiusInches(movingModel.base)
         const obstacleRadius = circleFootprintRadiusInches(obstacle.base)
-        const fraction = firstCirclePathCollisionT(start, end, obstacle.position, radius + obstacleRadius)
+        const fraction = firstCirclePathCollisionT(start, end, obstacle.position,
+          radius + obstacleRadius + minimumDistance)
         if (fraction === null) continue
         candidates.push({
           movingModel,
@@ -267,7 +277,14 @@ function obstacleContactCandidates(
         continue
       }
 
-      const contact = sweepFootprintTranslation(
+      const contact = minimumDistance > 0 ? sweepFootprintTranslationWithClearance(
+        movingModel.base,
+        poseForModel(movingModel, start),
+        translation,
+        obstacle.base,
+        poseForModel(obstacle),
+        minimumDistance,
+      ) : sweepFootprintTranslation(
         movingModel.base,
         poseForModel(movingModel, start),
         translation,
@@ -424,6 +441,7 @@ function isProposedPlacementValid(
   proposedPositions: ReadonlyMap<string, Point>,
   terrainFeatures?: ReadonlyArray<BattlefieldFeature>,
   terrainPolicy?: TerrainPolicyConfig,
+  separationConstraints?: ReadonlyArray<MovementSeparationConstraint>,
 ): boolean {
   const movingIds = new Set(proposedPositions.keys())
   const movingModels = allModels.filter((model) => movingIds.has(model.id))
@@ -438,6 +456,15 @@ function isProposedPlacementValid(
         obstacle.base,
         poseForModel(obstacle),
       )) return false
+      const minimumDistance = separationConstraints?.find((constraint) => constraint.atDestination
+        && constraint.movingModelId === movingModel.id
+        && constraint.obstacleModelId === obstacle.id)?.minimumDistance ?? 0
+      if (minimumDistance > 0 && closestPointsBetweenFootprints(
+        movingModel.base,
+        poseForModel(movingModel, movingPosition),
+        obstacle.base,
+        poseForModel(obstacle, proposedPositions.get(obstacle.id) ?? obstacle.position),
+      ).distance + GEOMETRY_EPSILON < minimumDistance) return false
     }
   }
   return true

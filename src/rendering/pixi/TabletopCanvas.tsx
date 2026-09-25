@@ -8,7 +8,7 @@ import {
   TextStyle,
   type FederatedPointerEvent,
 } from 'pixi.js'
-import type { BattlefieldFeature, Footprint, GameState, MovementPolicyConfig, Pose, TabletopModel } from '../../domain/types'
+import type { BattlefieldFeature, Footprint, GameState, MovementPolicyConfig, MovementSeparationConstraint, Pose, TabletopModel } from '../../domain/types'
 import { isPointInsideBattlefield } from '../../engine/geometry/battlefield'
 import type { Point } from '../../engine/geometry/point'
 import {
@@ -33,10 +33,15 @@ import type { SmartMoveResult } from '../../engine/smartMove'
 import type { CoherencyResult } from '../../engine/coherency'
 import type { ModelPickerTarget } from '../../tools/modelPicker'
 import { shortestSignedAngularDelta } from '../../engine/rotation'
-import { resolveModelPointerDown, resolveTabletopPointerDown } from '../../tools/pointerInput'
+import { primaryToolAllowsMovement, resolveModelPointerDown, resolveTabletopPointerDown } from '../../tools/pointerInput'
 import { deriveSmartMoveGhosts } from '../../tools/smartMoveGhosts'
 import { BattlefieldSizeBadge } from '../../ui/BattlefieldSizeBadge'
-import { objectiveControlAreaPresentation } from '../../tools/battlefieldPresentation'
+import {
+  objectiveControlAreaPresentation,
+  PRESENTATION_ANNOTATION_EVENT_MODE,
+  type BoardOverlayPreferences,
+  type UnitBattlefieldPresentation,
+} from '../../tools/battlefieldPresentation'
 
 interface TabletopCanvasProps {
   gameState: GameState
@@ -56,6 +61,11 @@ interface TabletopCanvasProps {
   lifecyclePlacementActive: boolean
   lifecyclePlacementPreviews: Array<{ model: TabletopModel; pose: Pose; valid: boolean }>
   lifecyclePlacementCoherency: Array<{ models: TabletopModel[]; result: CoherencyResult }>
+  unitPresentations?: readonly UnitBattlefieldPresentation[]
+  boardOverlays: BoardOverlayPreferences
+  developmentPresentation?: boolean
+  showDeploymentZones: boolean
+  movementRuleAssistance?: readonly MovementSeparationConstraint[]
   deploymentZoneHighlightRole?: 'attacker' | 'defender'
   deploymentZoneChoiceId?: string | null
   deploymentForbiddenRegion?: { areas: Point[][]; distance: number } | null
@@ -207,7 +217,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
           latestSmartTargetRef.current = point
           updateSmartTargetMarker(world, smartTargetMarkerRef, point)
           propsRef.current.onSmartMoveTargetLock(point)
-        } else {
+        } else if (propsRef.current.activeTool === 'select') {
           if (!propsRef.current.gameState.movementSession) {
             const start = screenToWorld(event.global, cameraRef.current)
             if (isPointInsideBattlefield(start, propsRef.current.gameState.battlefield)) {
@@ -397,7 +407,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
   useEffect(() => {
     const world = worldRef.current
     if (world) drawScene(world, propsRef, dragRef, rotationDragRef, placementDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
-  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult, props.lifecyclePlacementActive, props.lifecyclePlacementPreviews, props.lifecyclePlacementCoherency, props.deploymentZoneHighlightRole, props.deploymentZoneChoiceId, props.deploymentForbiddenRegion, props.placementHoveredModelId])
+  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult, props.lifecyclePlacementActive, props.lifecyclePlacementPreviews, props.lifecyclePlacementCoherency, props.unitPresentations, props.boardOverlays, props.showDeploymentZones, props.movementRuleAssistance, props.deploymentZoneHighlightRole, props.deploymentZoneChoiceId, props.deploymentForbiddenRegion, props.placementHoveredModelId])
 
   useEffect(() => {
     if (props.resetCameraSignal > 0) fitCamera()
@@ -419,9 +429,11 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
               ? props.smartMoveTargetLocked
                 ? 'Target locked · click battlefield to reposition · Enter or Apply Move'
                 : 'Move pointer to preview · click battlefield or press Enter to lock'
+          : props.activeTool === 'move'
+            ? 'Move · drag model to translate · drag gold handle to rotate · Enter confirms · Esc cancels'
           : props.spatialOverlay
-            ? 'Spatial overlay · drag models or gold handle normally · Ctrl/Cmd selects unit'
-          : 'Drag model to move · drag gold handle to rotate · Shift multi-select · Ctrl/Cmd unit · Ctrl/Cmd+Z undo'}
+            ? 'Analysis overlay · Select changes selection only · Ctrl/Cmd selects unit'
+          : 'Select only · click or box-select · Shift multi-select · Ctrl/Cmd unit · Ctrl/Cmd+Z undo'}
       </div>
     </div>
   )
@@ -465,7 +477,9 @@ function drawScene(
   grid.eventMode = 'none'
   world.addChild(grid)
 
-  drawDeploymentZones(world, props.gameState, props.deploymentZoneHighlightRole, props.deploymentZoneChoiceId)
+  if (props.showDeploymentZones) {
+    drawDeploymentZones(world, props.gameState, props.deploymentZoneHighlightRole, props.deploymentZoneChoiceId)
+  }
   if (props.deploymentForbiddenRegion) drawDeploymentForbiddenRegion(world, props.deploymentForbiddenRegion)
 
   for (const feature of props.gameState.battlefieldFeatures ?? []) {
@@ -491,6 +505,9 @@ function drawScene(
   if (props.spatialOverlay?.mode === 'visibility' && props.spatialOverlay.visibility) {
     drawVisibility(world, props.spatialOverlay.visibility)
   }
+  if (props.boardOverlays.automaticRuleAssistance && (props.movementRuleAssistance?.length ?? 0) > 0) {
+    drawMovementRuleAssistance(world, props.spatialModels, props.movementRuleAssistance ?? [])
+  }
 
   for (const model of models) {
     const colors = OWNER_COLORS[model.ownerId] ?? { fill: 0x8f9290, rim: 0xcfd3d0 }
@@ -513,6 +530,8 @@ function drawScene(
 
     const shapeLayer = new Container()
     shapeLayer.rotation = model.rotation
+    const movementStatus = props.unitPresentations?.find((entry) => entry.unitId === model.unitId)
+    const movementUsed = movementStatus?.statusLabel && movementStatus.statusLabel !== 'Ready to move'
 
     if (measuringA || measuringB) {
       shapeLayer.addChild(drawLocalFootprint(new Graphics(), model.base).stroke({
@@ -527,8 +546,8 @@ function drawScene(
     shapeLayer.addChild(
       footprintShadow,
       drawLocalFootprint(new Graphics(), model.base)
-        .fill(colors.fill)
-        .stroke({ color: colors.rim, width: 0.08 }),
+        .fill({ color: colors.fill, alpha: movementUsed ? 0.58 : 1 })
+        .stroke({ color: colors.rim, width: 0.08, alpha: movementUsed ? 0.62 : 1 }),
     )
     if (selected) {
       const selectionKeyline = drawLocalFootprint(new Graphics(), model.base)
@@ -551,19 +570,21 @@ function drawScene(
     }
     token.addChild(shapeLayer)
 
-    const label = new Text({
-      text: model.label ?? '',
-      style: new TextStyle({ fontFamily: 'Arial', fontSize: 16, fontWeight: '700', fill: 0xffffff }),
-      resolution: 3,
-    })
-    label.anchor.set(0.5)
-    const labelRadius = Math.max(
-      localBounds.right - localBounds.left,
-      localBounds.bottom - localBounds.top,
-    ) / 2
-    label.scale.set(Math.max(0.27, labelRadius * 0.48) / 16)
-    label.eventMode = 'none'
-    token.addChild(label)
+    if (props.developmentPresentation) {
+      const label = new Text({
+        text: model.label ?? '',
+        style: new TextStyle({ fontFamily: 'Arial', fontSize: 16, fontWeight: '700', fill: 0xffffff }),
+        resolution: 3,
+      })
+      label.anchor.set(0.5)
+      const labelRadius = Math.max(
+        localBounds.right - localBounds.left,
+        localBounds.bottom - localBounds.top,
+      ) / 2
+      label.scale.set(Math.max(0.27, labelRadius * 0.48) / 16)
+      label.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
+      token.addChild(label)
+    }
 
     token.on('pointerdown', (event: FederatedPointerEvent) => {
       event.stopPropagation()
@@ -657,7 +678,12 @@ function drawScene(
         )
       if (!setsEqual(nextSelection, currentProps.selectedIds)) currentProps.onSelectionChange(new Set(nextSelection))
       if (!nextSelection.has(model.id)) return
-      const participantIds = activeSessionIds ? new Set(activeSessionIds) : nextSelection
+      if (!primaryToolAllowsMovement(currentProps.activeTool)) return
+      const participantIds = activeSessionIds
+        ? currentProps.gameState.movementSession?.actionContext
+          ? new Set([...nextSelection].filter((id) => activeSessionIds.includes(id)))
+          : new Set(activeSessionIds)
+        : nextSelection
       const draggedModels = currentProps.gameState.models
         .filter((candidate) => participantIds.has(candidate.id))
         .map((candidate) => ({ ...candidate, position: { ...candidate.position } }))
@@ -681,7 +707,7 @@ function drawScene(
     world.addChild(token)
 
     const activeSessionIds = props.gameState.movementSession?.modelIds
-    const canRotate = props.activeTool === 'select'
+    const canRotate = primaryToolAllowsMovement(props.activeTool)
       && selected
       && props.selectedIds.size === 1
       && (!activeSessionIds || (activeSessionIds.length === 1 && activeSessionIds[0] === model.id))
@@ -748,11 +774,13 @@ function drawScene(
       angleLabel.anchor.set(0.5, 1)
       angleLabel.scale.set(0.38 / 14)
       angleLabel.position.set(handlePosition.x, handlePosition.y - 0.55)
-      angleLabel.eventMode = 'none'
+      angleLabel.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
       angleLabel.zIndex = 102
       world.addChild(connector, rotationHandle, angleLabel)
     }
   }
+
+  drawUnitBattlefieldLabels(world, props, props.spatialModels)
 
   if (props.spatialOverlay?.mode === 'coherency' && props.spatialOverlay.coherency) {
     drawCoherencyStatus(world, props.spatialModels, props.spatialOverlay.coherency.models)
@@ -784,7 +812,9 @@ function drawScene(
     preview.position.set(placement.pose.position.x, placement.pose.position.y)
     preview.rotation = placement.pose.rotation
     const hovered = props.placementHoveredModelId === placement.model.id
-    const color = hovered ? 0xf1c969 : placement.valid ? 0x72d6a1 : 0xff7d6d
+    const color = hovered ? 0xf1c969
+      : !props.boardOverlays.automaticRuleAssistance ? 0xaab8b1
+        : placement.valid ? 0x72d6a1 : 0xff7d6d
     const measuringA = props.activeTool === 'measure'
       && measurementTargetIncludesModel(props.measurementTargetA, placement.model.id, props.gameState)
     const measuringB = props.activeTool === 'measure'
@@ -868,6 +898,82 @@ function drawScene(
   if (selectionBox?.active) drawSelectionBox(world, selectionBox.start, selectionBox.current)
 }
 
+function drawUnitBattlefieldLabels(
+  world: Container,
+  props: TabletopCanvasProps,
+  models: readonly TabletopModel[],
+) {
+  if (!props.boardOverlays.unitLabels && !props.boardOverlays.movementStatus) return
+  for (const presentation of props.unitPresentations ?? []) {
+    const unitModels = models.filter((model) => presentation.modelIds.includes(model.id))
+    if (unitModels.length === 0) continue
+    const left = Math.min(...unitModels.map((model) => footprintBounds(model.base, poseForModel(model)).left))
+    const right = Math.max(...unitModels.map((model) => footprintBounds(model.base, poseForModel(model)).right))
+    const top = Math.min(...unitModels.map((model) => footprintBounds(model.base, poseForModel(model)).top))
+    const text = [props.boardOverlays.unitLabels ? presentation.name : '',
+      props.boardOverlays.movementStatus ? presentation.statusIcon ?? '' : ''].filter(Boolean).join('  ')
+    if (!text) continue
+    const badge = new Text({
+      text,
+      style: new TextStyle({
+        fontFamily: 'Arial', fontSize: 12, fontWeight: '700', fill: 0xe3ece7,
+        stroke: { color: 0x101916, width: 5 },
+      }),
+      resolution: 3,
+    })
+    badge.anchor.set(0.5, 1)
+    badge.scale.set(0.62 / 12)
+    badge.position.set((left + right) / 2, top - 0.28)
+    // Labels are annotations, never interaction targets. Pointer input must
+    // continue to the model/canvas underneath (Move, Measure, Smart Move, etc.).
+    badge.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
+    badge.zIndex = 120
+    const detail = new Text({
+      text: [presentation.statusLabel, presentation.statusDetail].filter(Boolean).join(' · '),
+      style: new TextStyle({
+        fontFamily: 'Arial', fontSize: 11, fontWeight: '600', fill: 0xdce9e3,
+        stroke: { color: 0x101916, width: 5 },
+      }),
+      resolution: 3,
+    })
+    detail.anchor.set(0.5, 0)
+    detail.scale.set(0.52 / 11)
+    detail.position.set((left + right) / 2, top - 0.18)
+    // Selection can reveal the detail line without making the annotation
+    // pointer-interactive.
+    detail.visible = unitModels.some((model) => props.selectedIds.has(model.id))
+    detail.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
+    detail.zIndex = 121
+    world.addChild(badge, detail)
+  }
+}
+
+function drawMovementRuleAssistance(
+  world: Container,
+  models: readonly TabletopModel[],
+  constraints: readonly MovementSeparationConstraint[],
+) {
+  const byId = new Map(models.map((model) => [model.id, model]))
+  for (const constraint of constraints) {
+    const moving = byId.get(constraint.movingModelId)
+    const obstacle = byId.get(constraint.obstacleModelId)
+    if (!moving || !obstacle || !constraint.atDestination) continue
+    const outline = exclusionOutlineForTargetFootprint(
+      obstacle,
+      moving.base,
+      moving.rotation,
+      constraint.minimumDistance,
+    )
+    if (outline.length < 3) continue
+    const forbidden = new Graphics()
+      .poly(outline.flatMap((point) => [point.x, point.y]))
+      .fill({ color: 0x1b2220, alpha: 0.1 })
+      .stroke({ color: 0xc4cec9, alpha: 0.58, width: 0.065 })
+    forbidden.eventMode = 'none'
+    world.addChild(forbidden)
+  }
+}
+
 function drawDeploymentZones(world: Container, gameState: GameState, highlightRole?: 'attacker' | 'defender', choiceId?: string | null) {
   for (const zone of gameState.resolvedMatchConfiguration?.deploymentZones ?? []) {
     const color = zone.ownerRole === 'attacker' ? 0xd76565 : 0x6397dc
@@ -890,7 +996,7 @@ function drawDeploymentZones(world: Container, gameState: GameState, highlightRo
         label.anchor.set(0.5)
         label.scale.set(0.65 / 18)
         label.position.set(center.x / first.length, center.y / first.length)
-        label.eventMode = 'none'
+        label.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
         world.addChild(label)
       }
     }
@@ -915,7 +1021,7 @@ function drawDeploymentForbiddenRegion(world: Container, region: { areas: Point[
     label.anchor.set(0, 0.5)
     label.scale.set(0.38 / 13)
     label.position.set(anchor.x + 0.12, anchor.y - 0.18)
-    label.eventMode = 'none'
+    label.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
     world.addChild(label)
   }
 }
@@ -928,7 +1034,8 @@ function drawBattlefieldFeature(
   panRef: React.MutableRefObject<{ start: Point; camera: Point } | null>,
   cameraRef: React.MutableRefObject<CameraState>,
 ) {
-  const permanentObjectiveArea = objectiveControlAreaPresentation(feature)
+  const permanentObjectiveArea = props.boardOverlays.objectiveAreas
+    ? objectiveControlAreaPresentation(feature) : null
   if (permanentObjectiveArea) {
     const controlZone = drawLocalFootprint(new Graphics(), permanentObjectiveArea.footprint)
       .fill({ color: 0xf1c969, alpha: permanentObjectiveArea.fillAlpha })
@@ -969,16 +1076,21 @@ function drawBattlefieldFeature(
     child.eventMode = 'none'
     root.addChild(child)
   }
-  const label = new Text({
-    text: feature.name,
-    style: new TextStyle({ fontFamily: 'Arial', fontSize: 16, fontWeight: '700', fill: baseColor }),
-    resolution: 3,
-  })
-  label.anchor.set(0.5)
-  label.scale.set(0.55 / 16)
-  label.position.set(0, footprintBounds(feature.baseArea, localPose).bottom + 0.55)
-  label.eventMode = 'none'
-  root.addChild(label)
+  const showLabel = props.selectedFeatureId === feature.id || props.selectedObjectiveId === feature.id
+    || (isObjective && props.boardOverlays.objectiveLabels)
+    || (isTerrain && props.boardOverlays.terrainLabels)
+  if (showLabel) {
+    const label = new Text({
+      text: feature.name,
+      style: new TextStyle({ fontFamily: 'Arial', fontSize: 16, fontWeight: '700', fill: baseColor }),
+      resolution: 3,
+    })
+    label.anchor.set(0.5)
+    label.scale.set(0.55 / 16)
+    label.position.set(0, footprintBounds(feature.baseArea, localPose).bottom + 0.55)
+    label.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
+    root.addChild(label)
+  }
   root.on('pointerdown', (event: FederatedPointerEvent) => {
     event.stopPropagation()
     if (event.button !== 0) {
@@ -1160,7 +1272,7 @@ function drawCoherencyStatus(
       warning.anchor.set(0.5)
       warning.scale.set(0.31 / 16)
       warning.position.set(model.position.x + markerRadius * 0.78, model.position.y - markerRadius * 0.78 - 0.01)
-      warning.eventMode = 'none'
+      warning.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
       world.addChild(marker, warning)
     }
   }
@@ -1226,7 +1338,7 @@ function drawMeasurementPointTarget(
   text.anchor.set(0.5)
   text.scale.set(0.3 / 16)
   text.position.set(point.x + 0.3, point.y - 0.3)
-  text.eventMode = 'none'
+  text.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
   world.addChild(marker, text)
 }
 
@@ -1279,6 +1391,6 @@ function drawMeasurement(world: Container, from: Point, to: Point, distance: num
     0.15,
   ).fill(0xf1c969)
   badge.eventMode = 'none'
-  text.eventMode = 'none'
+  text.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
   world.addChild(badge, text)
 }

@@ -33,7 +33,7 @@ export function DiceHistory({ history, players }: DiceHistoryProps) {
         }
         return <details key={entry.id}>
           <summary>
-            <strong>{entry.count}D{entry.sides}</strong>
+            <strong>{entry.label ?? `${entry.count}D${entry.sides}`}</strong>
             <span>{context} · total {entry.total}</span>
             {entry.successThreshold !== undefined && <small>{entry.successes} at {entry.successThreshold}+</small>}
           </summary>

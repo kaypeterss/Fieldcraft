@@ -13,6 +13,7 @@ export interface CreateDiceRollRecordRequest {
   playerId: string
   gameContext: GameContext
   result: DicePoolResult
+  label?: string
 }
 
 export function createDiceRollRecord(request: CreateDiceRollRecordRequest): DiceRollRecord {
@@ -27,6 +28,7 @@ export function createDiceRollRecord(request: CreateDiceRollRecordRequest): Dice
     turnSequence: request.gameContext.turnSequence,
     turnId: request.gameContext.turnId,
     ...(request.gameContext.phase ? { phase: request.gameContext.phase } : {}),
+    ...(request.label ? { label: request.label } : {}),
     ...cloneDicePool(request.result),
   }
 }

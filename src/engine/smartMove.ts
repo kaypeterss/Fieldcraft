@@ -1,4 +1,4 @@
-import type { Battlefield, BattlefieldFeature, MovementPolicyConfig, PoseTrajectory, TabletopModel, TerrainPolicyConfig, Unit } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, MovementPolicyConfig, MovementSeparationConstraint, PoseTrajectory, TabletopModel, TerrainPolicyConfig, Unit } from '../domain/types'
 import {
   projectCandidateModels,
   validateCandidateFormation,
@@ -58,6 +58,7 @@ export interface SmartMoveRequest {
   movementRemaining: Readonly<Record<string, number>>
   coherencyPolicy?: CoherencyPolicy
   movementPolicy?: MovementPolicyConfig
+  separationConstraints?: ReadonlyArray<MovementSeparationConstraint>
   /** Optional wall-clock search allowance. The UI worker sets this per intent. */
   searchBudgetMs?: number
 }
@@ -544,6 +545,7 @@ function solveRotationVariant(
   const validation = validateCandidateFormation({
     allModels: request.allModels, battlefield: request.battlefield,
     terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
+    separationConstraints: request.separationConstraints,
     positions: solved.positions, rotations,
     reachability: {
       movementCosts: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementCost])),
@@ -725,7 +727,8 @@ function planCommonMaximumTranslation(
       y: model.position.y + translation.y,
     }
     const path = findDirectPath({ model, destination, obstacles: stationaryObstacles, battlefield: request.battlefield,
-      terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy }, metrics)
+      terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
+      ...pathSeparationFor(request, model.id) }, metrics)
     if (!path || path.path.length !== 2 || Math.abs(path.distance - commonAdvance) > GEOMETRY_EPSILON) {
       return { reasons: [path ? 'COLLISION' : fastPathFailureReason(model, destination, request)] }
     }
@@ -764,7 +767,8 @@ function planDirectMaximumProgress(
     const destination = maximumDirectProgressPosition(request, model)
     const advance = distanceBetween(model.position, destination)
     const path = findDirectPath({ model, destination, obstacles: stationaryObstacles, battlefield: request.battlefield,
-      terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy }, metrics)
+      terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
+      ...pathSeparationFor(request, model.id) }, metrics)
     if (!path || (advance > GEOMETRY_EPSILON && path.path.length !== 2)) {
       return { reasons: [path ? 'COLLISION' : fastPathFailureReason(model, destination, request)] }
     }
@@ -837,6 +841,7 @@ function validateFastPathPlan(
     allModels: request.allModels,
     battlefield: request.battlefield,
     terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
+    separationConstraints: request.separationConstraints,
     positions,
     reachability: {
       movementCosts: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementCost])),
@@ -1083,6 +1088,7 @@ function generateTargetOrderedCandidates(
       battlefield: request.battlefield,
       terrainFeatures: request.terrainFeatures,
       terrainPolicy: request.terrainPolicy,
+      ...pathSeparationFor(request, model.id),
     }
     let foundPath = findDirectPath(pathRequest, metrics)
     if (!foundPath && detourCandidatesTested < detourCandidateLimit) {
@@ -1336,6 +1342,7 @@ function validateCompleteFallbackCandidate(
     allModels: request.allModels,
     battlefield: request.battlefield,
     terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
+    separationConstraints: request.separationConstraints,
     positions,
     reachability: {
       movementCosts: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementCost])),
@@ -1426,6 +1433,7 @@ function planTemplate(
       allModels: request.allModels,
       battlefield: request.battlefield,
       terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
+      separationConstraints: request.separationConstraints,
       positions,
       reachability: { movementCosts, movementAllowances },
       ...(request.coherencyPolicy
@@ -1535,6 +1543,7 @@ function assignModelsToSlots(
         battlefield: request.battlefield,
         terrainFeatures: request.terrainFeatures,
         terrainPolicy: request.terrainPolicy,
+        ...pathSeparationFor(request, model.id),
       }
       let path = findDirectPath(pathRequest, metrics)
       if (!path && detourCandidatesTested < detourCandidateLimit) {
@@ -1824,6 +1833,19 @@ function findDirectPath(request: ModelPathRequest, metrics: SolverMetrics): Mode
   return result
 }
 
+function pathSeparationFor(request: SmartMoveRequest, modelId: string) {
+  const constraints = request.separationConstraints?.filter((constraint) =>
+    constraint.movingModelId === modelId) ?? []
+  return {
+    traversalMinimumSeparation: Object.fromEntries(constraints
+      .filter((constraint) => constraint.duringMovement)
+      .map((constraint) => [constraint.obstacleModelId, constraint.minimumDistance])),
+    destinationMinimumSeparation: Object.fromEntries(constraints
+      .filter((constraint) => constraint.atDestination)
+      .map((constraint) => [constraint.obstacleModelId, constraint.minimumDistance])),
+  }
+}
+
 function selectFallbackAlternatives(
   candidates: ReadonlyArray<SmartMoveAssignment>,
   maximumAlternatives = SMART_MOVE_FALLBACK_MAX_ALTERNATIVES,
@@ -1876,7 +1898,8 @@ function addValidationFailures(
     if (violation.type === 'OUT_OF_BOUNDS') failures.add('BATTLEFIELD')
     if (violation.type === 'TERRAIN_FINISH_FORBIDDEN'
       || violation.type === 'COLLIDES_WITH_STATIONARY_MODEL'
-      || violation.type === 'CANDIDATE_INTERNAL_OVERLAP') failures.add('COLLISION')
+      || violation.type === 'CANDIDATE_INTERNAL_OVERLAP'
+      || violation.type === 'MODEL_SEPARATION_FAILED') failures.add('COLLISION')
     if (violation.type === 'MOVEMENT_ALLOWANCE_EXCEEDED') failures.add('MOVEMENT_LIMIT')
     if (violation.type === 'COHERENCY_FAILED') failures.add('COHERENCY')
     if (violation.type === 'MODEL_NOT_FOUND') failures.add('INVALID_SELECTION')

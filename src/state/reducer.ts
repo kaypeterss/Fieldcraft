@@ -47,6 +47,7 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         id: action.sessionId,
         movementPolicy: normalizeMovementPolicy(action.movementPolicy),
         movementAllowanceByModel: action.movementAllowanceByModel,
+        actionContext: action.actionContext,
         modelIds: models.map((model) => model.id),
         referenceStart,
         referencePath: [{ ...referenceStart }],
@@ -67,8 +68,9 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       const session = state.movementSession
       if (!session) return state
       const requestedIds = Object.keys(action.positions)
-      if (!sameIdSet(requestedIds, session.modelIds)) return state
-      const translations = session.modelIds.map((modelId) => {
+      if (requestedIds.length === 0 || requestedIds.some((id) => !session.modelIds.includes(id))
+        || (!session.actionContext && !sameIdSet(requestedIds, session.modelIds))) return state
+      const translations = requestedIds.map((modelId) => {
         const model = state.models.find((candidate) => candidate.id === modelId)
         const requested = action.positions[modelId]
         return model && requested
@@ -103,14 +105,15 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
           }))
         : undefined
       const resolution = resolveRigidTranslation({
-        allModels: activeBattlefieldModels(state),
-        modelIds: session.modelIds,
+        allModels: movementModelsForSession(state, session),
+        modelIds: requestedIds,
         translation,
         battlefield: state.battlefield,
         terrainFeatures: state.battlefieldFeatures,
         terrainPolicy: state.terrainPolicy,
         remainingMovement,
         movementEnvelopes,
+        separationConstraints: session.actionContext?.separationConstraints,
       })
       const nextSession: MovementSession = {
         ...session,
@@ -160,7 +163,8 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
 
     case 'movement/rotationRequested': {
       const session = state.movementSession
-      if (!session || session.modelIds.length !== 1 || session.modelIds[0] !== action.modelId) return state
+      if (!session || !session.modelIds.includes(action.modelId)
+        || (!session.actionContext && session.modelIds.length !== 1)) return state
       const model = state.models.find((candidate) => candidate.id === action.modelId)
       if (!model || !Number.isFinite(action.rotation)) return state
       const movement = session.models[model.id]
@@ -181,14 +185,15 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         maximumAngularDistance,
       )
       const resolution = resolveModelRotation({
-        allModels: activeBattlefieldModels(state),
+        allModels: movementModelsForSession(state, session),
         modelId: model.id,
         angularDelta,
         battlefield: state.battlefield,
         terrainFeatures: state.battlefieldFeatures,
         terrainPolicy: state.terrainPolicy,
+        separationConstraints: session.actionContext?.separationConstraints,
       })
-      const allowance = getMovementAllowance(state, model)
+      const allowance = movementAllowanceForSession(session, state, model)
       const requestedPose = { position: model.position, rotation: resolution.rotation }
       const projected = session.movementPolicy.type === 'movement-envelope'
         ? projectPoseIntoMovementEnvelope(model.base, movement.startPose, requestedPose, allowance)
@@ -197,12 +202,14 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
         ? { ...candidate, rotation: resolution.rotation }
         : candidate)
       const retreatResolution = resolveRigidTranslation({
-        allModels: rotatedModels,
+        allModels: rotatedModels.map((candidate) => session.actionContext?.passOverModelIds.includes(candidate.id)
+          ? { ...candidate, canPassOverModels: true } : candidate),
         modelIds: [model.id],
         translation: projected.retreat,
         battlefield: state.battlefield,
         terrainFeatures: state.battlefieldFeatures,
         terrainPolicy: state.terrainPolicy,
+        separationConstraints: session.actionContext?.separationConstraints,
       })
       const finalPosition = retreatResolution.positions.get(model.id) ?? model.position
       const finalRotation = session.movementPolicy.type !== 'movement-envelope'
@@ -265,7 +272,7 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
           || Math.abs(shortestSignedAngularDelta(start.rotation, current.rotation)) > GEOMETRY_EPSILON
         )
       })
-      if (!changed) return { ...state, movementSession: null }
+      if (!changed && !session.actionContext) return { ...state, movementSession: null }
 
       const beforeModels = state.models.map((model) => {
         const startPose = session.models[model.id]?.startPose
@@ -576,6 +583,7 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
           playerId: action.playerId,
           gameContext: state.gameContext,
           result: action.result,
+          label: action.label,
         })
         return {
           ...state,
@@ -630,6 +638,13 @@ export function gameReducer(state: GameState, action: GameStateAction): GameStat
       }
     }
   }
+}
+
+function movementModelsForSession(state: GameState, session: MovementSession) {
+  const passOver = new Set(session.actionContext?.passOverModelIds ?? [])
+  return activeBattlefieldModels(state).map((model) => passOver.has(model.id)
+    ? { ...model, canPassOverModels: true }
+    : model)
 }
 
 function sameIdSet(left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean {

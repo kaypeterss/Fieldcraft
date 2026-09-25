@@ -27,3 +27,8 @@ export function resolveModelPointerDown(
   if (activeTool === 'measure') return 'measure' as const
   return placementActive ? 'placement' as const : 'select-model' as const
 }
+
+/** Selection and movement are intentionally separate primary interactions. */
+export function primaryToolAllowsMovement(activeTool: ActiveTool): boolean {
+  return activeTool === 'move'
+}

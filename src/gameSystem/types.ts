@@ -6,6 +6,7 @@ import type {
   MovementPolicyConfig,
   TerrainPolicyConfig,
   CommittedOperation,
+  ResolvedMovementActionContext,
 } from '../domain/types'
 import type { VisibilityMode, VisibilityPolicy } from '../engine/visibility'
 
@@ -54,6 +55,18 @@ export interface MovementGrantRequest {
   gameSystemState: GameSystemOwnedState
   unitId: string
   modelIds: readonly string[]
+}
+
+export type MovementActionContextRequest = MovementGrantRequest
+
+export type MovementActionContextResolution =
+  | { allowed: true; context: ResolvedMovementActionContext }
+  | { allowed: false; reason: string }
+
+export interface MovementActionCommitRequest {
+  before: GameState
+  after: GameState
+  context: ResolvedMovementActionContext
 }
 
 export type CoherencyConfiguration =
@@ -134,6 +147,10 @@ export interface GameSystem {
     cost: MovementPolicyConfig
     /** Optional game-specific grants; both manual and assisted movement consume this same result. */
     resolveGrants?: (request: MovementGrantRequest) => MovementGrantResult
+    /** Optional named-rule adapter; manual and assisted movement share this result. */
+    resolveActionContext?: (request: MovementActionContextRequest) => MovementActionContextResolution
+    /** Records named-rule consequences after the generic move commits atomically. */
+    commitAction?: (request: MovementActionCommitRequest) => GameState
   }
   coherency: CoherencyConfiguration
   terrain: TerrainPolicyConfig

@@ -23,6 +23,7 @@ import {
   footprintsOverlap,
   normalizeRotation,
   pointWithinFootprintOffset,
+  sweepFootprintTranslationWithClearance,
   transformFootprintPoint,
   validateFootprint,
 } from './footprints'
@@ -80,6 +81,21 @@ describe('generic footprint circle parity', () => {
 })
 
 describe('static non-circular footprint geometry', () => {
+  it('sweeps to an exact requested edge clearance without tunnelling', () => {
+    const contact = sweepFootprintTranslationWithClearance(
+      rectangle,
+      createPose({ x: 1, y: 5 }),
+      { x: 10, y: 0 },
+      ellipse,
+      createPose({ x: 9, y: 5 }),
+      3,
+    )
+    expect(contact).not.toBeNull()
+    const acceptedPose = createPose({ x: 1 + 10 * contact!.fraction, y: 5 })
+    expect(closestPointsBetweenFootprints(rectangle, acceptedPose, ellipse, createPose({ x: 9, y: 5 })).distance)
+      .toBeCloseTo(3, 6)
+  })
+
   it('computes exact rotated bounds for ellipses, rectangles, and polygons', () => {
     expect(footprintBounds(ellipse, createPose({ x: 5, y: 5 }, Math.PI / 2))).toEqual({
       left: 4.5, top: 4, right: 5.5, bottom: 6,

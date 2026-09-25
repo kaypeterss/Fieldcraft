@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { ActiveTool } from '../ui/Toolbar'
-import { resolveModelPointerDown, resolveTabletopPointerDown } from './pointerInput'
+import { primaryToolAllowsMovement, resolveModelPointerDown, resolveTabletopPointerDown } from './pointerInput'
 import { selectionForModelPointerDown } from './selection'
 
-const tools: ActiveTool[] = ['select', 'measure', 'smart-move']
+const tools: ActiveTool[] = ['select', 'move', 'measure', 'smart-move']
 
 describe('tabletop pointer priority', () => {
   it.each(tools)('routes middle mouse to camera pan while %s is active', (tool) => {
@@ -48,5 +48,12 @@ describe('tabletop pointer priority', () => {
   it('keeps Visibility picking ahead of staged-placement commits', () => {
     expect(resolveModelPointerDown('select', 0, true, true)).toBe('pick-model')
     expect(resolveModelPointerDown('measure', 0, true, true)).toBe('pick-model')
+  })
+
+  it('keeps Select and Move as distinct primary interactions', () => {
+    expect(resolveTabletopPointerDown('select', 0)).toEqual({ kind: 'tool', tool: 'select' })
+    expect(resolveTabletopPointerDown('move', 0)).toEqual({ kind: 'tool', tool: 'move' })
+    expect(primaryToolAllowsMovement('select')).toBe(false)
+    expect(primaryToolAllowsMovement('move')).toBe(true)
   })
 })

@@ -531,7 +531,22 @@ export function sweepFootprintTranslation(
   obstacleFootprint: Footprint,
   obstaclePose: Pose,
 ): FootprintSweepContact | null {
+  return sweepFootprintTranslationWithClearance(
+    movingFootprint, movingPose, translation, obstacleFootprint, obstaclePose, 0,
+  )
+}
+
+/** Continuous fixed-orientation sweep that stops at an exact edge separation. */
+export function sweepFootprintTranslationWithClearance(
+  movingFootprint: Footprint,
+  movingPose: Pose,
+  translation: Point,
+  obstacleFootprint: Footprint,
+  obstaclePose: Pose,
+  minimumDistance: number,
+): FootprintSweepContact | null {
   assertFinitePoint(translation, 'Sweep translation')
+  assertNonNegativeFinite(minimumDistance, 'Sweep minimum distance')
   if (lengthSquared(translation) <= GEOMETRY_EPSILON ** 2) return null
 
   const poseAt = (fraction: number): Pose => createPose(
@@ -548,7 +563,10 @@ export function sweepFootprintTranslation(
   let fraction = 0
   let previousNormal: Point | null = null
 
-  if (overlapsAt(0)) {
+  const initialClosest = closestPointsBetweenFootprints(
+    movingFootprint, movingPose, obstacleFootprint, obstaclePose,
+  )
+  if (overlapsAt(0) || initialClosest.distance <= minimumDistance + SWEEP_DISTANCE_TOLERANCE) {
     const normal = sweepContactNormal(
       movingFootprint,
       movingPose,
@@ -574,7 +592,7 @@ export function sweepFootprintTranslation(
       previousNormal = scale(separation, 1 / separationLength)
     }
 
-    if (closest.distance <= SWEEP_DISTANCE_TOLERANCE) {
+    if (closest.distance <= minimumDistance + SWEEP_DISTANCE_TOLERANCE) {
       const normal = sweepContactNormal(
         movingFootprint,
         pose,
@@ -592,11 +610,21 @@ export function sweepFootprintTranslation(
     const closingSpeed = -dot(translation, normal)
     if (closingSpeed <= GEOMETRY_EPSILON) return null
 
-    const step = closest.distance / closingSpeed
+    const step = Math.max(0, closest.distance - minimumDistance) / closingSpeed
     const previousFraction = fraction
     fraction += step
     if (fraction >= 1) {
-      if (!overlapsAt(1)) return null
+      const endPose = poseAt(1)
+      const endClosest = closestPointsBetweenFootprints(
+        movingFootprint, endPose, obstacleFootprint, obstaclePose,
+      )
+      if (!overlapsAt(1) && endClosest.distance + SWEEP_DISTANCE_TOLERANCE >= minimumDistance) return null
+      if (minimumDistance > 0 && !overlapsAt(1)) {
+        return refineSweepClearanceContact(
+          movingFootprint, movingPose, translation, obstacleFootprint, obstaclePose,
+          minimumDistance, previousFraction, 1, previousNormal,
+        )
+      }
       return refineSweepContact(
         movingFootprint,
         movingPose,
@@ -967,6 +995,35 @@ function refineSweepContact(
       obstacleFootprint,
       obstaclePose,
       fallbackNormal,
+    ),
+  }
+}
+
+function refineSweepClearanceContact(
+  movingFootprint: Footprint,
+  movingPose: Pose,
+  translation: Point,
+  obstacleFootprint: Footprint,
+  obstaclePose: Pose,
+  minimumDistance: number,
+  safeFraction: number,
+  illegalFraction: number,
+  fallbackNormal: Point | null,
+): FootprintSweepContact {
+  let low = Math.max(0, safeFraction)
+  let high = Math.min(1, illegalFraction)
+  for (let iteration = 0; iteration < 52; iteration += 1) {
+    const middle = (low + high) / 2
+    const pose = createPose(add(movingPose.position, scale(translation, middle)), movingPose.rotation)
+    const closest = closestPointsBetweenFootprints(movingFootprint, pose, obstacleFootprint, obstaclePose)
+    if (closest.distance < minimumDistance) high = middle
+    else low = middle
+  }
+  const contactPose = createPose(add(movingPose.position, scale(translation, low)), movingPose.rotation)
+  return {
+    fraction: low,
+    normal: sweepContactNormal(
+      movingFootprint, contactPose, translation, obstacleFootprint, obstaclePose, fallbackNormal,
     ),
   }
 }

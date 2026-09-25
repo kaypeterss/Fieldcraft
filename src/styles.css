@@ -375,7 +375,7 @@ button { font: inherit; }
 .segmented-control button:hover, .preset-grid button:hover { color: #cdd8d3; background: rgba(255,255,255,.045); }
 .segmented-control button.active, .preset-grid button.active { color: #dff6ff; border-color: rgba(120,185,209,.35); background: rgba(76,140,168,.23); }
 .segmented-control[aria-label="Coherency policy source"] { grid-template-columns: repeat(2, 1fr); }
-.segmented-control[aria-label="Spatial visualization mode"] { grid-template-columns: repeat(3, 1fr); }
+.segmented-control[aria-label="Analysis visualization mode"] { grid-template-columns: repeat(3, 1fr); }
 .visibility-policy { grid-template-columns: repeat(3, 1fr); }
 .segmented-control button:disabled { cursor: not-allowed; opacity: .45; }
 .preset-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-top: 9px; }
@@ -395,6 +395,11 @@ button { font: inherit; }
 .spatial-policy-summary dd { color: #c3cec8; }
 .spatial-geometry-summary dd { max-width: 174px; text-align: right; }
 .spatial-checkbox-field { display: flex; align-items: center; gap: 7px; margin-top: 10px; color: #708078; font-size: 9px; }
+.board-overlays { margin-top: 15px; padding-top: 2px; border-top: 1px solid var(--line); }
+.board-overlay-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 10px; }
+.board-overlay-grid .spatial-checkbox-field { min-width: 0; line-height: 1.25; }
+.board-overlay-grid .spatial-checkbox-field:last-child { grid-column: 1 / -1; }
+.board-overlay-grid input:disabled { opacity: .65; }
 .number-input-wrap { display: flex; align-items: center; gap: 5px; }
 .number-input-wrap input { width: 64px; padding: 6px 7px; border: 1px solid var(--line); border-radius: 4px; outline: none; color: #d7e1dc; background: rgba(255,255,255,.025); font: 600 11px 'Barlow Condensed', sans-serif; }
 .number-input-wrap input:focus { border-color: rgba(120,185,209,.5); }
@@ -421,6 +426,16 @@ button { font: inherit; }
 .movement-panel dt { color: #718079; }
 .movement-panel dd { margin: 0; color: #cbd8d2; font: 600 12px 'Barlow Condensed', sans-serif; }
 .movement-handoff-hint { margin: -2px 0 11px; color: #708078; font-size: 8px; line-height: 1.45; }
+.movement-action-choices { display: grid; gap: 7px; margin: 10px 0; }
+.movement-action-choices button { width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; color: #a8b8b0; background: rgba(255,255,255,.025); cursor: pointer; text-align: left; font-size: 9px; font-weight: 700; }
+.movement-action-choices button.active { color: #dff6ff; border-color: rgba(139,212,238,.38); background: rgba(76,140,168,.24); }
+.aos-movement-panel > .apply-smart-move { width: 100%; margin-top: 8px; }
+.movement-choice-label { display: block; margin: 10px 0 5px; color: #718079; font: 700 8px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.movement-method-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.movement-method-choices button { min-height: 31px; border: 1px solid var(--line); border-radius: 4px; background: rgba(255,255,255,.025); color: #9dadA5; font: 600 10px 'Barlow Condensed', sans-serif; }
+.movement-method-choices button.active { border-color: rgba(241,201,105,.7); color: #f1c969; background: rgba(241,201,105,.08); }
+.movement-method-choices button:disabled { opacity: .38; cursor: not-allowed; }
+.movement-action-flag { margin: 9px 0 0; padding: 6px 8px; border: 1px solid rgba(241,201,105,.28); border-radius: 4px; color: #f1c969; background: rgba(241,201,105,.06); font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .1em; text-align: center; }
 .movement-actions { display: grid; grid-template-columns: .8fr 1.2fr; gap: 7px; }
 .movement-actions button { padding: 8px; border-radius: 4px; cursor: pointer; font-size: 9px; font-weight: 700; }
 .cancel-move { border: 1px solid var(--line); color: #8c9a93; background: transparent; }
