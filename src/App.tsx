@@ -84,13 +84,26 @@ import { MatchIdentityHeader } from './ui/MatchIdentityHeader'
 import { SaveAsDialog } from './ui/SaveAsDialog'
 import { MatchInfoPanel } from './ui/MatchInfoPanel'
 import { DeploymentPanel, type DeploymentPlacementView } from './ui/DeploymentPanel'
-import { aosDeploymentPlacementRules, aosDeploymentState, validateAosDeploymentPlacements } from './gameSystem/ageOfSigmar/deployment'
+import { aosDeploymentPlacementRules, aosDeploymentState, aosMatchStateData, validateAosDeploymentPlacements } from './gameSystem/ageOfSigmar/deployment'
 import { rollDice, systemRandomSource } from './engine/dice'
-import { aosBattleState, aosRoundResources, currentAosPhase } from './gameSystem/ageOfSigmar/battleRound'
+import { resolveDiceSequence } from './engine/diceSequence'
+import { aosBattleState, aosRoundResources, currentAosPhase, hasUnresolvedRequiredAosFights } from './gameSystem/ageOfSigmar/battleRound'
 import { AosBattleRoundPanel } from './ui/AosBattleRoundPanel'
 import { postMovementCommitView } from './ui/movementInteractionState'
 import { aosPhaseProgressionBlockReason } from './ui/aosPhaseProgression'
 import { AosMovementPanel, type AosMovementMethod } from './ui/AosMovementPanel'
+import { AosCombatPanel } from './ui/AosCombatPanel'
+import {
+  aosCasualtyCandidateModelIds,
+  aosUnitDamagePresentation,
+  deriveAosFightPresentationFocus,
+  deriveAosCombatModelMarkers,
+} from './gameSystem/ageOfSigmar/combatPresentation'
+import {
+  aosCombatDiceStages,
+  type AosCombatDiceMode,
+  type AosCombatDiceReview,
+} from './gameSystem/ageOfSigmar/combatDicePresentation'
 import { createAosChargePileInDemo } from './gameSystem/ageOfSigmar/chargePileInDemo'
 import {
   aosMovementRuleAssistance,
@@ -103,8 +116,22 @@ import {
   type AosMovementActionId,
 } from './gameSystem/ageOfSigmar/movement'
 import {
+  aosAttackCountForTarget,
+  aosAttackProfileOptions,
+  aosAttackSequenceDefinition,
+  aosAttackSequenceModifiers,
+  aosDamageAllocationOptions,
+  aosCoherencyCorrectionOptions,
+  aosFightAvailability,
+  aosUnitAllocatedDamage,
+  aosUnitProfile,
+  ensureAosCombatState,
+  type AosDeclaredAttack,
+} from './gameSystem/ageOfSigmar/combat'
+import {
   defaultBoardOverlayPreferences,
   deploymentZonesVisible,
+  deriveActionFocusPresentation,
   deriveUnitBattlefieldPresentations,
   type BoardOverlayPreferences,
 } from './tools/battlefieldPresentation'
@@ -134,7 +161,7 @@ interface DeploymentPlacementSession {
   formationRotation: number
 }
 
-type ContextPanelId = 'inspector' | 'spatial' | 'lifecycle' | 'dice' | 'smart-move' | 'movement' | 'match-info' | 'deployment' | 'battle-round'
+type ContextPanelId = 'inspector' | 'spatial' | 'lifecycle' | 'dice' | 'smart-move' | 'movement' | 'combat' | 'match-info' | 'deployment' | 'battle-round'
 
 const FORMATION_ROTATION_STEP = Math.PI / 12
 
@@ -393,6 +420,12 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   }>>([])
   const [deploymentPlacement, setDeploymentPlacement] = useState<DeploymentPlacementSession | null>(null)
   const [aosMovementMessage, setAosMovementMessage] = useState<string | null>(null)
+  const [combatProfileFocus, setCombatProfileFocus] = useState<{ profileId: string; targetUnitId: string | null } | null>(null)
+  const [battlefieldHoveredModelId, setBattlefieldHoveredModelId] = useState<string | null>(null)
+  const [combatDiceMode, setCombatDiceMode] = useState<AosCombatDiceMode>('quick')
+  const [combatDiceReview, setCombatDiceReview] = useState<AosCombatDiceReview | null>(null)
+  const [revealedCombatDiceStage, setRevealedCombatDiceStage] = useState(0)
+  const [selectedCasualtyModelId, setSelectedCasualtyModelId] = useState<string | null>(null)
   const [deploymentTerritoryHoverId, setDeploymentTerritoryHoverId] = useState<string | null>(null)
   const aosDeployment = useMemo(() => aosDeploymentState(gameState), [gameState])
   const aosBattle = useMemo(() => aosBattleState(gameState), [gameState])
@@ -528,8 +561,37 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const selectedUnitDefinition = selectedUnit ? getUnitDefinition(gameState, selectedUnit) : undefined
   const aosMovementPhaseId = aosBattle ? currentAosPhase(aosBattle)?.id : undefined
   const aosMovementPhaseActive = aosMovementPhaseId === 'MOVEMENT_PHASE' || aosMovementPhaseId === 'CHARGE_PHASE' || aosMovementPhaseId === 'COMBAT_PHASE'
+  const aosCombatPhaseActive = aosMovementPhaseId === 'COMBAT_PHASE'
+  const aosData = useMemo(() => aosMatchStateData(gameState), [gameState])
+  const aosCombat = useMemo(() => aosData ? ensureAosCombatState(aosData, gameState) : null, [aosData, gameState])
   const selectedAosMovement = selectedUnit && gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar'
     ? aosMovementAvailability(gameState, selectedUnit.id) : null
+  const activeFightUnit = aosCombat?.activeFight
+    ? gameState.units.find((unit) => unit.id === aosCombat.activeFight?.unitId) : undefined
+  const combatDisplayUnit = activeFightUnit ?? selectedUnit
+  const combatDisplayDefinition = combatDisplayUnit ? getUnitDefinition(gameState, combatDisplayUnit) : undefined
+  const selectedFightAvailability = combatDisplayUnit ? aosFightAvailability(gameState, combatDisplayUnit.id) : null
+  const combatProfileOptions = combatDisplayUnit ? aosAttackProfileOptions(gameState, combatDisplayUnit.id) : []
+  const combatPendingDamage = aosCombat?.activeFight?.pendingDamage
+  const combatAllocationOptions = useMemo(() => {
+    if (!combatPendingDamage) return []
+    if (combatPendingDamage.coherencyCorrection) return aosCoherencyCorrectionOptions(gameState, combatPendingDamage.targetUnitId)
+    const target = gameState.units.find((unit) => unit.id === combatPendingDamage.targetUnitId)
+    const health = target ? aosUnitProfile(gameState, target)?.health : undefined
+    if (health && aosUnitAllocatedDamage(gameState, combatPendingDamage.targetUnitId) + combatPendingDamage.remaining < health) return []
+    return aosDamageAllocationOptions(gameState, combatPendingDamage.targetUnitId)
+  }, [combatPendingDamage, gameState])
+  const combatCasualtyCandidates = useMemo(
+    () => aosCasualtyCandidateModelIds(combatAllocationOptions),
+    [combatAllocationOptions],
+  )
+  const currentCombatDiceReview = combatDiceReview
+    && gameState.diceHistory?.some((record) => record.id === combatDiceReview.sequenceRecordId)
+    ? combatDiceReview : null
+  const combatDiceStepping = Boolean(combatDiceMode === 'step' && currentCombatDiceReview
+    && revealedCombatDiceStage < aosCombatDiceStages(currentCombatDiceReview).length)
+  const visibleSelectedCasualtyModelId = selectedCasualtyModelId
+    && combatCasualtyCandidates.includes(selectedCasualtyModelId) ? selectedCasualtyModelId : null
   const movementToolsEnabled = (capabilities?.movement ?? gameplayImplemented) && (gameState.matchIdentity?.gameSystem.id !== 'age-of-sigmar' || aosMovementPhaseActive)
   const selectedMovementActionReady = Boolean(selectedAosMovement?.selected
     && selectedAosMovement.available.includes(selectedAosMovement.selected.actionId))
@@ -543,10 +605,18 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     }) : [], [gameState])
   const unitBattlefieldPresentations = useMemo(
     () => deriveUnitBattlefieldPresentations(
-      { ...battlefieldGameState, models: spatialModels },
-      aosMovementStatuses,
-    ),
-    [aosMovementStatuses, battlefieldGameState, spatialModels],
+      { ...battlefieldGameState, models: spatialModels }, aosMovementStatuses,
+    ).map((presentation) => {
+      const damage = isAosMatch ? aosUnitDamagePresentation(gameState, presentation.unitId) : null
+      return {
+        ...presentation,
+        ...(damage?.badgeText ? {
+          damageLabel: damage.badgeText,
+          damageDetail: `Current unit damage ${damage.currentDamage}/${damage.healthThreshold} · ${damage.untilNextSlain} more slays a model`,
+        } : {}),
+      }
+    }),
+    [aosMovementStatuses, battlefieldGameState, gameState, isAosMatch, spatialModels],
   )
   const deploymentActive = Boolean(aosDeployment && aosDeployment.phase !== 'READY_FOR_BATTLE')
   const showDeploymentZones = deploymentZonesVisible(deploymentActive, boardOverlays.deploymentZones)
@@ -698,6 +768,40 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const smartMoveAuthorization = useMemo(() => smartMoveSession
     ? authorizeMovement(loadedRuntime, gameState, smartMoveSession.modelIds)
     : null, [gameState, loadedRuntime, smartMoveSession])
+  const combatPresentationFocus = useMemo(() => {
+    return deriveAosFightPresentationFocus(
+      { ...gameState, models: spatialModels },
+      aosCombat?.activeFight,
+      combatProfileFocus,
+    )
+  }, [aosCombat?.activeFight, combatProfileFocus, gameState, spatialModels])
+  const actionFocus = useMemo(() => {
+    const movementContext = gameState.movementSession?.actionContext ?? smartMoveAuthorization?.actionContext
+    const fight = aosCombat?.activeFight
+    const actingUnitId = movementContext?.unitId ?? fight?.unitId
+    if (!actingUnitId) return null
+    const movementTargetModelIds = movementContext?.destinationConstraints.flatMap((constraint) => {
+      if (constraint.type === 'ANY_SOURCE_WITHIN_TARGETS' || constraint.type === 'EACH_SOURCE_NO_FARTHER_FROM_TARGETS') return constraint.targetModelIds
+      return constraint.targetGroups.flatMap((group) => group.modelIds)
+    }) ?? []
+    const movementTargetUnitIds = [...new Set(movementTargetModelIds.flatMap((id) => {
+      const model = gameState.models.find((candidate) => candidate.id === id)
+      return model ? [model.unitId] : []
+    }))]
+    const combatTargetUnitIds = fight?.pendingDamage ? [fight.pendingDamage.targetUnitId]
+      : combatPresentationFocus?.targetUnitId ? [combatPresentationFocus.targetUnitId] : []
+    return deriveActionFocusPresentation({ ...battlefieldGameState, models: spatialModels }, {
+      actingUnitId,
+      targetUnitIds: fight && combatTargetUnitIds.length ? combatTargetUnitIds : movementTargetUnitIds,
+      targetEnvelopeUnitIds: fight ? combatTargetUnitIds : [],
+      eligibleModelIds: combatPresentationFocus?.eligibleModelIds,
+      profileModelIds: combatPresentationFocus?.profileModelIds,
+      casualtyCandidateModelIds: combatDiceStepping ? [] : combatCasualtyCandidates,
+      casualtySelectedModelIds: visibleSelectedCasualtyModelId ? [visibleSelectedCasualtyModelId] : [],
+    })
+  }, [aosCombat?.activeFight, battlefieldGameState, combatCasualtyCandidates, combatDiceStepping, combatPresentationFocus,
+    gameState, smartMoveAuthorization?.actionContext, spatialModels, visibleSelectedCasualtyModelId])
+  const combatModelMarkers = useMemo(() => isAosMatch ? deriveAosCombatModelMarkers(gameState) : [], [gameState, isAosMatch])
   const movementRuleAssistance = useMemo(() => aosMovementRuleAssistance(
     gameState.movementSession?.actionContext ?? smartMoveAuthorization?.actionContext,
   ), [gameState.movementSession?.actionContext, smartMoveAuthorization?.actionContext])
@@ -806,7 +910,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     setSelectedIds(nextSelectedIds)
     setSelectedFeatureId(null)
     if (aosMovementPhaseActive && nextSelectedIds.size > 0 && activeTool !== 'smart-move') {
-      setContextPanel('movement')
+      setContextPanel(aosMovementPhaseId === 'COMBAT_PHASE' ? 'combat' : 'movement')
       setAosMovementMessage(null)
     }
     if (spatialMode === 'visibility' && nextSelectedIds.size === 1) {
@@ -828,7 +932,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     setSmartMoveTargeting(initialSmartMoveTargetState())
     const models = activeModels.filter((model) => nextSelectedIds.has(model.id))
     beginSmartMoveForSelection(models, gameState, gameStateRevision)
-  }, [activeModels, activeTool, aosMovementPhaseActive, beginSmartMoveForSelection, gameState, gameStateRevision, selectedObjectiveId, spatialMode, visibilityViewerId])
+  }, [activeModels, activeTool, aosMovementPhaseActive, aosMovementPhaseId, beginSmartMoveForSelection, gameState, gameStateRevision, selectedObjectiveId, spatialMode, visibilityViewerId])
 
   const handleFeatureSelectionChange = useCallback((featureId: string) => {
     setSelectedFeatureId(featureId)
@@ -916,13 +1020,13 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     cancelSmartMove()
     const postCommit = postMovementCommitView(gameState.matchIdentity?.gameSystem.id, aosMovementPhaseActive)
     setActiveTool(postCommit.activeTool)
-    setContextPanel(postCommit.contextPanel)
+    setContextPanel(aosCombat?.activeFight ? 'combat' : postCommit.contextPanel)
     if (gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar') {
       setAosMovementMessage('Movement confirmed.')
     } else {
       restartSmartMoveAfterApplyRef.current = true
     }
-  }, [activeModels, aosMovementPhaseActive, cancelSmartMove, dispatch, gameState, smartMoveAuthorization, smartMovePolicy, smartMoveSession, smartMoveUnit])
+  }, [activeModels, aosCombat?.activeFight, aosMovementPhaseActive, cancelSmartMove, dispatch, gameState, smartMoveAuthorization, smartMovePolicy, smartMoveSession, smartMoveUnit])
 
   const changeTool = useCallback((tool: ActiveTool) => {
     if (tool === activeTool) {
@@ -1009,7 +1113,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           const postCommit = postMovementCommitView(gameState.matchIdentity?.gameSystem.id, aosMovementPhaseActive)
           setActiveTool(postCommit.activeTool)
           setAosMovementMessage('Movement confirmed.')
-          setContextPanel(postCommit.contextPanel)
+          setContextPanel(aosCombat?.activeFight ? 'combat' : postCommit.contextPanel)
         }
         return
       }
@@ -1071,7 +1175,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeTool, aosMovementPhaseActive, applySmartMove, cancelSmartMove, changeTool, deploymentPlacement, dispatch, gameState, lifecyclePlacement, loadedRuntime, measurementPair, measurementStartTarget, movementToolsEnabled, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
+  }, [activeTool, aosCombat?.activeFight, aosMovementPhaseActive, applySmartMove, cancelSmartMove, changeTool, deploymentPlacement, dispatch, gameState, lifecyclePlacement, loadedRuntime, measurementPair, measurementStartTarget, movementToolsEnabled, smartMoveAsync.canApply, smartMoveTargeting, toggleSpatialOverlay, visibilityPickTarget])
 
   const handleEndTurn = useCallback(() => {
     if (gameState.movementSession) {
@@ -1560,6 +1664,130 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     setContextPanel('movement')
   }, [dispatch, dispatchAosBattleCommand, gameState, selectedAosMovement, selectedUnit, selectedUnitDefinition])
 
+  const startAosFight = useCallback(() => {
+    if (!combatDisplayUnit) return
+    setCombatProfileFocus(null)
+    setCombatDiceReview(null)
+    setRevealedCombatDiceStage(0)
+    setSelectedCasualtyModelId(null)
+    dispatchAosBattleCommand('aos/combat/start-fight', combatDisplayUnit.ownerId, { unitId: combatDisplayUnit.id })
+    setActiveTool('select')
+    setContextPanel('combat')
+  }, [combatDisplayUnit, dispatchAosBattleCommand])
+
+  const beginAosPileIn = useCallback(() => {
+    if (!combatDisplayUnit) return
+    const availability = aosMovementAvailability(gameState, combatDisplayUnit.id)
+    if (!availability.available.includes('PILE_IN')) return
+    dispatchAosBattleCommand('aos/movement/declare', combatDisplayUnit.ownerId, {
+      unitId: combatDisplayUnit.id,
+      actionId: 'PILE_IN',
+      ...(availability.inCombat && availability.eligibleTargetUnitIds?.[0]
+        ? { targetUnitId: availability.eligibleTargetUnitIds[0] } : {}),
+    })
+    setContextPanel('movement')
+  }, [combatDisplayUnit, dispatchAosBattleCommand, gameState])
+
+  const completeAosPileIn = useCallback(() => {
+    if (!aosCombat?.activeFight) return
+    dispatchAosBattleCommand('aos/combat/pile-in-complete', aosCombat.activeFight.playerId)
+    setActiveTool('select')
+    setContextPanel('combat')
+  }, [aosCombat, dispatchAosBattleCommand])
+
+  const declareAosAttacks = useCallback((allocations: AosDeclaredAttack[]) => {
+    const fight = aosCombat?.activeFight
+    if (!fight) return
+    dispatchAosBattleCommand('aos/combat/declare-attacks', fight.playerId, { allocations } as unknown as JsonValue)
+    setContextPanel('combat')
+  }, [aosCombat?.activeFight, dispatchAosBattleCommand])
+
+  const resolveAosAttacks = useCallback((profileId: string, targetUnitId: string) => {
+    const fight = aosCombat?.activeFight
+    const attacker = fight ? gameState.units.find((unit) => unit.id === fight.unitId) : undefined
+    const target = gameState.units.find((unit) => unit.id === targetUnitId)
+    const attackerProfile = attacker ? aosUnitProfile(gameState, attacker) : undefined
+    const targetProfile = target ? aosUnitProfile(gameState, target) : undefined
+    const weapon = attackerProfile?.weapons.find((candidate) => candidate.id === profileId)
+    const attacks = fight && weapon ? aosAttackCountForTarget(gameState, fight.unitId, profileId, targetUnitId) : 0
+    if (!fight || !attacker || !target || !weapon || !targetProfile || attacks < 1) return
+    let nextSequence = gameState.nextActionSequence
+    const definition = aosAttackSequenceDefinition({
+      id: `aos:${gameState.gameContext.turnId}:${attacker.id}:${profileId}:${target.id}`,
+      attacks, weapon, target: targetProfile,
+    })
+    const resolution = resolveDiceSequence(definition, systemRandomSource, aosAttackSequenceModifiers(weapon))
+    const sequenceRecordId = `dice-sequence-${nextSequence++}`
+    dispatch({ type: 'dice/sequenceRecorded', playerId: attacker.ownerId, resolution })
+    const save = resolution.stageResults.find((stage) => stage.stage.id === 'save')
+    const wound = resolution.stageResults.find((stage) => stage.stage.id === 'wound')
+    const unsaved = save?.continuationCount ?? wound?.continuationCount ?? 0
+    const criticalMortalHits = weapon.abilities?.includes('Crit (Mortal)')
+      ? resolution.stageResults[0]?.roll.finalResults.filter((value) => value === 6).length ?? 0 : 0
+    let randomDamageRecordId: string | undefined
+    let randomDamageResult: DicePoolResult | undefined
+    let normalDamage = unsaved * (Number(weapon.damage) || 0)
+    if (weapon.damage === 'D3') {
+      const damageRoll = rollDice({ count: unsaved, sides: 3 }, systemRandomSource)
+      randomDamageResult = damageRoll
+      randomDamageRecordId = `dice-${nextSequence++}`
+      normalDamage = damageRoll.total
+      dispatch({ type: 'dice/rollRecorded', playerId: attacker.ownerId, result: damageRoll,
+        label: `${weapon.name} damage` })
+    }
+    const grossDamage = normalDamage + criticalMortalHits * (Number(weapon.damage) || 0)
+    let wardRecordId: string | undefined
+    let wardResult: DicePoolResult | undefined
+    if (targetProfile.ward && grossDamage > 0) {
+      const ward = rollDice({ count: grossDamage, sides: 6, successThreshold: targetProfile.ward }, systemRandomSource)
+      wardResult = ward
+      wardRecordId = `dice-${nextSequence}`
+      dispatch({ type: 'dice/rollRecorded', playerId: target.ownerId, result: ward,
+        label: `Ward — ${getUnitDefinition(gameState, target)?.name ?? target.id}` })
+    }
+    dispatchAosBattleCommand('aos/combat/resolve-attacks', attacker.ownerId, {
+      profileId, targetUnitId, sequenceRecordId,
+      ...(randomDamageRecordId ? { randomDamageRecordId } : {}),
+      ...(wardRecordId ? { wardRecordId } : {}),
+    })
+    setCombatDiceReview({
+      attackerUnitId: attacker.id,
+      profileId,
+      targetUnitId,
+      sequenceRecordId,
+      resolution,
+      ...(save ? { thresholdContext: { save: {
+        baseThreshold: targetProfile.save,
+        effectiveThreshold: save.effectiveThreshold,
+        modifierLabel: `Rend ${weapon.rend}`,
+      } } } : {}),
+      ...(wardResult ? { ward: wardResult } : {}),
+      ...(randomDamageResult ? { damage: randomDamageResult } : {}),
+    })
+    setRevealedCombatDiceStage(0)
+    setSelectedCasualtyModelId(null)
+    setContextPanel('combat')
+  }, [aosCombat?.activeFight, dispatch, dispatchAosBattleCommand, gameState])
+
+  const allocateAosDamage = useCallback((modelId: string | null) => {
+    const pending = aosCombat?.activeFight?.pendingDamage
+    const target = pending ? gameState.units.find((unit) => unit.id === pending.targetUnitId) : undefined
+    if (!target) return
+    dispatchAosBattleCommand('aos/combat/allocate-damage', target.ownerId, modelId ? { modelId } : {})
+    setSelectedCasualtyModelId(null)
+    setActiveTool('select')
+    setContextPanel('combat')
+  }, [aosCombat?.activeFight?.pendingDamage, dispatchAosBattleCommand, gameState.units])
+
+  const chooseAosCasualtyModel = useCallback((modelId: string) => {
+    const pending = aosCombat?.activeFight?.pendingDamage
+    const target = pending ? gameState.units.find((unit) => unit.id === pending.targetUnitId) : undefined
+    const health = target ? aosUnitProfile(gameState, target)?.health : undefined
+    if (!pending || !target || !health || !combatCasualtyCandidates.includes(modelId)) return
+    setSelectedCasualtyModelId(modelId)
+    allocateAosDamage(modelId)
+  }, [allocateAosDamage, aosCombat?.activeFight?.pendingDamage, combatCasualtyCandidates, gameState])
+
   const spendAosCommandPoint = useCallback((playerId: string) => {
     dispatchAosBattleCommand('aos/resources/spend-command-points', playerId, { amount: 1 })
   }, [dispatchAosBattleCommand])
@@ -1608,13 +1836,18 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       setContextPanel('smart-move')
       return
     }
+    if (aosCombatPhaseActive && aosData && hasUnresolvedRequiredAosFights(gameState, aosData)) {
+      setContextPanel(combatDisplayUnit ? 'combat' : 'battle-round')
+      return
+    }
     dispatchAosBattleCommand('aos/battle/end-phase', gameState.gameContext.activePlayerId)
     setContextPanel('battle-round')
-  }, [dispatchAosBattleCommand, gameState.gameContext.activePlayerId, gameState.movementSession, spatialPreviewResult])
+  }, [aosCombatPhaseActive, aosData, combatDisplayUnit, dispatchAosBattleCommand, gameState, spatialPreviewResult])
 
   const phaseProgressionBlockReason = aosPhaseProgressionBlockReason(
     Boolean(gameState.movementSession),
     Boolean(spatialPreviewResult),
+    Boolean(aosCombat?.activeFight) || Boolean(aosCombatPhaseActive && aosData && hasUnresolvedRequiredAosFights(gameState, aosData)),
   )
 
   const aosProgression = useMemo(() => {
@@ -1774,11 +2007,19 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           lifecyclePlacementPreviews={placementPreviews}
           lifecyclePlacementCoherency={boardOverlays.automaticRuleAssistance ? placementCoherency : []}
           unitPresentations={unitBattlefieldPresentations}
+          actionFocus={actionFocus}
+          modelMarkers={combatModelMarkers}
+          hoveredModelId={battlefieldHoveredModelId}
           boardOverlays={boardOverlays}
           developmentPresentation={developmentControlsEnabled}
           showDeploymentZones={showDeploymentZones}
           movementRuleAssistance={movementRuleAssistance}
           movementDestinationAssistance={movementDestinationAssistance}
+          fightActive={Boolean(aosCombat?.activeFight)}
+          fightRangeAssistance={combatPresentationFocus ? {
+            targetModelIds: combatPresentationFocus.targetModelIds,
+            distance: combatPresentationFocus.attackRange,
+          } : null}
           deploymentZoneHighlightRole={aosDeployment?.phase === 'DEPLOYING'
             ? aosDeployment.currentPlayerId === aosDeployment.attackerPlayerId ? 'attacker' : 'defender'
             : undefined}
@@ -1802,6 +2043,8 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           onPlacementModelHover={deploymentPlacement ? (modelId) => setDeploymentPlacement((current) => current
             ? { ...current, hoveredModelId: modelId } : current) : undefined}
           onPlacementModelDrag={deploymentPlacement?.locked ? updateDeploymentStagedModel : undefined}
+          onModelHover={setBattlefieldHoveredModelId}
+          onCasualtyModelClick={chooseAosCasualtyModel}
             dispatch={dispatch}
           />
           {developmentControlsEnabled && (footprintDemoEnabled || orientationGapEnabled) && (
@@ -1900,6 +2143,9 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           movementAllowance={selectedUnitDefinition?.movementAllowance}
           movementUsed={selectedModelMovement?.used}
           movementRemaining={selectedModelMovement?.remaining}
+          health={selectedUnit ? aosUnitProfile(gameState, selectedUnit)?.health : undefined}
+          allocatedDamage={selectedUnit ? aosUnitAllocatedDamage(gameState, selectedUnit.id) : undefined}
+          fought={aosCombatPhaseActive && selectedUnit ? Boolean(aosCombat?.foughtUnitIds.includes(selectedUnit.id)) : undefined}
           coherencyPolicy={selectedUnitPolicy}
           coherency={selectedUnitCoherency}
               coherencyValid={selectedUnitPolicy && selectedUnitCoherency
@@ -2048,13 +2294,58 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
                   const postCommit = postMovementCommitView(gameState.matchIdentity?.gameSystem.id, aosMovementPhaseActive)
                   setActiveTool(postCommit.activeTool)
                   setAosMovementMessage('Movement confirmed.')
-                  setContextPanel(postCommit.contextPanel)
+                  setContextPanel(aosCombat?.activeFight ? 'combat' : postCommit.contextPanel)
                 }}
                 onCancel={() => {
                   dispatch({ type: 'movement/cancelled' })
                   setAosMovementMessage('Movement cancelled. The revealed roll remains available for this action.')
                   setContextPanel('movement')
                 }}
+                onClose={() => setContextPanel('inspector')}
+              />
+            </div>
+          )}
+          {gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar' && aosCombatPhaseActive
+            && combatDisplayUnit && combatDisplayDefinition && selectedFightAvailability && (
+            <div className={`context-panel-view ${contextPanel === 'combat' ? '' : 'hidden'}`}>
+              <AosCombatPanel
+                unitName={combatDisplayDefinition.name}
+                playerName={gameState.players.find((player) => player.id === combatDisplayUnit.ownerId)?.displayName ?? combatDisplayUnit.ownerId}
+                availability={selectedFightAvailability}
+                unitDamage={aosUnitDamagePresentation(gameState, combatDisplayUnit.id)}
+                fight={aosCombat?.activeFight}
+                profiles={combatProfileOptions}
+                targetNames={Object.fromEntries(gameState.units.map((unit) => [unit.id, getUnitDefinition(gameState, unit)?.name ?? unit.id]))}
+                allocatedDamage={aosCombat?.activeFight?.pendingDamage
+                  ? aosUnitAllocatedDamage(gameState, aosCombat.activeFight.pendingDamage.targetUnitId) : 0}
+                targetHealth={aosCombat?.activeFight?.pendingDamage
+                  ? (() => {
+                      const target = gameState.units.find((unit) => unit.id === aosCombat.activeFight?.pendingDamage?.targetUnitId)
+                      return target ? aosUnitProfile(gameState, target)?.health : undefined
+                    })() : undefined}
+                allocationOptions={combatAllocationOptions}
+                casualtyCandidateModelIds={combatDiceStepping ? [] : combatCasualtyCandidates}
+                selectedCasualtyModelId={visibleSelectedCasualtyModelId}
+                modelNames={Object.fromEntries(gameState.models.map((model) => [model.id, model.label ?? model.id]))}
+                onStartFight={startAosFight}
+                onBeginPileIn={beginAosPileIn}
+                onCompletePileIn={completeAosPileIn}
+                onDeclareAttacks={declareAosAttacks}
+                onResolveAttacks={resolveAosAttacks}
+                diceMode={combatDiceMode}
+                diceReview={currentCombatDiceReview?.attackerUnitId === combatDisplayUnit.id ? currentCombatDiceReview : null}
+                revealedDiceStage={revealedCombatDiceStage}
+                onDiceModeChange={setCombatDiceMode}
+                onNextDiceStage={() => setRevealedCombatDiceStage((current) => Math.min(
+                  current + 1,
+                  currentCombatDiceReview ? aosCombatDiceStages(currentCombatDiceReview).length : current + 1,
+                ))}
+                onCasualtyModelChoose={chooseAosCasualtyModel}
+                onConfirmUnitDamage={() => allocateAosDamage(null)}
+                onCasualtyModelHover={setBattlefieldHoveredModelId}
+                hoveredModelId={battlefieldHoveredModelId}
+                focusedProfileId={combatPresentationFocus?.profileId ?? null}
+                onProfileFocus={(profileId, targetUnitId) => setCombatProfileFocus(profileId ? { profileId, targetUnitId } : null)}
                 onClose={() => setContextPanel('inspector')}
               />
             </div>

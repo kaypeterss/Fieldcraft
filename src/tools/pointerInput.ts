@@ -21,9 +21,11 @@ export function resolveModelPointerDown(
   button: number,
   modelPickerActive = false,
   placementActive = false,
+  casualtyPickerActive = false,
 ) {
   if (button !== 0) return 'camera-pan' as const
   if (modelPickerActive) return 'pick-model' as const
+  if (casualtyPickerActive) return 'pick-casualty' as const
   if (activeTool === 'measure') return 'measure' as const
   return placementActive ? 'placement' as const : 'select-model' as const
 }

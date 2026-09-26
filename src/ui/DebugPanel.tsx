@@ -35,6 +35,9 @@ interface DebugPanelProps {
   movementAllowance?: number
   movementUsed?: number
   movementRemaining?: number
+  health?: number
+  allocatedDamage?: number
+  fought?: boolean
   coherencyPolicy?: CoherencyPolicy
   coherency?: CoherencyResult | null
   coherencyValid?: boolean
@@ -64,6 +67,12 @@ export function DebugPanel(props: DebugPanelProps) {
               : presence === 'OFF_BOARD' ? 'Off Board / Reserve' : 'Destroyed'}</dd></div>
             {props.unitModelCount !== undefined && <div><dt>Models</dt><dd>{props.unitModelCount}</dd></div>}
             {props.unitBaseLabel && <div><dt>Unit Bases</dt><dd>{props.unitBaseLabel}</dd></div>}
+            {props.health !== undefined && <>
+              <div><dt>Health threshold</dt><dd>{props.health}</dd></div>
+              <div><dt>Current unit damage</dt><dd>{props.allocatedDamage ?? 0} / {props.health}</dd></div>
+              <div><dt>Until next model slain</dt><dd>{Math.max(0, props.health - (props.allocatedDamage ?? 0))} more damage</dd></div>
+            </>}
+            {props.fought !== undefined && <div><dt>Combat</dt><dd>{props.fought ? 'Fought this phase' : 'Has not fought'}</dd></div>}
           </dl>
           {props.terrainRelationships && <>
             <div className="panel-section-label">CURRENT TERRAIN RELATION</div>

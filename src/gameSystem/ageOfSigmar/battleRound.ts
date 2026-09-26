@@ -3,6 +3,10 @@ import { scoreTotals } from '../../game/scoring'
 import type { GameSystemCommand } from '../types'
 import type { AosMatchStateData } from './deployment'
 import { commitOperation, createCommittedOperation } from '../../game/committedOperations'
+import { activeBattlefieldModels } from '../../game/modelPresence'
+import { getUnitDefinition } from '../../game/selectors'
+import { distanceBetweenBases } from '../../engine/spatial'
+import { aosWarscrollById, aosWarscrollIdFromDefinitionId } from './content/profiles'
 import {
   ensureAosRoundResources,
   expireAosRoundResources,
@@ -284,7 +288,8 @@ function continueBattle(state: GameState, data: AosMatchStateData, command: Game
 function endPhase(state: GameState, data: AosMatchStateData, command: GameSystemCommand): GameState {
   const battle = data.battle!
   if (battle.stage !== 'TURN_PHASE' || battle.phaseIndex === undefined || battle.turnIndex === undefined
-    || command.actorPlayerId !== state.gameContext.activePlayerId || state.movementSession) return state
+    || command.actorPlayerId !== state.gameContext.activePlayerId || state.movementSession || data.combat?.activeFight
+    || (currentAosPhase(battle)?.id === 'COMBAT_PHASE' && hasUnresolvedRequiredAosFights(state, data))) return state
   if (battle.phaseIndex < AOS_TURN_PHASES.length - 1) {
     const phaseIndex = battle.phaseIndex + 1
     const next = { ...battle, phaseIndex }
@@ -301,6 +306,20 @@ function endPhase(state: GameState, data: AosMatchStateData, command: GameSystem
     activePlayerId: state.gameContext.activePlayerId,
     turn: 2,
     phase: 'END_OF_BATTLE_ROUND',
+  })
+}
+
+export function hasUnresolvedRequiredAosFights(state: GameState, data: AosMatchStateData): boolean {
+  const fought = new Set(data.combat?.turnId === state.gameContext.turnId ? data.combat.foughtUnitIds : [])
+  const models = activeBattlefieldModels(state)
+  return state.units.some((unit) => {
+    if (fought.has(unit.id)) return false
+    const definition = getUnitDefinition(state, unit)
+    const profileId = definition ? aosWarscrollIdFromDefinitionId(definition.id) : null
+    if (!profileId || !aosWarscrollById(profileId)?.weapons.some((weapon) => weapon.type === 'melee')) return false
+    const friendly = models.filter((model) => model.unitId === unit.id)
+    return friendly.some((model) => models.some((enemy) => enemy.ownerId !== unit.ownerId
+      && distanceBetweenBases(model, enemy) <= 3 + 1e-9))
   })
 }
 

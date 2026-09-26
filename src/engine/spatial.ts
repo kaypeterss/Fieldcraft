@@ -11,6 +11,7 @@ import {
   poseForModel,
 } from './geometry/footprints'
 import type { Point } from './geometry/point'
+import { exteriorUnionOutlines, unionOutlinePolygons } from './geometry/outlineUnion'
 import { GEOMETRY_EPSILON } from './geometry/tolerance'
 
 export interface RangeQueryOptions {
@@ -66,6 +67,20 @@ export function rangeOutlineForModel(
   segmentCount?: number,
 ): Point[] {
   return footprintOffsetOutline(model.base, poseForModel(model), range, segmentCount)
+}
+
+/** Display-only frontier of the exact-footprint range union; membership remains authoritative above. */
+export function rangeEnvelopeForModels(models: readonly TabletopModel[], range: number): Point[][] {
+  const active = models.filter((model) => (model.presence ?? 'ON_BATTLEFIELD') === 'ON_BATTLEFIELD')
+  if (active.length === 1) return [rangeOutlineForModel(active[0], range)]
+  return unionOutlinePolygons(active.map((model) => rangeOutlineForModel(model, range)))
+}
+
+/** Presentation-only outer contours; combat eligibility still uses exact footprint distances. */
+export function exteriorRangeEnvelopeForModels(models: readonly TabletopModel[], range: number): Point[][] {
+  const active = models.filter((model) => (model.presence ?? 'ON_BATTLEFIELD') === 'ON_BATTLEFIELD')
+  if (active.length === 1) return [rangeOutlineForModel(active[0], range)]
+  return exteriorUnionOutlines(active.map((model) => rangeOutlineForModel(model, range)))
 }
 
 /** Exact membership counterpart to rangeOutlineForModel. */

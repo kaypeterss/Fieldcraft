@@ -1,6 +1,9 @@
 import type { BattlefieldFeature, GameState } from '../domain/types'
 import type { AosUnitMovementStatus } from '../gameSystem/ageOfSigmar/movement'
 import { featureObjectiveArea } from '../engine/battlefieldFeatures'
+import { footprintOffsetOutline, poseForModel } from '../engine/geometry/footprints'
+import { exteriorUnionOutlines } from '../engine/geometry/outlineUnion'
+import type { Point } from '../engine/geometry/point'
 import { activeBattlefieldModels } from '../game/modelPresence'
 import { getUnitDefinition } from '../game/selectors'
 
@@ -24,6 +27,91 @@ export interface UnitBattlefieldPresentation {
   statusIcon?: string
   statusLabel?: string
   statusDetail?: string
+  /** Optional unit-level state badge; never marks an individual model. */
+  damageLabel?: string
+  damageDetail?: string
+}
+
+export interface BattlefieldModelMarker {
+  modelId: string
+  kind: 'loadout' | 'role'
+  symbol: string
+  label: string
+  profileId?: string
+}
+
+export interface BattlefieldActionFocus {
+  actingUnitId: string
+  actingModelIds: string[]
+  targetUnitIds: string[]
+  /** Explicit temporary target emphasis, independent of rule-constraint targets. */
+  targetEnvelopeUnitIds: string[]
+  targetModelIds: string[]
+  eligibleModelIds: string[]
+  profileModelIds: string[]
+  casualtyCandidateModelIds: string[]
+  casualtySelectedModelIds: string[]
+}
+
+export interface TargetUnitEnvelope {
+  unitId: string
+  outlines: Point[][]
+}
+
+/** The user can hide this aid without changing the action or its legality. */
+export function fightRangeAssistanceVisible(enabled: boolean, targetModelIds?: readonly string[]): boolean {
+  return enabled && Boolean(targetModelIds?.length)
+}
+
+/** Presentation only: actual active footprint union, with optional visual padding.
+ * This never enters target eligibility, range, collision, or authoritative state.
+ */
+export function targetUnitFootprintEnvelopes(
+  models: readonly GameState['models'][number][],
+  targetUnitIds: readonly string[],
+  presentationPadding = 0,
+): TargetUnitEnvelope[] {
+  return [...new Set(targetUnitIds)].flatMap((unitId) => {
+    const active = models.filter((model) => model.unitId === unitId
+      && (model.presence ?? 'ON_BATTLEFIELD') === 'ON_BATTLEFIELD')
+    if (active.length === 0) return []
+    return [{
+      unitId,
+      outlines: exteriorUnionOutlines(active.map((model) =>
+        footprintOffsetOutline(model.base, poseForModel(model), presentationPadding))),
+    }]
+  })
+}
+
+/** Converts authoritative IDs into a generic, geometry-free rendering contract. */
+export function deriveActionFocusPresentation(state: GameState, request?: {
+  actingUnitId?: string
+  targetUnitIds?: readonly string[]
+  targetEnvelopeUnitIds?: readonly string[]
+  eligibleModelIds?: readonly string[]
+  profileModelIds?: readonly string[]
+  casualtyCandidateModelIds?: readonly string[]
+  casualtySelectedModelIds?: readonly string[]
+}): BattlefieldActionFocus | null {
+  if (!request?.actingUnitId) return null
+  const activeModels = activeBattlefieldModels(state)
+  const actingModelIds = activeModels.filter((model) => model.unitId === request.actingUnitId).map((model) => model.id)
+  if (actingModelIds.length === 0) return null
+  const targetUnitIds = [...new Set(request.targetUnitIds ?? [])]
+  const activeIds = new Set(activeModels.map((model) => model.id))
+  const targetEnvelopeUnitIds = [...new Set(request.targetEnvelopeUnitIds ?? [])]
+    .filter((id) => targetUnitIds.includes(id) && activeModels.some((model) => model.unitId === id))
+  return {
+    actingUnitId: request.actingUnitId,
+    actingModelIds,
+    targetUnitIds,
+    targetEnvelopeUnitIds,
+    targetModelIds: activeModels.filter((model) => targetUnitIds.includes(model.unitId)).map((model) => model.id),
+    eligibleModelIds: [...new Set(request.eligibleModelIds ?? [])].filter((id) => activeIds.has(id)),
+    profileModelIds: [...new Set(request.profileModelIds ?? [])].filter((id) => activeIds.has(id)),
+    casualtyCandidateModelIds: [...new Set(request.casualtyCandidateModelIds ?? [])].filter((id) => activeIds.has(id)),
+    casualtySelectedModelIds: [...new Set(request.casualtySelectedModelIds ?? [])].filter((id) => activeIds.has(id)),
+  }
 }
 
 export function defaultBoardOverlayPreferences(development = false): BoardOverlayPreferences {

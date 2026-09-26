@@ -50,6 +50,12 @@ describe('tabletop pointer priority', () => {
     expect(resolveModelPointerDown('measure', 0, true, true)).toBe('pick-model')
   })
 
+  it('routes casualty allocation ahead of selection and tools without stealing camera pan', () => {
+    expect(resolveModelPointerDown('move', 0, false, false, true)).toBe('pick-casualty')
+    expect(resolveModelPointerDown('measure', 0, false, false, true)).toBe('pick-casualty')
+    expect(resolveModelPointerDown('move', 1, false, false, true)).toBe('camera-pan')
+  })
+
   it('keeps Select and Move as distinct primary interactions', () => {
     expect(resolveTabletopPointerDown('select', 0)).toEqual({ kind: 'tool', tool: 'select' })
     expect(resolveTabletopPointerDown('move', 0)).toEqual({ kind: 'tool', tool: 'move' })

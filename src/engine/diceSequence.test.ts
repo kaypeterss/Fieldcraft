@@ -97,4 +97,17 @@ describe('generic chained dice resolution', () => {
     }, sequenceRandom([.4]), modifiers) // rolls 3, but effective threshold is 4
     expect(result.stageResults[0]).toMatchObject({ effectiveThreshold: 4, successCount: 0 })
   })
+
+  it('lets an adapter branch a recorded pool without replacing the generic dice engine', () => {
+    const result = resolveDiceSequence(definition(), sequenceRandom([
+      .99, .7, .5, 0, // 6,5,4,1: adapter branches the 6 away
+      .99, .99, // two dice continue
+    ]), {
+      resolveContinuationCount: ({ defaultContinuationCount, roll }, context) => context.stage.id === 'a'
+        ? defaultContinuationCount - roll.finalResults.filter((value) => value === 6).length
+        : defaultContinuationCount,
+    })
+    expect(result.stageResults[0]).toMatchObject({ successCount: 3, continuationCount: 2 })
+    expect(result.stageResults[1].inputDiceCount).toBe(2)
+  })
 })

@@ -19,6 +19,13 @@ export interface DiceStageModifierContext {
  */
 export interface DiceStageModifierAdapter {
   resolveThreshold?: (baseThreshold: number, context: DiceStageModifierContext) => number
+  /** Adapter-owned branching may change what continues without changing the recorded roll. */
+  resolveContinuationCount?: (result: {
+    successCount: number
+    failureCount: number
+    defaultContinuationCount: number
+    roll: ReturnType<typeof rollDice>
+  }, context: DiceStageModifierContext) => number
 }
 
 export function beginDiceSequence(definition: DiceSequenceDefinition): DiceSequenceResolution {
@@ -58,7 +65,13 @@ export function resolveNextDiceStage(
   }
   const successCount = roll.successes ?? 0
   const failureCount = inputDiceCount - successCount
-  const continuationCount = stage.continuation === 'successes' ? successCount : failureCount
+  const defaultContinuationCount = stage.continuation === 'successes' ? successCount : failureCount
+  const continuationCount = modifiers?.resolveContinuationCount?.({
+    successCount, failureCount, defaultContinuationCount, roll,
+  }, context) ?? defaultContinuationCount
+  if (!Number.isInteger(continuationCount) || continuationCount < 0) {
+    throw new RangeError(`Continuation count for stage ${stage.id} must be a non-negative integer`)
+  }
   const stageResult: DiceStageResult = {
     stage: cloneStage(stage),
     inputDiceCount,

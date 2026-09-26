@@ -16,6 +16,7 @@ import {
   type AosMovementActionId,
   type AosMovementState,
 } from './movement'
+import { executeAosCombatCommand, isAosCombatState, type AosCombatState } from './combat'
 
 export type AosDeploymentPhase = 'ROLL_OFF' | 'CHOOSE_ROLES' | 'CHOOSE_TERRITORY' | 'DEPLOYING' | 'READY_FOR_BATTLE'
 
@@ -53,6 +54,7 @@ export interface AosMatchStateData {
   battle?: AosBattleState
   resources?: AosRoundResources
   movement?: AosMovementState
+  combat?: AosCombatState
 }
 
 export interface AosDeploymentPlacementRules {
@@ -91,6 +93,7 @@ export function executeAosCommand(state: GameState, command: GameSystemCommand):
   if (command.type.startsWith('aos/battle/') || command.type.startsWith('aos/resources/')) {
     return executeAosBattleCommand(state, data, command)
   }
+  if (command.type.startsWith('aos/combat/')) return executeAosCombatCommand(state, data, command)
   if (command.type === 'aos/movement/declare') {
     const payload = record(command.payload)
     const unitId = payload?.unitId
@@ -171,6 +174,7 @@ export function isAosMatchStateData(value: unknown): value is AosMatchStateData 
   if (value.status === 'setup') return true
   if (value.resources !== undefined && !isAosRoundResources(value.resources)) return false
   if (value.movement !== undefined && !isAosMovementState(value.movement)) return false
+  if (value.combat !== undefined && !isAosCombatState(value.combat)) return false
   if (value.status === 'battle') return isAosBattleState(value.battle)
   if (value.status !== 'deployment') return false
   if (value.deployment === undefined) return true

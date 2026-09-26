@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { TabletopModel, Unit } from '../domain/types'
 import { evaluateUnitCoherency, isCoherencyResultValid } from './coherency'
+import { createAosChargePileInDemo } from '../gameSystem/ageOfSigmar/chargePileInDemo'
 import {
   distanceBetweenBases,
   distanceFromBaseToPoint,
@@ -13,7 +14,34 @@ import {
   modelsWithinRangeOfUnit,
   rangeRadiusForBase,
   rangeOutlineForModel,
+  rangeEnvelopeForModels,
 } from './spatial'
+
+describe('unit range envelope presentation', () => {
+  it('keeps a single model identical to its proven footprint offset', () => {
+    const source = model('single', 4, 4)
+    expect(rangeEnvelopeForModels([source], 3)).toEqual([rangeOutlineForModel(source, 3)])
+  })
+
+  it('joins overlapping model ranges but keeps distant components separate', () => {
+    const joined = rangeEnvelopeForModels([model('a', 4, 4), model('b', 6, 4)], 3)
+    expect(joined).toHaveLength(1)
+    expect(joined[0].length).toBeGreaterThan(128)
+    expect(rangeEnvelopeForModels([model('a', 4, 4), model('b', 20, 4)], 3)).toHaveLength(2)
+  })
+
+  it('excludes destroyed models immediately from the range frontier', () => {
+    const survivor = model('living', 4, 4)
+    const slain = { ...model('slain', 20, 4), presence: 'DESTROYED' as const }
+    expect(rangeEnvelopeForModels([survivor, slain], 3)).toEqual([rangeOutlineForModel(survivor, 3)])
+  })
+
+  it('shows one exterior frontier for the five-model Liberators QA formation', () => {
+    const models = createAosChargePileInDemo(true).models
+    expect(rangeEnvelopeForModels(models.filter((entry) => entry.unitId === 'sce-liberators'), 3)).toHaveLength(1)
+    expect(rangeEnvelopeForModels(models.filter((entry) => entry.unitId === 'skv-rat-ogors'), 3)).toHaveLength(1)
+  })
+})
 import { measureBetweenTargets } from '../tools/measurement'
 
 function model(id: string, x: number, y: number, diameterMm = 25.4, unitId = 'unit-a'): TabletopModel {

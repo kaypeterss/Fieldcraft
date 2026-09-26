@@ -32,7 +32,12 @@ function readyForBattle(firstFinisherId = 'player-1'): GameState {
   }
   return {
     ...state,
-    models: state.models.map((model) => ({ ...model, presence: 'ON_BATTLEFIELD' as const })),
+    models: state.models.map((model, index) => ({
+      ...model,
+      presence: 'ON_BATTLEFIELD' as const,
+      // This clock fixture is intentionally out of combat; Fight tests own engagement state.
+      position: { x: model.ownerId === 'player-1' ? 5 : 35, y: 3 + (index % 10) * 2.5 },
+    })),
     gameSystemState: {
       ...state.gameSystemState!,
       data: { status: 'deployment', setup: (state.gameSystemState!.data as Record<string, JsonValue>).setup, deployment } as unknown as JsonValue,

@@ -19,8 +19,10 @@ import {
 } from '../../engine/geometry/footprints'
 import {
   exclusionOutlineForTargetFootprint,
-  rangeOutlineForModel,
+  exteriorRangeEnvelopeForModels,
+  rangeEnvelopeForModels,
 } from '../../engine/spatial'
+import { unionOutlinePolygons } from '../../engine/geometry/outlineUnion'
 import { millimetersToInches } from '../../engine/units'
 import { minimumDistanceBoundary } from '../../engine/placement'
 import type { GameStateAction } from '../../state/actions'
@@ -38,7 +40,11 @@ import { deriveSmartMoveGhosts } from '../../tools/smartMoveGhosts'
 import { BattlefieldSizeBadge } from '../../ui/BattlefieldSizeBadge'
 import {
   objectiveControlAreaPresentation,
+  fightRangeAssistanceVisible,
   PRESENTATION_ANNOTATION_EVENT_MODE,
+  targetUnitFootprintEnvelopes,
+  type BattlefieldActionFocus,
+  type BattlefieldModelMarker,
   type BoardOverlayPreferences,
   type UnitBattlefieldPresentation,
 } from '../../tools/battlefieldPresentation'
@@ -62,11 +68,16 @@ interface TabletopCanvasProps {
   lifecyclePlacementPreviews: Array<{ model: TabletopModel; pose: Pose; valid: boolean }>
   lifecyclePlacementCoherency: Array<{ models: TabletopModel[]; result: CoherencyResult }>
   unitPresentations?: readonly UnitBattlefieldPresentation[]
+  actionFocus?: BattlefieldActionFocus | null
+  modelMarkers?: readonly BattlefieldModelMarker[]
+  hoveredModelId?: string | null
   boardOverlays: BoardOverlayPreferences
   developmentPresentation?: boolean
   showDeploymentZones: boolean
   movementRuleAssistance?: readonly MovementSeparationConstraint[]
   movementDestinationAssistance?: readonly MovementDestinationConstraint[]
+  fightActive?: boolean
+  fightRangeAssistance?: { targetModelIds: readonly string[]; distance: number } | null
   deploymentZoneHighlightRole?: 'attacker' | 'defender'
   deploymentZoneChoiceId?: string | null
   deploymentForbiddenRegion?: { areas: Point[][]; distance: number } | null
@@ -84,6 +95,8 @@ interface TabletopCanvasProps {
   onLifecyclePlacementCommit: (point: Point) => void
   onPlacementModelHover?: (modelId: string | null) => void
   onPlacementModelDrag?: (modelId: string, point: Point, commit: boolean) => void
+  onModelHover?: (modelId: string | null) => void
+  onCasualtyModelClick?: (modelId: string) => void
   dispatch: (action: GameStateAction) => void
 }
 
@@ -408,7 +421,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
   useEffect(() => {
     const world = worldRef.current
     if (world) drawScene(world, propsRef, dragRef, rotationDragRef, placementDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
-  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult, props.lifecyclePlacementActive, props.lifecyclePlacementPreviews, props.lifecyclePlacementCoherency, props.unitPresentations, props.boardOverlays, props.showDeploymentZones, props.movementRuleAssistance, props.movementDestinationAssistance, props.deploymentZoneHighlightRole, props.deploymentZoneChoiceId, props.deploymentForbiddenRegion, props.placementHoveredModelId])
+  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult, props.lifecyclePlacementActive, props.lifecyclePlacementPreviews, props.lifecyclePlacementCoherency, props.unitPresentations, props.actionFocus, props.modelMarkers, props.hoveredModelId, props.boardOverlays, props.showDeploymentZones, props.movementRuleAssistance, props.movementDestinationAssistance, props.fightActive, props.fightRangeAssistance, props.deploymentZoneHighlightRole, props.deploymentZoneChoiceId, props.deploymentForbiddenRegion, props.placementHoveredModelId])
 
   useEffect(() => {
     if (props.resetCameraSignal > 0) fitCamera()
@@ -493,6 +506,11 @@ function drawScene(
   if (props.spatialOverlay?.mode === 'range' && spatialSources.length > 0) {
     drawRangeArea(world, spatialSources, props.spatialOverlay.range)
   }
+  if (fightRangeAssistanceVisible(props.boardOverlays.automaticRuleAssistance, props.fightRangeAssistance?.targetModelIds)) {
+    const assistance = props.fightRangeAssistance!
+    const targetIds = new Set(assistance.targetModelIds)
+    drawFightRangeFrontier(world, props.spatialModels.filter((model) => targetIds.has(model.id)), assistance.distance)
+  }
   if (props.spatialOverlay?.mode === 'exclusion' && spatialSources.length > 0) {
     drawExclusionArea(
       world,
@@ -509,13 +527,21 @@ function drawScene(
   if (props.boardOverlays.automaticRuleAssistance && (props.movementRuleAssistance?.length ?? 0) > 0) {
     drawMovementRuleAssistance(world, props.spatialModels, props.movementRuleAssistance ?? [])
   }
-  if (props.boardOverlays.automaticRuleAssistance && (props.movementDestinationAssistance?.length ?? 0) > 0) {
+  // Fight uses its selected target/profile frontier; pile-in destination constraints still validate authoritatively.
+  if (props.boardOverlays.automaticRuleAssistance && !props.fightActive && (props.movementDestinationAssistance?.length ?? 0) > 0) {
     drawMovementDestinationAssistance(world, props.spatialModels, props.movementDestinationAssistance ?? [])
   }
 
   for (const model of models) {
     const colors = OWNER_COLORS[model.ownerId] ?? { fill: 0x8f9290, rim: 0xcfd3d0 }
     const selected = props.selectedIds.has(model.id)
+    const hovered = props.hoveredModelId === model.id
+    const acting = props.actionFocus?.actingModelIds.includes(model.id) ?? false
+    const actionTarget = props.actionFocus?.targetModelIds.includes(model.id) ?? false
+    const eligibleAttacker = props.actionFocus?.eligibleModelIds.includes(model.id) ?? false
+    const profileCarrier = props.actionFocus?.profileModelIds.includes(model.id) ?? false
+    const casualtyCandidate = props.actionFocus?.casualtyCandidateModelIds.includes(model.id) ?? false
+    const casualtySelected = props.actionFocus?.casualtySelectedModelIds.includes(model.id) ?? false
     const measurementHighlightActive = props.activeTool === 'measure'
     const measuringA = measurementHighlightActive
       && measurementTargetIncludesModel(props.measurementTargetA, model.id, props.gameState)
@@ -524,7 +550,8 @@ function drawScene(
     const token = new Container()
     token.position.set(model.position.x, model.position.y)
     token.eventMode = 'static'
-    token.cursor = props.activeTool === 'measure' || props.visibilityPickTarget ? 'crosshair'
+    token.alpha = props.actionFocus && !acting && !actionTarget && !selected && !hovered ? 0.62 : 1
+    token.cursor = casualtyCandidate || props.activeTool === 'measure' || props.visibilityPickTarget ? 'crosshair'
       : props.activeTool === 'smart-move' ? 'pointer' : 'grab'
     const localPose = { position: { x: 0, y: 0 }, rotation: model.rotation }
     const localBounds = footprintBounds(model.base, localPose)
@@ -562,6 +589,26 @@ function drawScene(
       selectionOutline.eventMode = 'none'
       shapeLayer.addChild(selectionKeyline, selectionOutline)
     }
+    if (actionTarget && !props.actionFocus?.targetEnvelopeUnitIds.includes(model.unitId)) {
+      shapeLayer.addChild(drawLocalFootprint(new Graphics(), model.base)
+        .stroke({ color: 0xffa37f, width: 0.14, alpha: 0.98 }))
+    }
+    if (profileCarrier) {
+      shapeLayer.addChild(drawLocalFootprint(new Graphics(), model.base)
+        .stroke({ color: 0xe9edf0, width: 0.12, alpha: eligibleAttacker ? 0.48 : 0.9 }))
+    }
+    if (eligibleAttacker) {
+      shapeLayer.addChild(drawLocalFootprint(new Graphics(), model.base)
+        .stroke({ color: 0x72d6a1, width: 0.2, alpha: 1 }))
+    }
+    if (casualtyCandidate) {
+      shapeLayer.addChild(drawLocalFootprint(new Graphics(), model.base)
+        .stroke({ color: casualtySelected ? 0xffffff : 0xf1c969, width: casualtySelected ? 0.28 : 0.2, alpha: 1 }))
+    }
+    if (hovered) {
+      shapeLayer.addChild(drawLocalFootprint(new Graphics(), model.base)
+        .stroke({ color: 0xffffff, width: 0.24, alpha: 1 }))
+    }
     const visibilityRole = props.spatialOverlay?.mode === 'visibility'
       ? props.spatialOverlay.visibilityViewerId === model.id ? 'viewer'
         : props.spatialOverlay.visibilityTargetId === model.id ? 'target' : null
@@ -573,6 +620,9 @@ function drawScene(
         .stroke({ color: roleColor, width: pickHover ? 0.2 : 0.14, alpha: 0.98 }))
     }
     token.addChild(shapeLayer)
+
+    const marker = props.modelMarkers?.find((entry) => entry.modelId === model.id)
+    if (marker) drawModelMarker(token, marker, localBounds, selected || hovered)
 
     if (props.developmentPresentation) {
       const label = new Text({
@@ -598,11 +648,18 @@ function drawScene(
         event.button,
         Boolean(currentProps.visibilityPickTarget),
         currentProps.lifecyclePlacementActive,
+        (currentProps.actionFocus?.casualtyCandidateModelIds.length ?? 0) > 0,
       )
       if (modelRoute === 'camera-pan') {
         panRef.current = {
           start: { x: event.global.x, y: event.global.y },
           camera: { x: cameraRef.current.x, y: cameraRef.current.y },
+        }
+        return
+      }
+      if (modelRoute === 'pick-casualty') {
+        if (currentProps.actionFocus?.casualtyCandidateModelIds.includes(model.id)) {
+          currentProps.onCasualtyModelClick?.(model.id)
         }
         return
       }
@@ -703,9 +760,11 @@ function drawScene(
       token.cursor = 'grabbing'
     })
     token.on('pointerover', () => {
+      propsRef.current.onModelHover?.(model.id)
       if (propsRef.current.visibilityPickTarget) propsRef.current.onVisibilityPickHover(model.id)
     })
     token.on('pointerout', () => {
+      propsRef.current.onModelHover?.(null)
       if (propsRef.current.visibilityPickTarget) propsRef.current.onVisibilityPickHover(null)
     })
     world.addChild(token)
@@ -784,6 +843,9 @@ function drawScene(
     }
   }
 
+  if (props.actionFocus?.targetEnvelopeUnitIds.length) {
+    drawTargetUnitEnvelopes(world, props.spatialModels, props.actionFocus.targetEnvelopeUnitIds)
+  }
   drawUnitBattlefieldLabels(world, props, props.spatialModels)
 
   if (props.spatialOverlay?.mode === 'coherency' && props.spatialOverlay.coherency) {
@@ -915,7 +977,8 @@ function drawUnitBattlefieldLabels(
     const right = Math.max(...unitModels.map((model) => footprintBounds(model.base, poseForModel(model)).right))
     const top = Math.min(...unitModels.map((model) => footprintBounds(model.base, poseForModel(model)).top))
     const text = [props.boardOverlays.unitLabels ? presentation.name : '',
-      props.boardOverlays.movementStatus ? presentation.statusIcon ?? '' : ''].filter(Boolean).join('  ')
+      props.boardOverlays.movementStatus ? presentation.statusIcon ?? '' : '',
+      presentation.damageLabel ?? ''].filter(Boolean).join('  ')
     if (!text) continue
     const badge = new Text({
       text,
@@ -932,8 +995,12 @@ function drawUnitBattlefieldLabels(
     // continue to the model/canvas underneath (Move, Measure, Smart Move, etc.).
     badge.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
     badge.zIndex = 120
+    badge.alpha = props.actionFocus && presentation.unitId !== props.actionFocus.actingUnitId
+      && !props.actionFocus.targetUnitIds.includes(presentation.unitId) ? 0.58 : 1
     const detail = new Text({
-      text: [presentation.statusLabel, presentation.statusDetail].filter(Boolean).join(' · '),
+      text: [presentation.statusLabel,
+        ...(props.actionFocus ? [] : [presentation.statusDetail]),
+        presentation.damageDetail].filter(Boolean).join(' · '),
       style: new TextStyle({
         fontFamily: 'Arial', fontSize: 11, fontWeight: '600', fill: 0xdce9e3,
         stroke: { color: 0x101916, width: 5 },
@@ -948,6 +1015,7 @@ function drawUnitBattlefieldLabels(
     detail.visible = unitModels.some((model) => props.selectedIds.has(model.id))
     detail.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
     detail.zIndex = 121
+    detail.alpha = badge.alpha
     world.addChild(badge, detail)
   }
 }
@@ -981,22 +1049,33 @@ function drawMovementRuleAssistance(
 function drawMovementDestinationAssistance(world: Container, models: readonly TabletopModel[], constraints: readonly MovementDestinationConstraint[]) {
   const byId = new Map(models.map((model) => [model.id, model]))
   for (const constraint of constraints) {
-    const targets = constraint.type === 'ANY_SOURCE_WITHIN_EACH_TARGET_GROUP'
-      ? constraint.targetGroups.flatMap((group) => group.modelIds) : constraint.targetModelIds
-    for (const sourceId of constraint.sourceModelIds) {
-      const source = byId.get(sourceId)
-      if (!source) continue
-      const maximum = constraint.type === 'EACH_SOURCE_NO_FARTHER_FROM_TARGETS'
-        ? constraint.maximumDistanceBySourceModelId[sourceId] : constraint.maximumDistance
-      for (const targetId of targets) {
-        const target = byId.get(targetId)
-        if (!target || !Number.isFinite(maximum)) continue
-        const outline = exclusionOutlineForTargetFootprint(target, source.base, source.rotation, maximum)
-        if (outline.length < 3) continue
-        const frontier = new Graphics().poly(outline.flatMap((point) => [point.x, point.y]))
-          .stroke({ color: constraint.type === 'ANY_SOURCE_WITHIN_TARGETS' ? 0xe9bd5b : 0x70d6c5, alpha: 0.82, width: 0.09 })
-        frontier.eventMode = 'none'
-        world.addChild(frontier)
+    const targetSets = constraint.type === 'ANY_SOURCE_WITHIN_EACH_TARGET_GROUP'
+      ? constraint.targetGroups.map((group) => group.modelIds) : [constraint.targetModelIds]
+    for (const targets of targetSets) {
+      const outlinesBySourceShape = new Map<string, Point[][]>()
+      for (const sourceId of constraint.sourceModelIds) {
+        const source = byId.get(sourceId)
+        if (!source) continue
+        const maximum = constraint.type === 'EACH_SOURCE_NO_FARTHER_FROM_TARGETS'
+          ? constraint.maximumDistanceBySourceModelId[sourceId] : constraint.maximumDistance
+        const shapeKey = JSON.stringify([source.base, source.rotation, maximum])
+        if (outlinesBySourceShape.has(shapeKey)) continue
+        const outlines: Point[][] = []
+        outlinesBySourceShape.set(shapeKey, outlines)
+        for (const targetId of targets) {
+          const target = byId.get(targetId)
+          if (!target || !Number.isFinite(maximum)) continue
+          const outline = exclusionOutlineForTargetFootprint(target, source.base, source.rotation, maximum)
+          if (outline.length >= 3) outlines.push(outline)
+        }
+      }
+      for (const outlines of outlinesBySourceShape.values()) {
+        for (const loop of unionOutlinePolygons(outlines)) {
+          const frontier = new Graphics().poly(loop.flatMap((point) => [point.x, point.y]), true)
+            .stroke({ color: constraint.type === 'ANY_SOURCE_WITHIN_TARGETS' ? 0xe9bd5b : 0x70d6c5, alpha: 0.82, width: 0.09 })
+          frontier.eventMode = 'none'
+          world.addChild(frontier)
+        }
       }
     }
   }
@@ -1199,12 +1278,36 @@ function updateSmartTargetMarker(
 
 function drawRangeArea(world: Container, models: GameState['models'], range: number) {
   const area = new Graphics()
-  for (const model of models) {
-    drawClosedOutline(area, rangeOutlineForModel(model, range))
-  }
+  for (const loop of rangeEnvelopeForModels(models, range)) drawClosedOutline(area, loop)
   area.fill({ color: 0x78b9d1, alpha: 0.13 })
   area.eventMode = 'none'
   world.addChild(area)
+}
+
+function drawFightRangeFrontier(world: Container, models: readonly TabletopModel[], distance: number) {
+  for (const loop of exteriorRangeEnvelopeForModels(models, distance)) {
+    const frontier = new Graphics().poly(loop.flatMap((point) => [point.x, point.y]), true)
+      .stroke({ color: 0xf0c777, alpha: 0.85, width: 0.11 })
+    frontier.eventMode = 'none'
+    world.addChild(frontier)
+  }
+}
+
+function drawTargetUnitEnvelopes(world: Container, models: readonly TabletopModel[], targetUnitIds: readonly string[]) {
+  // The small offset is a visual keyline only; target eligibility still uses
+  // the unmodified authoritative footprints in the AoS adapter.
+  for (const target of targetUnitFootprintEnvelopes(models, targetUnitIds, 0.34)) {
+    for (const loop of target.outlines) {
+      const points = loop.flatMap((point) => [point.x, point.y])
+      const keyline = new Graphics().poly(points, true)
+        .stroke({ color: 0x14201e, alpha: 0.95, width: 0.35 })
+      const outline = new Graphics().poly(points, true)
+        .stroke({ color: 0xffa37f, alpha: 1, width: 0.19 })
+      keyline.eventMode = 'none'
+      outline.eventMode = 'none'
+      world.addChild(keyline, outline)
+    }
+  }
 }
 
 function drawExclusionArea(
@@ -1267,6 +1370,43 @@ function drawClosedOutline(graphic: Graphics, points: readonly Point[]): void {
   graphic.moveTo(points[0].x, points[0].y)
   for (const point of points.slice(1)) graphic.lineTo(point.x, point.y)
   graphic.closePath()
+}
+
+function drawModelMarker(
+  token: Container,
+  marker: BattlefieldModelMarker,
+  bounds: { left: number; right: number; top: number; bottom: number },
+  showDetail: boolean,
+) {
+  const badge = new Graphics().circle(0, 0, 0.17)
+    .fill({ color: 0x15211d, alpha: 0.98 })
+    .stroke({ color: 0xf1c969, width: 0.055, alpha: 1 })
+  badge.position.set(bounds.right - 0.04, bounds.top + 0.04)
+  badge.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
+  const symbol = new Text({
+    text: marker.symbol,
+    style: new TextStyle({ fontFamily: 'Arial', fontSize: 12, fontWeight: '700', fill: 0xf1c969 }),
+    resolution: 3,
+  })
+  symbol.anchor.set(0.5)
+  symbol.scale.set(0.22 / 12)
+  symbol.position.copyFrom(badge.position)
+  symbol.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
+  token.addChild(badge, symbol)
+  if (!showDetail) return
+  const detail = new Text({
+    text: marker.label,
+    style: new TextStyle({
+      fontFamily: 'Arial', fontSize: 11, fontWeight: '700', fill: 0xf4d982,
+      stroke: { color: 0x101916, width: 5 },
+    }),
+    resolution: 3,
+  })
+  detail.anchor.set(0.5, 1)
+  detail.scale.set(0.5 / 11)
+  detail.position.set((bounds.left + bounds.right) / 2, bounds.top - 0.18)
+  detail.eventMode = PRESENTATION_ANNOTATION_EVENT_MODE
+  token.addChild(detail)
 }
 
 function drawCoherencyStatus(

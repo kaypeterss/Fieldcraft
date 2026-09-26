@@ -63,5 +63,10 @@ export const ageOfSigmarGameSystem: GameSystem = {
     validate: isAosMatchStateData,
   },
   authorizeCommand: ({ kind }) => kind === 'MOVE',
-  authorizeUndo: ({ operation }) => operation.type === 'GAME_SYSTEM' || operation.type === 'MOVE',
+  authorizeUndo: ({ state, operation }) => {
+    const data = isAosMatchStateData(state.gameSystemState?.data) ? state.gameSystemState!.data : undefined
+    const combat = data && 'combat' in data ? data.combat : undefined
+    if (combat?.fightFacts.some((fact) => fact.sequence === operation.sequence)) return false
+    return operation.type === 'GAME_SYSTEM' || operation.type === 'MOVE'
+  },
 }

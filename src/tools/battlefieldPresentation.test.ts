@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { millimetersToInches } from '../engine/units'
+import type { TabletopModel } from '../domain/types'
 import { ageOfSigmarGameSystemRegistration } from '../gameSystem/registeredGameSystems'
 import { prepareAgeOfSigmarMatch } from '../gameSystem/ageOfSigmar/prepareAgeOfSigmarMatch'
 import { initialGameState } from '../game/initialState'
 import {
   defaultBoardOverlayPreferences,
+  fightRangeAssistanceVisible,
   deploymentZonesVisible,
+  deriveActionFocusPresentation,
   deriveUnitBattlefieldPresentations,
   movementStatusPresentation,
   objectiveControlAreaPresentation,
   PRESENTATION_ANNOTATION_EVENT_MODE,
+  targetUnitFootprintEnvelopes,
 } from './battlefieldPresentation'
 
 describe('objective control-zone presentation', () => {
@@ -72,5 +76,70 @@ describe('battlefield readability presentation', () => {
       objectiveAreas: true,
       automaticRuleAssistance: true,
     })
+  })
+
+  it('hides Fight assistance without changing its target facts', () => {
+    const targetIds = ['target-model']
+    expect(fightRangeAssistanceVisible(true, targetIds)).toBe(true)
+    expect(fightRangeAssistanceVisible(false, targetIds)).toBe(false)
+    expect(targetIds).toEqual(['target-model'])
+    expect(fightRangeAssistanceVisible(true, [])).toBe(false)
+  })
+
+  it('derives restrained action focus from authoritative IDs and clears it when the action ends', () => {
+    const acting = initialGameState.units[0]
+    const target = initialGameState.units[1]
+    const focus = deriveActionFocusPresentation(initialGameState, {
+      actingUnitId: acting.id,
+      targetUnitIds: [target.id],
+      targetEnvelopeUnitIds: [target.id],
+      eligibleModelIds: [acting.modelIds[0]],
+      profileModelIds: acting.modelIds.slice(0, 2),
+      casualtyCandidateModelIds: target.modelIds.slice(0, 2),
+      casualtySelectedModelIds: [target.modelIds[0]],
+    })
+    expect(focus).toMatchObject({
+      actingUnitId: acting.id,
+      actingModelIds: acting.modelIds,
+      targetUnitIds: [target.id],
+      targetEnvelopeUnitIds: [target.id],
+      eligibleModelIds: [acting.modelIds[0]],
+      profileModelIds: acting.modelIds.slice(0, 2),
+      casualtyCandidateModelIds: target.modelIds.slice(0, 2),
+      casualtySelectedModelIds: [target.modelIds[0]],
+    })
+    expect(focus?.targetModelIds).toEqual(target.modelIds)
+    expect(deriveActionFocusPresentation(initialGameState)).toBeNull()
+  })
+
+  it('unions only active target footprints; visual padding is separate from range', () => {
+    const model = (id: string, x: number, presence: TabletopModel['presence'] = 'ON_BATTLEFIELD'): TabletopModel => ({
+      id, unitId: 'target', ownerId: 'opponent', position: { x, y: 10 }, rotation: 0,
+      base: { shape: 'circle', diameterMm: 25.4 }, canPassOverModels: false, presence,
+    })
+    const models = [model('a', 10), model('b', 10.8), model('slain', 30, 'DESTROYED')]
+    const raw = targetUnitFootprintEnvelopes(models, ['target'])
+    expect(raw).toHaveLength(1)
+    expect(raw[0].outlines).toHaveLength(1)
+    const bounds = (points: { x: number; y: number }[][]) => points.flat().map((point) => point.x)
+    expect(Math.min(...bounds(raw[0].outlines))).toBeCloseTo(9.5, 2)
+    expect(Math.max(...bounds(raw[0].outlines))).toBeCloseTo(11.3, 2)
+    const padded = targetUnitFootprintEnvelopes(models, ['target'], 0.12)
+    expect(Math.min(...bounds(padded[0].outlines))).toBeCloseTo(9.38, 2)
+    expect(models[0].base).toEqual({ shape: 'circle', diameterMm: 25.4 })
+    expect(targetUnitFootprintEnvelopes(models.map((entry) => ({ ...entry, presence: 'DESTROYED' })), ['target']))
+      .toEqual([])
+  })
+
+  it('replaces target emphasis by stable unit ID and clears it after completion', () => {
+    const acting = initialGameState.units[0]
+    const first = initialGameState.units[1]
+    const second = initialGameState.units[2]
+    const focus = (targetId?: string) => deriveActionFocusPresentation(initialGameState, targetId ? {
+      actingUnitId: acting.id, targetUnitIds: [targetId], targetEnvelopeUnitIds: [targetId],
+    } : undefined)
+    expect(focus(first.id)?.targetEnvelopeUnitIds).toEqual([first.id])
+    expect(focus(second.id)?.targetEnvelopeUnitIds).toEqual([second.id])
+    expect(focus()).toBeNull()
   })
 })

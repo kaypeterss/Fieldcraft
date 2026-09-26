@@ -14,6 +14,14 @@ import { DebugPanel } from './DebugPanel'
 afterEach(cleanup)
 
 describe('DebugPanel ownership display', () => {
+  it('describes authoritative AoS partial damage as unit-level', () => {
+    render(<DebugPanel model={initialGameState.models[0]} selectedCount={1} health={2} allocatedDamage={1} />)
+    expect(screen.getByText('Health threshold')).toBeTruthy()
+    expect(screen.getByText('Current unit damage')).toBeTruthy()
+    expect(screen.getByText('Until next model slain')).toBeTruthy()
+    expect(screen.getByText('1 / 2')).toBeTruthy()
+    expect(screen.getByText('1 more damage')).toBeTruthy()
+  })
   it('renders the Player display name instead of the raw owner ID', () => {
     const model = initialGameState.models[0]
     render(<DebugPanel model={model} selectedCount={1} ownerDisplayName="Player 1" />)

@@ -73,7 +73,7 @@ export function AosMovementPanel(props: AosMovementPanelProps) {
     {actionId === 'RETREAT' && <p className="movement-action-flag">RETREATED THIS TURN</p>}
     {actionId === 'CHARGE' && <p className="movement-action-flag">FINISH WITHIN ½″ OF A VISIBLE ENEMY</p>}
     {actionId === 'PILE_IN' && <p className="movement-action-flag">{props.status?.kind === 'PILE_IN'
-      ? 'READY TO FIGHT · ATTACK RESOLUTION BEGINS IN M9.6.1'
+      ? 'PILE-IN COMPLETE · RETURN TO FIGHT'
       : '3″ · DO NOT FINISH FARTHER FROM THE TARGET'}</p>}
     {props.summary && <div className="movement-actions">
       <button className="cancel-move" onClick={props.onCancel}>Cancel <kbd>Esc</kbd></button>
