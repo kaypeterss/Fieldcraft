@@ -8,7 +8,7 @@ import {
   TextStyle,
   type FederatedPointerEvent,
 } from 'pixi.js'
-import type { BattlefieldFeature, Footprint, GameState, MovementPolicyConfig, MovementSeparationConstraint, Pose, TabletopModel } from '../../domain/types'
+import type { BattlefieldFeature, Footprint, GameState, MovementDestinationConstraint, MovementPolicyConfig, MovementSeparationConstraint, Pose, TabletopModel } from '../../domain/types'
 import { isPointInsideBattlefield } from '../../engine/geometry/battlefield'
 import type { Point } from '../../engine/geometry/point'
 import {
@@ -66,6 +66,7 @@ interface TabletopCanvasProps {
   developmentPresentation?: boolean
   showDeploymentZones: boolean
   movementRuleAssistance?: readonly MovementSeparationConstraint[]
+  movementDestinationAssistance?: readonly MovementDestinationConstraint[]
   deploymentZoneHighlightRole?: 'attacker' | 'defender'
   deploymentZoneChoiceId?: string | null
   deploymentForbiddenRegion?: { areas: Point[][]; distance: number } | null
@@ -407,7 +408,7 @@ export function TabletopCanvas(props: TabletopCanvasProps) {
   useEffect(() => {
     const world = worldRef.current
     if (world) drawScene(world, propsRef, dragRef, rotationDragRef, placementDragRef, panRef, cameraRef, selectionBoxRef, smartTargetMarkerRef)
-  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult, props.lifecyclePlacementActive, props.lifecyclePlacementPreviews, props.lifecyclePlacementCoherency, props.unitPresentations, props.boardOverlays, props.showDeploymentZones, props.movementRuleAssistance, props.deploymentZoneHighlightRole, props.deploymentZoneChoiceId, props.deploymentForbiddenRegion, props.placementHoveredModelId])
+  }, [props.gameState, props.spatialModels, props.selectedIds, props.selectedFeatureId, props.selectedObjectiveId, props.activeTool, props.measurement, props.measurementTargetA, props.measurementTargetB, props.spatialOverlay, props.smartMoveResult, props.lifecyclePlacementActive, props.lifecyclePlacementPreviews, props.lifecyclePlacementCoherency, props.unitPresentations, props.boardOverlays, props.showDeploymentZones, props.movementRuleAssistance, props.movementDestinationAssistance, props.deploymentZoneHighlightRole, props.deploymentZoneChoiceId, props.deploymentForbiddenRegion, props.placementHoveredModelId])
 
   useEffect(() => {
     if (props.resetCameraSignal > 0) fitCamera()
@@ -507,6 +508,9 @@ function drawScene(
   }
   if (props.boardOverlays.automaticRuleAssistance && (props.movementRuleAssistance?.length ?? 0) > 0) {
     drawMovementRuleAssistance(world, props.spatialModels, props.movementRuleAssistance ?? [])
+  }
+  if (props.boardOverlays.automaticRuleAssistance && (props.movementDestinationAssistance?.length ?? 0) > 0) {
+    drawMovementDestinationAssistance(world, props.spatialModels, props.movementDestinationAssistance ?? [])
   }
 
   for (const model of models) {
@@ -971,6 +975,30 @@ function drawMovementRuleAssistance(
       .stroke({ color: 0xc4cec9, alpha: 0.58, width: 0.065 })
     forbidden.eventMode = 'none'
     world.addChild(forbidden)
+  }
+}
+
+function drawMovementDestinationAssistance(world: Container, models: readonly TabletopModel[], constraints: readonly MovementDestinationConstraint[]) {
+  const byId = new Map(models.map((model) => [model.id, model]))
+  for (const constraint of constraints) {
+    const targets = constraint.type === 'ANY_SOURCE_WITHIN_EACH_TARGET_GROUP'
+      ? constraint.targetGroups.flatMap((group) => group.modelIds) : constraint.targetModelIds
+    for (const sourceId of constraint.sourceModelIds) {
+      const source = byId.get(sourceId)
+      if (!source) continue
+      const maximum = constraint.type === 'EACH_SOURCE_NO_FARTHER_FROM_TARGETS'
+        ? constraint.maximumDistanceBySourceModelId[sourceId] : constraint.maximumDistance
+      for (const targetId of targets) {
+        const target = byId.get(targetId)
+        if (!target || !Number.isFinite(maximum)) continue
+        const outline = exclusionOutlineForTargetFootprint(target, source.base, source.rotation, maximum)
+        if (outline.length < 3) continue
+        const frontier = new Graphics().poly(outline.flatMap((point) => [point.x, point.y]))
+          .stroke({ color: constraint.type === 'ANY_SOURCE_WITHIN_TARGETS' ? 0xe9bd5b : 0x70d6c5, alpha: 0.82, width: 0.09 })
+        frontier.eventMode = 'none'
+        world.addChild(frontier)
+      }
+    }
   }
 }
 

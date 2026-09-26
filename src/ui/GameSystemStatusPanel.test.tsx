@@ -28,6 +28,16 @@ describe('GameSystemStatusPanel setup action', () => {
     expect(onAction).toHaveBeenCalledOnce()
   })
 
+  it('keeps the phase action visible while an unresolved staged action temporarily blocks it', () => {
+    render(<GameSystemStatusPanel ui={ageOfSigmarGameSystemRegistration.ui}
+      gameState={ageOfSigmarGameSystemRegistration.createMatch()}
+      progression={{ lifecycle: 'ROUND 2 · TURN 1', title: 'Player 2 · Movement Phase',
+        actionLabel: 'End Movement Phase', detail: 'Confirm or cancel the staged movement before ending the phase.',
+        disabled: true, onAction: vi.fn() }} />)
+    expect(screen.getByRole('button', { name: 'End Movement Phase' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText('Confirm or cancel the staged movement before ending the phase.')).toBeTruthy()
+  })
+
   it('shows compact adapter-derived player resource metrics without owning their state', () => {
     render(<GameSystemStatusPanel ui={ageOfSigmarGameSystemRegistration.ui}
       gameState={ageOfSigmarGameSystemRegistration.createMatch()}

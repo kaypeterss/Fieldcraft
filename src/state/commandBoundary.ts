@@ -58,6 +58,7 @@ export function reduceGameCommand(
             return [id, model.rotation]
           })),
           separationConstraints: session.actionContext.separationConstraints,
+          destinationConstraints: session.actionContext.destinationConstraints,
           ...(session.actionContext.requireCoherency && unit && coherencyPolicy
             ? { coherency: { unit, policy: coherencyPolicy } } : {}),
         })
@@ -122,6 +123,7 @@ export function reduceGameCommand(
         },
         ...(unit && coherencyPolicy ? { coherency: { unit, policy: coherencyPolicy } } : {}),
         separationConstraints: authorization.actionContext?.separationConstraints,
+        destinationConstraints: authorization.actionContext?.destinationConstraints,
       })
       if (!validation.valid) return state
       const after = gameReducer(state, {

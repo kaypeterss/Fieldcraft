@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { GameState, JsonValue } from '../../domain/types'
 import { rollDice } from '../../engine/dice'
 import { distanceBetweenBases } from '../../engine/spatial'
+import { validateCandidateFormation } from '../../engine/candidateFormation'
+import { solveSmartMove } from '../../engine/smartMove'
 import { gameReducer } from '../../state/reducer'
 import { reduceGameCommand } from '../../state/commandBoundary'
 import { gameSystemRegistry } from '../registeredGameSystems'
@@ -14,6 +16,7 @@ import {
   aosUnitMovementStatus,
   ensureAosMovementState,
   rollAosMovementActionDie,
+  rollAosCharge,
   resolveAosMovementContext,
   unitIsInCombat,
 } from './movement'
@@ -76,10 +79,162 @@ function recordRoll(state: GameState, sides: number, result: number): { state: G
   }
 }
 
+function recordChargeRoll(state: GameState, first: number, second: number): { state: GameState; id: string } {
+  const id = `dice-${state.nextActionSequence}`
+  let index = 0
+  const results = [first, second]
+  const rolled = rollDice({ count: 2, sides: 6 }, { next: () => (results[index++] - 0.5) / 6 })
+  return { state: gameReducer(state, { type: 'dice/rollRecorded', playerId: state.gameContext.activePlayerId, result: rolled }), id }
+}
+
+function chargePhaseState(): GameState {
+  let state = movementPhaseState()
+  state = command(state, 'aos/battle/end-phase', 'player-1')
+  return command(state, 'aos/battle/end-phase', 'player-1')
+}
+
+function combatPhaseState(): GameState {
+  return command(chargePhaseState(), 'aos/battle/end-phase', 'player-1')
+}
+
 describe('Age of Sigmar movement abilities', () => {
   it('uses the injected dice-engine random source for genuine Run results', () => {
     expect(rollAosMovementActionDie('RUN', { next: () => 0 }).finalResults).toEqual([1])
     expect(rollAosMovementActionDie('RUN', { next: () => 0.999 }).finalResults).toEqual([6])
+  })
+
+  it('rolls retained Charge distance through the generic dice engine', () => {
+    expect(rollAosCharge({ next: () => 0 }).finalResults).toEqual([1, 1])
+    expect(rollAosCharge({ next: () => 0.999 }).finalResults).toEqual([6, 6])
+  })
+
+  it('declares Charge in the Charge Phase and requires a legal visible-enemy finish', () => {
+    let state = chargePhaseState()
+    expect(aosMovementAvailability(state, 'sce-knight-questor').available).toEqual(['CHARGE'])
+    expect(aosMovementAvailability(state, 'skv-clawlord').available).toEqual([])
+    const recorded = recordChargeRoll(state, 3, 4)
+    state = declare(recorded.state, 'sce-knight-questor', 'CHARGE', recorded.id)
+    const resolution = resolveAosMovementContext(state, 'sce-knight-questor')
+    expect(resolution.allowed && resolution.context).toMatchObject({
+      label: 'Charge', movementAllowanceByModel: { 'sce-knight-questor-1': 7 },
+      destinationConstraints: [{ type: 'ANY_SOURCE_WITHIN_TARGETS', maximumDistance: 0.5 }],
+    })
+    const context = resolution.allowed ? resolution.context : undefined
+    expect(context && validateCandidateFormation({
+      allModels: state.models.filter((model) => model.presence === 'ON_BATTLEFIELD'),
+      battlefield: state.battlefield,
+      positions: { 'sce-knight-questor-1': { x: 12, y: 10 } },
+      destinationConstraints: context.destinationConstraints,
+    }).violations).toContainEqual(expect.objectContaining({ type: 'DESTINATION_RELATIONSHIP_FAILED' }))
+  })
+
+  it('feeds the same Charge context to Smart Move and finds an exact legal finish', () => {
+    let state = chargePhaseState()
+    state = { ...state, models: state.models.map((model) => model.id === 'skv-clawlord-1'
+      ? { ...model, position: { x: 18, y: 10 } } : model) }
+    const recorded = recordChargeRoll(state, 3, 4)
+    state = declare(recorded.state, 'sce-knight-questor', 'CHARGE', recorded.id)
+    const resolution = resolveAosMovementContext(state, 'sce-knight-questor')
+    expect(resolution.allowed).toBe(true)
+    if (!resolution.allowed) return
+    const result = solveSmartMove({
+      allModels: state.models.filter((model) => model.presence === 'ON_BATTLEFIELD'), units: state.units,
+      battlefield: state.battlefield, selectedModelIds: ['sce-knight-questor-1'], target: { x: 18, y: 10 },
+      movementRemaining: resolution.context.movementAllowanceByModel,
+      movementPolicy: { type: 'movement-envelope' },
+      separationConstraints: resolution.context.separationConstraints,
+      destinationConstraints: resolution.context.destinationConstraints,
+      searchBudgetMs: 1_000,
+    })
+    expect(result.valid).toBe(true)
+    expect(result.formationValidation?.valid).toBe(true)
+  })
+
+  it('commits Charge as one persisted fact and Cancel preserves its revealed 2D6 roll', () => {
+    let state = chargePhaseState()
+    state = { ...state, models: state.models.map((model) => model.id === 'skv-clawlord-1'
+      ? { ...model, position: { x: 18, y: 10 } } : model) }
+    const recorded = recordChargeRoll(state, 3, 4)
+    state = declare(recorded.state, 'sce-knight-questor', 'CHARGE', recorded.id)
+    state = reduceGameCommand(loadRegisteredMatchRuntime(state, gameSystemRegistry), state, {
+      type: 'movement/sessionStarted', sessionId: 'cancel-charge', modelIds: ['sce-knight-questor-1'],
+    })
+    state = reduceGameCommand(loadRegisteredMatchRuntime(state, gameSystemRegistry), state, { type: 'movement/cancelled' })
+    expect(aosMovementAvailability(state, 'sce-knight-questor').selected).toMatchObject({
+      actionId: 'CHARGE', rollRecordId: recorded.id, rollResult: 7,
+    })
+    expect(state.diceHistory).toHaveLength(1)
+
+    state = reduceGameCommand(loadRegisteredMatchRuntime(state, gameSystemRegistry), state, {
+      type: 'movement/validatedCandidateApplied',
+      startingPositions: { 'sce-knight-questor-1': { x: 10, y: 10 } },
+      finalPositions: { 'sce-knight-questor-1': { x: 15.5, y: 10 } },
+      paths: { 'sce-knight-questor-1': [{ x: 10, y: 10 }, { x: 15.5, y: 10 }] },
+      movementUsed: { 'sce-knight-questor-1': 5.5 },
+    })
+    const cloned = structuredClone(state)
+    expect(ensureAosMovementState(cloned.gameSystemState!.data as unknown as AosMatchStateData).facts.at(-1))
+      .toMatchObject({ actionId: 'CHARGE', rollResult: 7, rollRecordId: recorded.id })
+  })
+
+  it('rejects Charge after Run and when already in combat', () => {
+    let state = movementPhaseState()
+    const recorded = recordRoll(state, 6, 4)
+    state = declare(recorded.state, 'sce-knight-questor', 'RUN', recorded.id)
+    const runtime = loadRegisteredMatchRuntime(state, gameSystemRegistry)
+    state = reduceGameCommand(runtime, state, { type: 'movement/sessionStarted', sessionId: 'run-before-charge', modelIds: ['sce-knight-questor-1'] })
+    state = reduceGameCommand(loadRegisteredMatchRuntime(state, gameSystemRegistry), state, { type: 'movement/confirmed' })
+    state = command(command(state, 'aos/battle/end-phase', 'player-1'), 'aos/battle/end-phase', 'player-1')
+    expect(aosMovementAvailability(state, 'sce-knight-questor').reason).toContain('Ran or Retreated')
+
+    let engaged = chargePhaseState()
+    engaged = { ...engaged, models: engaged.models.map((model) => model.id === 'skv-clawlord-1'
+      ? { ...model, position: { x: 14.5, y: 10 } } : model) }
+    expect(aosMovementAvailability(engaged, 'sce-knight-questor').reason).toContain('in combat')
+  })
+
+  it('captures the pile-in target and enforces closer-or-equal plus continued engagement', () => {
+    let state = combatPhaseState()
+    state = { ...state, models: state.models.map((model) => model.id === 'skv-clawlord-1'
+      ? { ...model, position: { x: 14.5, y: 10 } } : model) }
+    expect(aosMovementAvailability(state, 'sce-knight-questor')).toMatchObject({
+      available: ['PILE_IN'], inCombat: true, eligibleTargetUnitIds: ['skv-clawlord'],
+    })
+    state = command(state, 'aos/movement/declare', 'player-1', {
+      unitId: 'sce-knight-questor', actionId: 'PILE_IN', targetUnitId: 'skv-clawlord',
+    })
+    const resolution = resolveAosMovementContext(state, 'sce-knight-questor')
+    expect(resolution.allowed && resolution.context).toMatchObject({
+      label: 'Pile-in', movementAllowanceByModel: { 'sce-knight-questor-1': 3 },
+      destinationConstraints: [
+        { type: 'EACH_SOURCE_NO_FARTHER_FROM_TARGETS' },
+        { type: 'ANY_SOURCE_WITHIN_EACH_TARGET_GROUP', maximumDistance: 3 },
+      ],
+    })
+    const context = resolution.allowed ? resolution.context : undefined
+    expect(context && validateCandidateFormation({
+      allModels: state.models.filter((model) => model.presence === 'ON_BATTLEFIELD'), battlefield: state.battlefield,
+      positions: { 'sce-knight-questor-1': { x: 7, y: 10 } }, destinationConstraints: context.destinationConstraints,
+    }).valid).toBe(false)
+  })
+
+  it('feeds the same Pile-in context to Smart Move', () => {
+    let state = combatPhaseState()
+    state = { ...state, models: state.models.map((model) => model.id === 'skv-clawlord-1'
+      ? { ...model, position: { x: 14.5, y: 10 } } : model) }
+    state = command(state, 'aos/movement/declare', 'player-1', {
+      unitId: 'sce-knight-questor', actionId: 'PILE_IN', targetUnitId: 'skv-clawlord',
+    })
+    const resolution = resolveAosMovementContext(state, 'sce-knight-questor')
+    expect(resolution.allowed).toBe(true)
+    if (!resolution.allowed) return
+    const result = solveSmartMove({
+      allModels: state.models.filter((model) => model.presence === 'ON_BATTLEFIELD'), units: state.units,
+      battlefield: state.battlefield, selectedModelIds: ['sce-knight-questor-1'], target: { x: 14.5, y: 10 },
+      movementRemaining: resolution.context.movementAllowanceByModel, movementPolicy: { type: 'movement-envelope' },
+      destinationConstraints: resolution.context.destinationConstraints, searchBudgetMs: 1_000,
+    })
+    expect(result.valid).toBe(true)
   })
 
   it('allows the active player only in the Movement Phase and applies exact footprint-edge combat range', () => {

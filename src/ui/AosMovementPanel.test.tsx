@@ -50,4 +50,28 @@ describe('Age of Sigmar movement panel', () => {
     expect(screen.getByRole('button', { name: 'Manual Move' }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('button', { name: 'Smart Move' }).hasAttribute('disabled')).toBe(true)
   })
+
+  it('shows individual Charge dice and a selectable Pile-in target', () => {
+    const onTargetUnitChange = vi.fn()
+    const { rerender } = render(<AosMovementPanel
+      unitName="Liberators" moveCharacteristic={5}
+      availability={{ available: ['CHARGE'], inCombat: false, selected: {
+        actionId: 'CHARGE', unitId: 'liberators', playerId: 'player-1', turnId: 'turn-1',
+        phase: 'CHARGE_PHASE', rollResult: 7, rollResults: [3, 4], rollRecordId: 'dice-1',
+      } }} summary={null} onChoose={vi.fn()} onMethodChange={vi.fn()} onConfirm={vi.fn()} onCancel={vi.fn()} onClose={vi.fn()}
+    />)
+    expect(screen.getByText('Charge Roll').parentElement?.textContent).toContain('3 + 4 = 7″')
+    expect(screen.getByText('Allowance').parentElement?.textContent).toContain('7″')
+
+    rerender(<AosMovementPanel
+      unitName="Liberators" moveCharacteristic={5}
+      availability={{ available: ['PILE_IN'], inCombat: true, eligibleTargetUnitIds: ['enemy'], selected: {
+        actionId: 'PILE_IN', unitId: 'liberators', playerId: 'player-1', turnId: 'turn-1',
+        phase: 'COMBAT_PHASE', targetUnitId: 'enemy',
+      } }} targetUnits={[{ id: 'enemy', name: 'Clanrats' }]} summary={null}
+      onChoose={vi.fn()} onMethodChange={vi.fn()} onTargetUnitChange={onTargetUnitChange}
+      onConfirm={vi.fn()} onCancel={vi.fn()} onClose={vi.fn()}
+    />)
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('enemy')
+  })
 })

@@ -88,13 +88,18 @@ import { aosDeploymentPlacementRules, aosDeploymentState, validateAosDeploymentP
 import { rollDice, systemRandomSource } from './engine/dice'
 import { aosBattleState, aosRoundResources, currentAosPhase } from './gameSystem/ageOfSigmar/battleRound'
 import { AosBattleRoundPanel } from './ui/AosBattleRoundPanel'
+import { postMovementCommitView } from './ui/movementInteractionState'
+import { aosPhaseProgressionBlockReason } from './ui/aosPhaseProgression'
 import { AosMovementPanel, type AosMovementMethod } from './ui/AosMovementPanel'
+import { createAosChargePileInDemo } from './gameSystem/ageOfSigmar/chargePileInDemo'
 import {
   aosMovementRuleAssistance,
+  aosDestinationRuleAssistance,
   aosMovementAvailability,
   aosMovementRevealedRoll,
   aosUnitMovementStatus,
   rollAosMovementActionDie,
+  rollAosCharge,
   type AosMovementActionId,
 } from './gameSystem/ageOfSigmar/movement'
 import {
@@ -355,7 +360,8 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const gameSystemRegistration = loadedRuntime.registration!
   const developmentControlsEnabled = gameSystemRegistration.ui.developmentControls
   const gameplayImplemented = gameSystemRegistration.ui.gameplayImplemented
-  const lifecycleAvailable = gameplayImplemented || (gameState.matchLifecycle === 'DEPLOYMENT' && gameState.units.length > 0)
+  const capabilities = gameSystemRegistration.ui.capabilities
+  const lifecycleAvailable = (capabilities?.lifecycle ?? gameplayImplemented) || (gameState.matchLifecycle === 'DEPLOYMENT' && gameState.units.length > 0)
   const activeModels = useMemo(() => activeBattlefieldModels(gameState), [gameState])
   const battlefieldGameState = useMemo(() => ({ ...gameState, models: activeModels }), [activeModels, gameState])
   const lifecycleEntries = useMemo<LifecyclePanelEntry[]>(() => gameState.models.map((model) => {
@@ -390,6 +396,8 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const [deploymentTerritoryHoverId, setDeploymentTerritoryHoverId] = useState<string | null>(null)
   const aosDeployment = useMemo(() => aosDeploymentState(gameState), [gameState])
   const aosBattle = useMemo(() => aosBattleState(gameState), [gameState])
+  const isAosMatch = gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar'
+  const showGenericGameStatus = !isAosMatch && (capabilities?.gameStatus ?? gameplayImplemented)
   const aosResources = useMemo(() => aosRoundResources(gameState), [gameState])
   const lifecyclePlacementCoherency = useMemo(() => {
     if (!lifecyclePlacement || !lifecycleRequireCoherency || lifecyclePlacementPreviews.length === 0) return []
@@ -518,15 +526,16 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     : undefined
   const selectedUnit = selectedModel ? getUnitForModel(gameState, selectedModel.id) : undefined
   const selectedUnitDefinition = selectedUnit ? getUnitDefinition(gameState, selectedUnit) : undefined
-  const aosMovementPhaseActive = aosBattle ? currentAosPhase(aosBattle)?.id === 'MOVEMENT_PHASE' : false
+  const aosMovementPhaseId = aosBattle ? currentAosPhase(aosBattle)?.id : undefined
+  const aosMovementPhaseActive = aosMovementPhaseId === 'MOVEMENT_PHASE' || aosMovementPhaseId === 'CHARGE_PHASE' || aosMovementPhaseId === 'COMBAT_PHASE'
   const selectedAosMovement = selectedUnit && gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar'
     ? aosMovementAvailability(gameState, selectedUnit.id) : null
-  const movementToolsEnabled = gameplayImplemented || aosMovementPhaseActive
+  const movementToolsEnabled = (capabilities?.movement ?? gameplayImplemented) && (gameState.matchIdentity?.gameSystem.id !== 'age-of-sigmar' || aosMovementPhaseActive)
   const selectedMovementActionReady = Boolean(selectedAosMovement?.selected
     && selectedAosMovement.available.includes(selectedAosMovement.selected.actionId))
-  const movementMethodEnabled = gameplayImplemented || selectedMovementActionReady
+  const movementMethodEnabled = gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar' ? selectedMovementActionReady : (capabilities?.movement ?? gameplayImplemented)
   const movementMethodDisabledReason = selectedAosMovement?.reason
-    ?? (!selectedUnit ? 'Select a unit, then choose a movement action.' : 'Choose Normal Move, Run, or Retreat first.')
+    ?? (!selectedUnit ? 'Select a unit, then choose a movement action.' : 'Choose an available movement action first.')
   const aosMovementStatuses = useMemo(() => gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar'
     ? gameState.units.flatMap((unit) => {
       const status = aosUnitMovementStatus(gameState, unit.id)
@@ -690,6 +699,9 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
     ? authorizeMovement(loadedRuntime, gameState, smartMoveSession.modelIds)
     : null, [gameState, loadedRuntime, smartMoveSession])
   const movementRuleAssistance = useMemo(() => aosMovementRuleAssistance(
+    gameState.movementSession?.actionContext ?? smartMoveAuthorization?.actionContext,
+  ), [gameState.movementSession?.actionContext, smartMoveAuthorization?.actionContext])
+  const movementDestinationAssistance = useMemo(() => aosDestinationRuleAssistance(
     gameState.movementSession?.actionContext ?? smartMoveAuthorization?.actionContext,
   ), [gameState.movementSession?.actionContext, smartMoveAuthorization?.actionContext])
   const smartMoveRequestFactory = useMemo(() => (
@@ -866,6 +878,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       },
       coherency: { unit: smartMoveUnit, policy: smartMovePolicy },
       separationConstraints: smartMoveAuthorization?.actionContext?.separationConstraints,
+      destinationConstraints: smartMoveAuthorization?.actionContext?.destinationConstraints,
     })
     if (!startsCurrent || !authoritativeValidation.valid) {
       setSmartMoveMessage('Smart Move is no longer current. Move or relock the target to recalculate.')
@@ -901,8 +914,15 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       ])),
     })
     cancelSmartMove()
-    restartSmartMoveAfterApplyRef.current = true
-  }, [activeModels, cancelSmartMove, dispatch, gameState, smartMoveAuthorization, smartMovePolicy, smartMoveSession, smartMoveUnit])
+    const postCommit = postMovementCommitView(gameState.matchIdentity?.gameSystem.id, aosMovementPhaseActive)
+    setActiveTool(postCommit.activeTool)
+    setContextPanel(postCommit.contextPanel)
+    if (gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar') {
+      setAosMovementMessage('Movement confirmed.')
+    } else {
+      restartSmartMoveAfterApplyRef.current = true
+    }
+  }, [activeModels, aosMovementPhaseActive, cancelSmartMove, dispatch, gameState, smartMoveAuthorization, smartMovePolicy, smartMoveSession, smartMoveUnit])
 
   const changeTool = useCallback((tool: ActiveTool) => {
     if (tool === activeTool) {
@@ -986,9 +1006,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         }
         dispatch({ type: 'movement/confirmed' })
         if (aosMovementPhaseActive) {
-          setActiveTool('select')
+          const postCommit = postMovementCommitView(gameState.matchIdentity?.gameSystem.id, aosMovementPhaseActive)
+          setActiveTool(postCommit.activeTool)
           setAosMovementMessage('Movement confirmed.')
-          setContextPanel('movement')
+          setContextPanel(postCommit.contextPanel)
         }
         return
       }
@@ -1509,17 +1530,17 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
   const chooseAosMovementAction = useCallback((actionId: AosMovementActionId) => {
     if (!selectedUnit || !selectedAosMovement?.available.includes(actionId)) return
     let rollRecordId: string | undefined
-    if (actionId === 'RUN' || actionId === 'RETREAT') {
+    if (actionId === 'RUN' || actionId === 'RETREAT' || actionId === 'CHARGE') {
       const existing = aosMovementRevealedRoll(gameState, selectedUnit.id, actionId)
       if (existing) rollRecordId = existing.rollRecordId
       else {
-        const roll = rollAosMovementActionDie(actionId)
+        const roll = actionId === 'CHARGE' ? rollAosCharge() : rollAosMovementActionDie(actionId)
         rollRecordId = `dice-${gameState.nextActionSequence}`
         dispatch({
           type: 'dice/rollRecorded',
           playerId: selectedUnit.ownerId,
           result: roll,
-          label: `${actionId === 'RUN' ? 'Run' : 'Retreat Damage'} — ${selectedUnitDefinition?.name ?? selectedUnit.id}`,
+          label: `${actionId === 'RUN' ? 'Run' : actionId === 'CHARGE' ? 'Charge' : 'Retreat Damage'} — ${selectedUnitDefinition?.name ?? selectedUnit.id}`,
         })
       }
     }
@@ -1527,11 +1548,15 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       unitId: selectedUnit.id,
       actionId,
       ...(rollRecordId ? { rollRecordId } : {}),
+      ...(actionId === 'PILE_IN' && selectedAosMovement.inCombat && selectedAosMovement.eligibleTargetUnitIds?.[0]
+        ? { targetUnitId: selectedAosMovement.eligibleTargetUnitIds[0] } : {}),
     })
     setAosMovementMessage(actionId === 'NORMAL_MOVE'
       ? 'Normal Move ready. Drag models or use Smart Move.'
       : actionId === 'RUN' ? 'Run roll recorded. Drag models or use Smart Move.'
-        : 'Retreat damage recorded. Damage allocation is deferred; movement is ready.')
+        : actionId === 'RETREAT' ? 'Retreat damage recorded. Damage allocation is deferred; movement is ready.'
+          : actionId === 'CHARGE' ? 'Charge roll recorded. Finish within ½″ of a visible enemy.'
+            : selectedAosMovement.inCombat ? 'Choose an enemy pile-in target, then move up to 3″.' : 'Pile-in ready: move up to 3″ in any direction.')
     setContextPanel('movement')
   }, [dispatch, dispatchAosBattleCommand, gameState, selectedAosMovement, selectedUnit, selectedUnitDefinition])
 
@@ -1578,14 +1603,19 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       setContextPanel('movement')
       return
     }
-    if (activeTool === 'smart-move' && spatialPreviewResult) {
+    if (spatialPreviewResult) {
       setSmartMoveMessage('Apply or cancel the Smart Move preview before ending the phase.')
       setContextPanel('smart-move')
       return
     }
     dispatchAosBattleCommand('aos/battle/end-phase', gameState.gameContext.activePlayerId)
     setContextPanel('battle-round')
-  }, [activeTool, dispatchAosBattleCommand, gameState.gameContext.activePlayerId, gameState.movementSession, spatialPreviewResult])
+  }, [dispatchAosBattleCommand, gameState.gameContext.activePlayerId, gameState.movementSession, spatialPreviewResult])
+
+  const phaseProgressionBlockReason = aosPhaseProgressionBlockReason(
+    Boolean(gameState.movementSession),
+    Boolean(spatialPreviewResult),
+  )
 
   const aosProgression = useMemo(() => {
     if (!aosDeployment || aosDeployment.phase !== 'READY_FOR_BATTLE') return undefined
@@ -1618,6 +1648,9 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       title: `${active} · ${phase.name}`,
       actionLabel: phase.id === 'END_OF_TURN' ? 'End Turn' : `End ${phase.name}`,
       onAction: endAosPhase,
+      ...(phaseProgressionBlockReason
+        ? { detail: phaseProgressionBlockReason, disabled: true }
+        : {}),
     }
     if (aosBattle.stage === 'END_OF_ROUND') return {
       lifecycle: `ROUND ${aosBattle.round}`, title: 'End of Battle Round', actionLabel: 'Continue',
@@ -1627,7 +1660,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
       lifecycle: 'BATTLE COMPLETE', title: 'Final resolution pending', actionLabel: 'Battle Complete',
       detail: 'Final scoring and winner resolution are not implemented yet.', disabled: true,
     }
-  }, [aosBattle, aosDeployment, continueAosBattle, endAosPhase, gameState.gameContext.activePlayerId, gameState.players, rollAosPriority, startAosBattle])
+  }, [aosBattle, aosDeployment, continueAosBattle, endAosPhase, gameState.gameContext.activePlayerId, gameState.players, phaseProgressionBlockReason, rollAosPriority, startAosBattle])
 
   const aosRuntimeFacts = useMemo(() => {
     if (!aosDeployment) return []
@@ -1662,7 +1695,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         </div>
         <MatchIdentityHeader gameSystemName={loadedRuntime.gameSystem.name}
           matchName={gameState.matchIdentity?.matchName} ui={gameSystemRegistration.ui} />
-        {gameplayImplemented ? <GameStatusPanel
+        {showGenericGameStatus ? <GameStatusPanel
           gameState={battlefieldGameState}
           blockedMessage={gameState.movementSession?.id === blockedMovementSessionId
             ? 'Finish or cancel the current movement first.'
@@ -1708,7 +1741,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
         moveDisabledReason={movementMethodDisabledReason}
         smartMoveEnabled={movementMethodEnabled}
         smartMoveDisabledReason={movementMethodDisabledReason}
-        diceEnabled={gameplayImplemented || gameState.matchIdentity?.gameSystem.id === 'age-of-sigmar'
+        diceEnabled={(capabilities?.dice ?? gameplayImplemented)
           && gameState.matchLifecycle !== 'SETUP'}
         lifecycleEnabled={lifecycleAvailable}
         spatialPanelOpen={contextPanel === 'spatial'}
@@ -1745,6 +1778,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
           developmentPresentation={developmentControlsEnabled}
           showDeploymentZones={showDeploymentZones}
           movementRuleAssistance={movementRuleAssistance}
+          movementDestinationAssistance={movementDestinationAssistance}
           deploymentZoneHighlightRole={aosDeployment?.phase === 'DEPLOYING'
             ? aosDeployment.currentPlayerId === aosDeployment.attackerPlayerId ? 'attacker' : 'defender'
             : undefined}
@@ -1891,7 +1925,7 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
               formationOptions: lifecycleFormationOptions.map(({ id, label, available, reason }) => ({ id, label, available, reason })),
             } : null}
             requireCoherency={lifecycleRequireCoherency}
-            readOnly={!gameplayImplemented}
+            readOnly={!(capabilities?.scoring ?? gameplayImplemented)}
             message={lifecycleMessage ?? undefined}
             onClose={() => setContextPanel('inspector')}
             onInspect={(modelId) => handleSelectionChange(new Set([modelId]))}
@@ -1992,6 +2026,16 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
                 activeMethod={(activeTool === 'move' ? 'manual'
                   : activeTool === 'smart-move' ? 'smart' : null) satisfies AosMovementMethod | null}
                 message={aosMovementMessage ?? undefined}
+                targetUnits={(selectedAosMovement.eligibleTargetUnitIds ?? []).map((id) => {
+                  const unit = gameState.units.find((candidate) => candidate.id === id)
+                  return { id, name: unit ? getUnitDefinition(gameState, unit)?.name ?? id : id }
+                })}
+                onTargetUnitChange={(targetUnitId) => {
+                  if (!selectedUnit || !targetUnitId) return
+                  dispatchAosBattleCommand('aos/movement/declare', selectedUnit.ownerId, {
+                    unitId: selectedUnit.id, actionId: 'PILE_IN', targetUnitId,
+                  })
+                }}
                 onChoose={chooseAosMovementAction}
                 onMethodChange={(method) => changeTool(method === 'manual' ? 'move' : 'smart-move')}
                 onConfirm={() => {
@@ -2001,9 +2045,10 @@ function MatchWorkspace({ initialState, matchNotice, onNewMatch, onSave, onLoad,
                     return
                   }
                   dispatch({ type: 'movement/confirmed' })
-                  setActiveTool('select')
+                  const postCommit = postMovementCommitView(gameState.matchIdentity?.gameSystem.id, aosMovementPhaseActive)
+                  setActiveTool(postCommit.activeTool)
                   setAosMovementMessage('Movement confirmed.')
-                  setContextPanel('movement')
+                  setContextPanel(postCommit.contextPanel)
                 }}
                 onCancel={() => {
                   dispatch({ type: 'movement/cancelled' })
@@ -2110,6 +2155,7 @@ function createSmartMoveRequestFactory(
     coherencyPolicy,
     movementPolicy,
     separationConstraints: actionContext?.separationConstraints,
+    destinationConstraints: actionContext?.destinationConstraints,
   })
 }
 
@@ -2128,11 +2174,13 @@ function versionedGameReducer(
 
 function startupGameState(): GameState {
   const query = new URLSearchParams(window.location.search)
-  const source = query.has('lifecycle') ? lifecycleDemoGameState
+  const source = query.has('aosCharge') || query.has('aosCombat') ? createAosChargePileInDemo(query.has('aosCombat'))
+    : query.has('lifecycle') ? lifecycleDemoGameState
     : query.has('battlefieldFeatures') ? battlefieldFeatureDemoGameState
       : query.has('orientationGap') ? orientationGapGameState
         : query.has('footprints') ? footprintDemoGameState : initialGameState
-  const routeId = query.has('lifecycle') ? 'development-lifecycle-preview'
+  const routeId = query.has('aosCharge') || query.has('aosCombat') ? 'aos-charge-pile-in-preview'
+    : query.has('lifecycle') ? 'development-lifecycle-preview'
     : query.has('battlefieldFeatures') ? 'development-battlefield-preview'
       : query.has('orientationGap') ? 'development-orientation-preview'
         : query.has('footprints') ? 'development-footprint-preview' : 'development-sandbox-preview'
@@ -2159,5 +2207,6 @@ function describePlacementViolation(violation: CandidateFormationViolation): str
     case 'MODEL_NOT_FOUND': return 'Model data is incomplete.'
     case 'MOVEMENT_ALLOWANCE_EXCEEDED': return 'Placement does not consume movement.'
     case 'MODEL_SEPARATION_FAILED': return `A model is within ${violation.minimumDistance}″ of an enemy model.`
+    case 'DESTINATION_RELATIONSHIP_FAILED': return 'The final position does not satisfy this movement ability.'
   }
 }

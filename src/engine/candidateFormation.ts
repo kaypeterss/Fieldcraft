@@ -1,4 +1,4 @@
-import type { Battlefield, BattlefieldFeature, MovementSeparationConstraint, TabletopModel, TerrainPolicyConfig, Unit } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, MovementDestinationConstraint, MovementSeparationConstraint, TabletopModel, TerrainPolicyConfig, Unit } from '../domain/types'
 import type { CoherencyPolicy } from './coherency'
 import { evaluateUnitCoherency, isCoherencyResultValid } from './coherency'
 import { closestPointsBetweenFootprints, footprintInsideBattlefield, footprintsOverlap, poseForModel } from './geometry/footprints'
@@ -30,6 +30,7 @@ export interface CandidateFormationRequest {
   reachability?: CandidateReachabilityConstraint
   coherency?: CandidateCoherencyConstraint
   separationConstraints?: ReadonlyArray<MovementSeparationConstraint>
+  destinationConstraints?: ReadonlyArray<MovementDestinationConstraint>
 }
 
 export type CandidateFormationViolation =
@@ -43,6 +44,7 @@ export type CandidateFormationViolation =
   | { type: 'OUTSIDE_REQUIRED_AREA'; modelIds: [string]; constraintId: string }
   | { type: 'TOO_CLOSE_TO_AREA'; modelIds: [string]; constraintId: string; minimumDistance: number; actualDistance: number }
   | { type: 'MODEL_SEPARATION_FAILED'; modelIds: [string, string]; minimumDistance: number; actualDistance: number }
+  | { type: 'DESTINATION_RELATIONSHIP_FAILED'; modelIds: string[]; constraintId: string }
 
 export interface CandidateFormationResult {
   valid: boolean
@@ -149,8 +151,27 @@ export function validateCandidateFormation(request: CandidateFormationRequest): 
     }
   }
 
+  const projectedModels = projectCandidateModels(request.allModels, request.positions, request.rotations)
+  const projectedById = new Map(projectedModels.map((model) => [model.id, model]))
+  const minimumDistance = (sourceId: string, targetIds: readonly string[]) => {
+    const source = projectedById.get(sourceId)
+    if (!source) return Number.POSITIVE_INFINITY
+    return Math.min(...targetIds.map((targetId) => {
+      const target = projectedById.get(targetId)
+      return target ? closestPointsBetweenFootprints(source.base, poseForModel(source), target.base, poseForModel(target)).distance
+        : Number.POSITIVE_INFINITY
+    }))
+  }
+  for (const constraint of request.destinationConstraints ?? []) {
+    const valid = constraint.type === 'ANY_SOURCE_WITHIN_TARGETS'
+      ? constraint.sourceModelIds.some((sourceId) => minimumDistance(sourceId, constraint.targetModelIds) <= constraint.maximumDistance + GEOMETRY_EPSILON)
+      : constraint.type === 'EACH_SOURCE_NO_FARTHER_FROM_TARGETS'
+        ? constraint.sourceModelIds.every((sourceId) => minimumDistance(sourceId, constraint.targetModelIds) <= (constraint.maximumDistanceBySourceModelId[sourceId] ?? Number.NEGATIVE_INFINITY) + GEOMETRY_EPSILON)
+        : constraint.targetGroups.every((group) => constraint.sourceModelIds.some((sourceId) => minimumDistance(sourceId, group.modelIds) <= constraint.maximumDistance + GEOMETRY_EPSILON))
+    if (!valid) violations.push({ type: 'DESTINATION_RELATIONSHIP_FAILED', modelIds: [...constraint.sourceModelIds], constraintId: constraint.id })
+  }
+
   if (request.coherency) {
-    const projectedModels = projectCandidateModels(request.allModels, request.positions, request.rotations)
     const result = evaluateUnitCoherency(request.coherency.unit, projectedModels, request.coherency.policy)
     const coherent = isCoherencyResultValid(result, {
       ...request.coherency.policy,

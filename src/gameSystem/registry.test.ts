@@ -3,6 +3,7 @@ import type { GameState } from '../domain/types'
 import { initialGameState } from '../game/initialState'
 import { developmentGameSystem } from './developmentGameSystem'
 import { GameSystemRegistry, type RegisteredGameSystem } from './registry'
+import { ageOfSigmarGameSystemRegistration } from './registeredGameSystems'
 
 function registration(version: string): RegisteredGameSystem {
   const gameSystem = { ...developmentGameSystem, id: 'coexisting-system', version }
@@ -28,6 +29,13 @@ function identityState(version: string): GameState {
 }
 
 describe('GameSystemRegistry', () => {
+  it('advertises implemented AoS shell capabilities without enabling deferred scoring', () => {
+    expect(ageOfSigmarGameSystemRegistration.ui).toMatchObject({
+      gameplayImplemented: false,
+      capabilities: { lifecycle: true, dice: true, movement: true, scoring: false, gameStatus: true },
+    })
+    expect(ageOfSigmarGameSystemRegistration.ui.status.message).not.toContain('Gameplay is not implemented')
+  })
   it('resolves exact adapter versions and permits versions to coexist', () => {
     const registry = new GameSystemRegistry([registration('adapter-v1'), registration('adapter-v2')])
     expect(registry.resolveIdentity(identityState('adapter-v1').matchIdentity!).gameSystem.version).toBe('adapter-v1')

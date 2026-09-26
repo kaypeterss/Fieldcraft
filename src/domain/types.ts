@@ -279,6 +279,12 @@ export interface MovementSeparationConstraint {
   atDestination: boolean
 }
 
+/** Generic final-pose relationships supplied by a game-system movement adapter. */
+export type MovementDestinationConstraint =
+  | { id: string; type: 'ANY_SOURCE_WITHIN_TARGETS'; sourceModelIds: string[]; targetModelIds: string[]; maximumDistance: number }
+  | { id: string; type: 'EACH_SOURCE_NO_FARTHER_FROM_TARGETS'; sourceModelIds: string[]; targetModelIds: string[]; maximumDistanceBySourceModelId: Record<string, number> }
+  | { id: string; type: 'ANY_SOURCE_WITHIN_EACH_TARGET_GROUP'; sourceModelIds: string[]; targetGroups: Array<{ id: string; modelIds: string[] }>; maximumDistance: number }
+
 /**
  * JSON-safe physical consequences of one declared movement ability. Named
  * rules stay in the adapter; generic movement consumes only these facts.
@@ -291,6 +297,7 @@ export interface ResolvedMovementActionContext {
   movementAllowanceByModel: Record<string, number>
   passOverModelIds: string[]
   separationConstraints: MovementSeparationConstraint[]
+  destinationConstraints: MovementDestinationConstraint[]
   requireCoherency: boolean
   details?: JsonValue
 }

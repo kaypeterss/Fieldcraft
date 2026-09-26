@@ -1,4 +1,4 @@
-import type { Battlefield, BattlefieldFeature, MovementPolicyConfig, MovementSeparationConstraint, PoseTrajectory, TabletopModel, TerrainPolicyConfig, Unit } from '../domain/types'
+import type { Battlefield, BattlefieldFeature, MovementDestinationConstraint, MovementPolicyConfig, MovementSeparationConstraint, PoseTrajectory, TabletopModel, TerrainPolicyConfig, Unit } from '../domain/types'
 import {
   projectCandidateModels,
   validateCandidateFormation,
@@ -45,6 +45,7 @@ export type SmartMoveFailureReason =
   | 'COLLISION'
   | 'BATTLEFIELD'
   | 'COHERENCY'
+  | 'DESTINATION_RELATIONSHIP'
   | 'SEARCH_LIMIT'
 
 export interface SmartMoveRequest {
@@ -59,6 +60,7 @@ export interface SmartMoveRequest {
   coherencyPolicy?: CoherencyPolicy
   movementPolicy?: MovementPolicyConfig
   separationConstraints?: ReadonlyArray<MovementSeparationConstraint>
+  destinationConstraints?: ReadonlyArray<MovementDestinationConstraint>
   /** Optional wall-clock search allowance. The UI worker sets this per intent. */
   searchBudgetMs?: number
 }
@@ -546,6 +548,7 @@ function solveRotationVariant(
     allModels: request.allModels, battlefield: request.battlefield,
     terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
     separationConstraints: request.separationConstraints,
+    destinationConstraints: request.destinationConstraints,
     positions: solved.positions, rotations,
     reachability: {
       movementCosts: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementCost])),
@@ -842,6 +845,7 @@ function validateFastPathPlan(
     battlefield: request.battlefield,
     terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
     separationConstraints: request.separationConstraints,
+    destinationConstraints: request.destinationConstraints,
     positions,
     reachability: {
       movementCosts: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementCost])),
@@ -1343,6 +1347,7 @@ function validateCompleteFallbackCandidate(
     battlefield: request.battlefield,
     terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
     separationConstraints: request.separationConstraints,
+    destinationConstraints: request.destinationConstraints,
     positions,
     reachability: {
       movementCosts: Object.fromEntries(assignments.map((assignment) => [assignment.modelId, assignment.movementCost])),
@@ -1434,6 +1439,7 @@ function planTemplate(
       battlefield: request.battlefield,
       terrainFeatures: request.terrainFeatures, terrainPolicy: request.terrainPolicy,
       separationConstraints: request.separationConstraints,
+      destinationConstraints: request.destinationConstraints,
       positions,
       reachability: { movementCosts, movementAllowances },
       ...(request.coherencyPolicy
@@ -1902,6 +1908,7 @@ function addValidationFailures(
       || violation.type === 'MODEL_SEPARATION_FAILED') failures.add('COLLISION')
     if (violation.type === 'MOVEMENT_ALLOWANCE_EXCEEDED') failures.add('MOVEMENT_LIMIT')
     if (violation.type === 'COHERENCY_FAILED') failures.add('COHERENCY')
+    if (violation.type === 'DESTINATION_RELATIONSHIP_FAILED') failures.add('DESTINATION_RELATIONSHIP')
     if (violation.type === 'MODEL_NOT_FOUND') failures.add('INVALID_SELECTION')
   }
 }

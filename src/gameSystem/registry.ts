@@ -18,6 +18,14 @@ export interface GameSystemUiContribution {
   description: string
   developmentControls: boolean
   gameplayImplemented: boolean
+  /** Incremental shell capabilities; omitted entries fall back to gameplayImplemented. */
+  capabilities?: {
+    lifecycle?: boolean
+    dice?: boolean
+    movement?: boolean
+    scoring?: boolean
+    gameStatus?: boolean
+  }
   /** Compact, presentation-only labels consumed by the generic match shell. */
   shell?: {
     shortName?: string

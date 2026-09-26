@@ -54,7 +54,7 @@ export const ageOfSigmarGameSystem: GameSystem = {
   turns: { phases: AOS_TURN_PHASES.map((phase) => ({
     id: phase.id,
     name: phase.name,
-    allowsMovement: phase.id === 'MOVEMENT_PHASE',
+    allowsMovement: phase.id === 'MOVEMENT_PHASE' || phase.id === 'CHARGE_PHASE' || phase.id === 'COMBAT_PHASE',
   })) },
   matchState: {
     schemaId: 'fieldcraft.age-of-sigmar.alpha-match-state',

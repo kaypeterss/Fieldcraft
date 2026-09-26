@@ -96,10 +96,15 @@ export function executeAosCommand(state: GameState, command: GameSystemCommand):
     const unitId = payload?.unitId
     const actionId = payload?.actionId
     const rollRecordId = payload?.rollRecordId
+    const targetUnitId = payload?.targetUnitId
     if (typeof unitId !== 'string' || !isMovementActionId(actionId)
-      || (rollRecordId !== undefined && typeof rollRecordId !== 'string')) return state
+      || (rollRecordId !== undefined && typeof rollRecordId !== 'string')
+      || (targetUnitId !== undefined && typeof targetUnitId !== 'string')) return state
+    const unit = state.units.find((candidate) => candidate.id === unitId)
+    if (!unit || unit.ownerId !== command.actorPlayerId) return state
     return declareAosMovementAction(state, data, unitId, actionId,
-      typeof rollRecordId === 'string' ? rollRecordId : undefined)
+      typeof rollRecordId === 'string' ? rollRecordId : undefined,
+      typeof targetUnitId === 'string' ? targetUnitId : undefined)
   }
   if (data.status !== 'deployment') return state
   const normalizedData: AosMatchStateData = { ...data, deployment: data.deployment ?? initialAosDeploymentState() }
@@ -180,7 +185,7 @@ export function isAosMatchStateData(value: unknown): value is AosMatchStateData 
 }
 
 function isMovementActionId(value: unknown): value is AosMovementActionId {
-  return value === 'NORMAL_MOVE' || value === 'RUN' || value === 'RETREAT'
+  return value === 'NORMAL_MOVE' || value === 'RUN' || value === 'RETREAT' || value === 'CHARGE' || value === 'PILE_IN'
 }
 
 function recordRollOff(state: GameState, data: AosMatchStateData, command: GameSystemCommand): GameState {

@@ -47,7 +47,7 @@ export function movementStatusPresentation(status: AosUnitMovementStatus): Pick<
   'statusIcon' | 'statusLabel' | 'statusDetail'> {
   switch (status.kind) {
     case 'READY':
-      return { statusIcon: '◇', statusLabel: 'Ready to move', statusDetail: `Move ${status.baseMove}″` }
+      return { statusIcon: '◇', statusLabel: status.label || 'Ready to move', statusDetail: status.label === 'READY TO FIGHT' ? 'Pile-in up to 3″' : `Move ${status.baseMove}″` }
     case 'NORMAL_MOVE':
       return { statusIcon: '✓', statusLabel: 'Moved — Normal', statusDetail: `Move ${status.baseMove}″` }
     case 'RUN':
@@ -60,6 +60,10 @@ export function movementStatusPresentation(status: AosUnitMovementStatus): Pick<
         statusIcon: '↩', statusLabel: 'Moved — Retreat',
         statusDetail: `Move ${status.baseMove}″ · Retreat roll ${status.rollResult ?? 0}`,
       }
+    case 'CHARGE':
+      return { statusIcon: '⚡', statusLabel: 'Charged this turn', statusDetail: `Charge roll ${status.rollResult ?? 0}″` }
+    case 'PILE_IN':
+      return { statusIcon: '⚔', statusLabel: 'Pile-in complete', statusDetail: 'Ready to fight' }
   }
 }
 

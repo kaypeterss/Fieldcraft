@@ -25,6 +25,7 @@ export const developmentGameSystemRegistration: RegisteredGameSystem = {
     description: 'Fieldcraft engine QA, geometry and lifecycle sandbox.',
     developmentControls: true,
     gameplayImplemented: true,
+    capabilities: { lifecycle: true, dice: true, movement: true, scoring: true, gameStatus: true },
     shell: { shortName: 'Development Sandbox' },
     setupSummary: [
       { label: 'Rules', value: 'Development Rules' },
@@ -49,9 +50,10 @@ export const ageOfSigmarGameSystemRegistration: RegisteredGameSystem = {
   prepareMatch: prepareAgeOfSigmarMatch,
   executeCommand: executeAosCommand,
   ui: {
-    description: 'Versioned runtime shell for the first real Fieldcraft GameSystem.',
+    description: 'Playable versioned Age of Sigmar alpha runtime.',
     developmentControls: false,
     gameplayImplemented: false,
+    capabilities: { lifecycle: true, dice: true, movement: true, scoring: false, gameStatus: true },
     shell: {
       shortName: 'Age of Sigmar',
       missionName: "What's Yours Is Ours",
@@ -88,8 +90,9 @@ export const ageOfSigmarGameSystemRegistration: RegisteredGameSystem = {
         { label: 'Stormcast units', value: 'Knight-Questor · Liberators · Vanguard-Raptors · Dracothian Guard' },
         { label: 'Player 2', value: 'Skaven Test Roster' },
         { label: 'Skaven units', value: 'Clawlord · Clanrats · Rat Ogors · Warplock Jezzails' },
+        { label: 'Playable systems', value: 'Deployment · Turns · Resources · Movement · Charge · Pile-in' },
       ],
-      message: 'Gameplay is not implemented in the current AoS Alpha.',
+      message: 'Playable Alpha. Attack, damage, and full scoring resolution remain deferred.',
     },
   },
 }
